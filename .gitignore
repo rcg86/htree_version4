@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+*.db
+*.db.tmp*
+*.swp
+.venv/
+.remember/
+
+# Foundry PDK data and files derived from it: keep out of the repo.
+/ln04lpp_*.lef
+/tech.lef
+/tech.new.lef

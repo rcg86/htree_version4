@@ -1,0 +1,57 @@
+VERSION 5.8 ;
+BUSBITCHARS "[]" ;
+
+SITE core
+  CLASS CORE ;
+  SIZE 0.060 BY 0.254 ;
+END core
+
+# Pin, port and OBS ENDs must not end the macro.
+MACRO INV_D1
+  CLASS CORE ;
+  ORIGIN 0 0 ;
+  SIZE 0.6 BY 0.254 ;
+  SYMMETRY X Y ;
+  SITE core ;
+  PIN A
+    DIRECTION INPUT ;
+    USE SIGNAL ;
+    ANTENNAGATEAREA 0.01 LAYER M1 ;
+    PORT
+      LAYER M1 ;
+        RECT 0.1 0.2 0 0 ;
+      LAYER H1 ;
+        RECT MASK 2 0.2 0 0.3 0.1 ;
+    END
+    PORT
+      LAYER H1 ;
+        POLYGON 0 0 0.4 0 0.4 0.1 0.2 0.1 0.2 0.2 0 0.2 ;
+    END
+  END A
+  PIN Y
+    DIRECTION OUTPUT ;
+    USE SIGNAL ;
+    PORT
+      LAYER M1 SPACING 0.05 ;
+        RECT 0.5 0 0.6 0.1 ;
+    END
+  END Y
+  OBS
+    LAYER M1 ;
+      RECT 0 0 0.6 0.254 ;
+  END
+END INV_D1
+
+MACRO INV_D2
+  CLASS CORE ;
+  SIZE 1.2 BY 0.508 ;
+  PIN INV_D2X
+    DIRECTION OUTPUT TRISTATE ;
+  END INV_D2X
+END INV_D2
+
+MACRO PAD1
+  CLASS PAD INOUT ;
+END PAD1
+
+END LIBRARY

@@ -1,0 +1,92 @@
+# H-Tree Clock Routing Tool — configuration. All distances in microns.
+
+# Floorplan polygon: ordered vertices of a rectilinear polygon, y-up microns.
+# Minimum 4 points (rectangle). Add more vertices for L / T / U shapes.
+# Example L-shape would be: [0,0],[6000,0],[6000,4000],[10000,4000],[10000,10000],[0,10000]
+#floorplan_bbox:
+#  - [0,    0]       # bottom-left
+#  - [100,  0]       # bottom-right
+#  - [100,  10000]   # top-right
+#  - [0,    10000]   # top-left
+
+#{5307.84 0.0} {5307.84 711.36} {0.0 711.36} {0.0 766.08} {5307.84 766.08} {5307.84 3160.08} {0.0 3160.08} {0.0 3214.8} {5403.6 3214.8} {5403.6 5636.16} {0.0 5636.16} {0.0 5690.88} {5403.6 5690.88} {5403.6 8084.88} {0.0 8084.88} {0.0 8139.6} {5403.6 8139.6} {5403.6 9247.68} {0.0 9247.68} {0.0 9302.4} {5403.6 9302.4} {5403.6 13075.2} {5485.68 13075.2} {5485.68 3132.72} {5389.92 3132.72} {5389.92 0.0}
+
+floorplan_bbox:
+  - [5307.84, 0.0]
+  - [5307.84, 861.84]
+  - [0.0, 861.84]
+  - [0.0, 916.56]
+  - [5307.84, 916.56]
+  - [5307.84, 3406.32]
+  - [0.0, 3406.32]
+  - [0.0, 3461.04]
+  - [5403.6, 3461.04]
+  - [5403.6, 6073.92]
+  - [0.0, 6073.92]
+  - [0.0, 6128.64]
+  - [5403.6, 6128.64]
+  - [5403.6, 8618.4]
+  - [0.0, 8618.4]
+  - [0.0, 8673.12]
+  - [5403.6, 8673.12]
+  - [5403.6, 9931.68]
+  - [0.0, 9931.68]
+  - [0.0, 9986.4]
+  - [5403.6, 9986.4]
+  - [5403.6, 13925.2]
+  - [5485.68, 13925.2]
+  - [5485.68, 3378.96]
+  - [5389.92, 3378.96]
+  - [5389.92, 0.0]
+
+# Track grid
+horizontal_layer_track: 0.72      # horizontal track pitch (um)
+vertical_layer_track: 0.72        # vertical track pitch (um)
+horizontal_track_offset: 0.36
+vertical_track_offset: 0.36
+horizontal_layer_width: 0.72      # horizontal track pitch (um)
+vertical_layer_width: 0.72        # vertical track pitch (um)
+# Occupancy
+adjacent_track: 2                # tracks to leave clear each side of a used segment
+group_move: 4
+end_end_spacing: 1.0             # min gap between collinear segments on same track (um)
+
+# Distance / skew
+driver_distance: 1020             # max routed length per driver hop (um)
+max_skew: 10                     # max source->sink length spread (um)
+
+# Components / export
+buffer_cell: INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04
+
+# Physical geometry of buffer_cell, in microns, relative to the cell origin.
+# bbox/pin_A/pin_Y arrays are [llx, lly, urx, ury]. Pin bboxes are always
+# fully contained within the cell bbox.
+buffer_cell_geometry:
+  INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04:
+    bbox:  [0.0,   0.0,   3.12,  1.778]
+    pin_A: [2.523, 0.348, 2.933, 1.444]   # input pin
+    pin_Y: [0.977, 1.019, 1.423, 1.524]   # output pin
+
+buffer_cell_input: A
+buffer_cell_output: Y
+def_layer_horizontal: IA
+def_layer_vertical: IB
+ground_name: VSS
+shield_addition_signal_length: 30.0   # um; legs longer than this are not shielded
+
+# Geometry: source right edge, sinks left edge
+source_point: [5485, 13486]
+sink_points:
+  - [2695, 8672]
+  - [1507, 8672]
+  - [1, 8652]
+  - [2041, 6127]
+  - [2807, 6074]
+  - [1, 6081]
+  - [2807, 3460]
+  - [2042, 3406]
+  - [2694, 862]
+  - [1507, 862]
+  - [1, 880]
+  - [5389, 505]
+
