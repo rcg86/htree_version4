@@ -204,6 +204,9 @@ class SchemaMismatch(Exception):
 
 class Database:
     def __init__(self):
+        # Selected object handles, in selection order. Session state, not design
+        # data: kept in memory only, never written by write_db.
+        self.selection = []
         self.conn = self._new_memory()
         with self.conn:
             self.conn.executescript(SCHEMA)

@@ -26,7 +26,7 @@ ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer
               "lib_cell": "lib_cell", "spine_specs": "spine_spec",
               "spine_spec": "spine_spec", "design": "design", "designs": "design",
               "ports": "port", "port": "port", "track_patterns": "track_pattern",
-              "track_pattern": "track_pattern"}
+              "track_pattern": "track_pattern", "selected": None}   # None: mixed types
 SHOWN_ROOTS = ["tech", "library_physical", "spine_spec", "design"]
 DELIMS = " \t\n[]{}()\"';"
 GET_DB_OPTIONS = ["-if"]
@@ -105,10 +105,10 @@ class Completer:
         if len(segs) == 1:
             roots = SHOWN_ROOTS if not body else [r for r in ROOT_TYPES if r.startswith(body)]
             return [dot + r for r in roots]
-        kind = ROOT_TYPES.get(segs[0])
-        if kind is None:
+        if segs[0] not in ROOT_TYPES:
             return []
-        return _attrs([kind], segs[1:], dot + segs[0] + ".")
+        kind = ROOT_TYPES[segs[0]]
+        return _attrs([kind] if kind else list(objects.ATTRS), segs[1:], dot + segs[0] + ".")
 
     def _handles(self, word):
         kind, _, pattern = word.partition(":")

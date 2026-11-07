@@ -4,6 +4,7 @@
     get_db library_physical                       print the physical library summary
     get_db spine_spec                             print every spine spec, return handles
     get_db design                                 print the design summary (read_def)
+    get_db selected                               objects selected in the GUI or by select_obj
     get_db .tech.layer                            leading dot is optional on paths
     get_db <path> [<name_pattern>] [-if {expr}]   objects on a path (tech.layer, layers)
     get_db <objects> .<attr>[.<attr>] [-if {expr}]
@@ -40,6 +41,7 @@ ROOTS = {
     "port": lambda db: objects.get_attr(db, _design(db)[0], "ports"),
     "track_patterns": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
     "track_pattern": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
+    "selected": lambda db: objects.selected(db),    # GUI or select_obj; may be empty
 }
 
 

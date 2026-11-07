@@ -6,6 +6,7 @@ SYNOPSIS
     get_db library_physical
     get_db spine_spec
     get_db design
+    get_db selected
     get_db <path> [<name_pattern>] [-if {<expr>}]
     get_db <objects> .<attr>[.<attr>...] [-if {<expr>}]
     get_db <objects> .*
@@ -43,6 +44,11 @@ DESCRIPTION
         number of track patterns and their tech layers.
         Returns the design handle. get_db designs returns it without
         printing.
+
+    get_db selected
+        The objects selected in the GUI or with select_obj, in selection
+        order; empty when nothing is selected. Attributes and -if work as
+        usual: get_db selected .name, get_db selected -if {.direction == in}.
 
     get_db spine_spec
         Prints every spine spec: its attributes, each level with its cells

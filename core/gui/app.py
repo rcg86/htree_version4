@@ -80,15 +80,19 @@ def close():
 
 
 def _refresh_if_changed(session):
-    """After each command, reload the view if the database changed."""
-    state = {"key": _db_key(session)}
+    """After each command, reload the view if the database changed, or just
+    the highlight if only the selection changed (select_obj, deselect_obj)."""
+    state = {"key": _db_key(session), "sel": list(session.db.selection)}
 
     def hook():
         key = _db_key(session)
         if key != state["key"]:
             state["key"] = key
             if _window is not None:
-                _window.refresh()
+                _window.refresh()                # also re-applies the selection
+        elif session.db.selection != state["sel"] and _window is not None:
+            _window.show_selection()
+        state["sel"] = list(session.db.selection)
         if _app is not None:
             _app.processEvents()
     hook.gui_hook = True

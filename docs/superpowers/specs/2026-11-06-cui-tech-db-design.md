@@ -411,4 +411,28 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   the whole process (losing the in-memory database) when it cannot connect.
 - Measured on cf999 (offscreen): gui_show 2.0 s with 110,725 shapes; full
   view repaint about 0.1 s.
+- Panning fix (user report, 2026-11-07): dragging stopped with the design at
+  the window edge, because QGraphicsView only scrolls inside its scene rect
+  (v3 had the same issue and padded by one design size, which locks again
+  when zoomed out). Now the scene rect is the design padded by 10 design
+  sizes per side and zoom-out stops when the design is 20 px across, so the
+  padded area never fits in the window. Scrollbars are hidden; pan by drag.
+- Selection (user request, 2026-11-07): select ports, nets and instances in
+  the GUI; `get_db selected` returns them. Selection is session state
+  (`Database.selection`, not saved by write_db, stale handles dropped).
+  Click / Ctrl+click toggle / Shift+drag area / click on empty clears.
+  Claude added `select_obj` and `deselect_obj` (Cadence names) so the
+  terminal can drive the same selection; the highlight follows. Nets and
+  instances: nothing in the database yet (cf999.def has no COMPONENTS or
+  NETS); open question where they will come from.
+- Menu bar and toolbar (user request, 2026-11-07): toolbar buttons Zoom
+  Selected and Blink Selected (user); Fit button and the menu contents
+  (File / View / Select) are Claude's calls. Zoom Selected shows at least
+  5 um; Blink also flashes a marker at least 30 px across (Claude's calls).
+- Hardening: exceptions in after-command hooks are reported as HT4-999
+  instead of failing the command.
+- Mouse map changed (user request, 2026-11-07): left drag zooms to the box
+  drawn; Shift+drag selects all objects with a shape fully inside the box
+  (user: "within the bbox", "multiple objects can be selected"). Panning
+  moved to middle drag and arrow keys (Claude's call: left drag is taken).
 

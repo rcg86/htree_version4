@@ -129,3 +129,53 @@ def test_exit_stops_script_with_code(tmp_path, capfd):
 def test_exit_bad_code(session):
     assert "HT4-001" in err(session, "exit abc")
     assert session.exit_code is None
+
+
+# -- select_obj / deselect_obj / get_db selected (no GUI needed) -------------------------
+
+SMALL_DEF = ROOT / "tests" / "data" / "small.def"
+
+
+def test_select_obj_and_get_db_selected(session):
+    session.eval(f"read_def -file {{{SMALL_DEF}}}")
+    assert session.eval("get_db selected") == ""
+    session.eval("select_obj port:top/a {port:top/b port:top/c}")
+    session.eval("select_obj port:top/a")                          # no duplicates
+    assert session.eval("get_db selected") == "port:top/a port:top/b port:top/c"
+    assert session.eval("get_db selected .name -if {.direction == in}") == "a"
+    session.eval("deselect_obj port:top/b")
+    assert session.eval("get_db selected .name") == "a c"
+    session.eval("select_obj [get_db ports -if {.direction == out}]")
+    assert session.eval("get_db selected .name") == "a c {y[0]}"     # Tcl braces brackets
+    session.eval("deselect_obj -all")
+    assert session.eval("get_db selected") == ""
+
+
+def test_select_obj_errors(session):
+    session.eval(f"read_def -file {{{SMALL_DEF}}}")
+    assert "HT4-001" in err(session, "select_obj")
+    assert "HT4-001" in err(session, "select_obj notahandle")
+    assert "HT4-022" in err(session, "select_obj port:top/zz")
+    assert "HT4-001" in err(session, "deselect_obj")
+    assert "HT4-001" in err(session, "deselect_obj -all port:top/a")
+    assert session.eval("get_db selected") == ""                   # nothing half-done
+
+
+def test_selection_is_not_saved(session, tmp_path):
+    session.eval(f"read_def -file {{{SMALL_DEF}}}")
+    session.eval("select_obj port:top/a")
+    session.eval(f"write_db {tmp_path}/s.db")
+    import io
+    from core.htree_builder import Session
+    fresh = Session(out=io.StringIO())
+    fresh.eval(f"read_db {tmp_path}/s.db")
+    assert fresh.eval("get_db selected") == ""
+
+
+def test_after_command_hook_error_does_not_fail_command(session):
+    def broken():
+        raise RuntimeError("boom")
+    session.after_command.append(broken)
+    assert session.eval("set x 5") == "5"
+    session.eval("help")                                     # an htree command
+    assert "internal error after help: RuntimeError: boom" in session.out.getvalue()

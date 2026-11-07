@@ -63,7 +63,11 @@ class Session:
         finally:
             self.out.flush()
             for hook in self.after_command:
-                hook()
+                try:
+                    hook()
+                except Exception as exc:  # a GUI bug must not fail the command
+                    print(f"**ERROR: (HT4-999): internal error after {name}: "
+                          f"{type(exc).__name__}: {exc}", file=self.out)
 
     def _run(self, name, argv):
         try:

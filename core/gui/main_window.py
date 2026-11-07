@@ -1,10 +1,12 @@
-"""Main window: layout canvas in the middle, visibility panel on the right,
-cursor position and selection in the status bar."""
+"""Main window: menu bar, a small toolbar under it, the layout canvas in the
+middle, the visibility panel on the right, cursor position and selection in
+the status bar."""
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPixmap, QIcon
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, QLabel,
-                               QMainWindow, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+                               QMainWindow, QPushButton, QScrollArea, QToolBar, QVBoxLayout,
+                               QWidget)
 
 from core.gui.canvas import LayoutCanvas
 from core.gui.layout_data import load_layout
@@ -29,12 +31,13 @@ class MainWindow(QMainWindow):
         self.layer_boxes = {}
         self.layout = None
         self._build_panel()
+        self._build_actions()
         self.pos_label = QLabel("")
         self.sel_label = QLabel("")
         self.statusBar().addWidget(self.pos_label)
         self.statusBar().addPermanentWidget(self.sel_label)
         self.canvas.mouseMoved.connect(lambda x, y: self.pos_label.setText(f"x {x:.3f}  y {y:.3f} um"))
-        self.canvas.picked.connect(self.on_pick)
+        self.canvas.selectRequested.connect(self.on_select)
 
     # -- right panel ----------------------------------------------------------------
     def _build_panel(self):
@@ -61,7 +64,10 @@ class MainWindow(QMainWindow):
         self.layer_list = QVBoxLayout()
         self.layer_vbox.addLayout(self.layer_list)
         vbox.addWidget(self.layer_group)
-        hint = QLabel("Wheel: zoom   Drag: pan\nF: fit   Click: select\n"
+        hint = QLabel("Drag: zoom to box   Wheel: zoom   F: fit\n"
+                      "Middle drag / arrows: pan\n"
+                      "Click: select   Ctrl+click: add/remove\n"
+                      "Shift+drag: select in box   get_db selected\n"
                       "Tracks show when zoomed in enough.\n"
                       "(n) = port shapes on the layer.\n"
                       "* = not in tech (starts hidden).")
@@ -77,6 +83,70 @@ class MainWindow(QMainWindow):
         dock.setMinimumWidth(240)
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
+
+    # -- menu and toolbar ----------------------------------------------------------
+    def _build_actions(self):
+        def action(text, slot, shortcut=None, tip=""):
+            a = QAction(text, self)
+            a.triggered.connect(slot)
+            if shortcut:
+                a.setShortcut(QKeySequence(shortcut))
+            a.setStatusTip(tip)
+            a.setToolTip(tip or text)
+            return a
+
+        self.act_fit = action("Fit", self.canvas.fit, "F", "Fit the design in the window")
+        self.act_zoom_sel = action("Zoom Selected", self.zoom_selected, None,
+                                   "Zoom to the selected objects")
+        self.act_blink_sel = action("Blink Selected", self.blink_selected, None,
+                                    "Flash the selected objects to find them")
+        self.act_clear_sel = action("Clear Selection", lambda: self.on_select([], "replace"),
+                                    "Esc", "Deselect everything")
+        self.act_close = action("Close Window", self.close, "Ctrl+W",
+                                "Close the window; the terminal session continues")
+
+        bar = self.menuBar()
+        file_menu = bar.addMenu("&File")
+        file_menu.addAction(self.act_close)
+        view_menu = bar.addMenu("&View")
+        for a in (self.act_fit, self.act_zoom_sel, self.act_blink_sel):
+            view_menu.addAction(a)
+        view_menu.addSeparator()
+        panel = self.findChild(QDockWidget, "view_panel").toggleViewAction()
+        panel.setText("Show View Panel")
+        view_menu.addAction(panel)
+        select_menu = bar.addMenu("&Select")
+        select_menu.addAction(self.act_clear_sel)
+
+        tools = QToolBar("Actions", self)
+        tools.setObjectName("actions_toolbar")
+        tools.setMovable(False)
+        tools.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tools.setIconSize(QSize(12, 12))
+        tools.setStyleSheet("QToolButton { padding: 1px 6px; font-size: 11px; }")
+        for a in (self.act_fit, self.act_zoom_sel, self.act_blink_sel):
+            tools.addAction(a)
+        self.addToolBar(Qt.TopToolBarArea, tools)
+        self.toolbar = tools
+
+    def zoom_selected(self):
+        rect = self.canvas.selection_rect()
+        if rect.isNull():
+            self.statusBar().showMessage(self._nothing_drawn(), 4000)
+            return
+        self.canvas.zoom_to(rect)
+
+    def blink_selected(self):
+        rect = self.canvas.selection_rect()
+        if rect.isNull():
+            self.statusBar().showMessage(self._nothing_drawn(), 4000)
+            return
+        self.canvas.blink(rect)
+
+    def _nothing_drawn(self):
+        if self.session.db.selection:
+            return "The selected objects are not drawn in the layout"
+        return "Nothing selected"
 
     def _rebuild_layer_boxes(self):
         while self.layer_list.count():
@@ -125,20 +195,50 @@ class MainWindow(QMainWindow):
             self.object_boxes[key].setToolTip("" if present else "Nothing in the database yet")
         visible = {n for n, b in self.layer_boxes.items() if b.isChecked()}
         self.canvas.set_layout(self.layout, visible)
+        self.show_selection()
         title = f"htree4 - {self.layout.design}" if self.layout.design else "htree4"
         self.setWindowTitle(title)
 
-    def on_pick(self, handle):
-        self.canvas.select(handle)
-        if not handle:
-            self.sel_label.setText("")
-            return
+    # -- selection: lives in the session, so get_db selected sees it -------------
+    def on_select(self, handles, mode):
         from core import objects
         db = self.session.db
-        port = objects.get_attr(db, handle, "port")
-        text = (f"{port}  layer {objects.get_attr(db, handle, 'layer')}  "
-                f"rect {{{objects.get_attr(db, handle, 'rect')}}}  "
-                f"direction {objects.format_value(objects.get_attr(db, port, 'direction'))}  "
-                f"net {objects.format_value(objects.get_attr(db, port, 'net'))}")
-        self.sel_label.setText(text)
-        self.session.notify(f"Selected {text}")
+        sel = db.selection
+        if mode == "replace":
+            sel[:] = list(handles)
+        elif mode == "add":
+            sel.extend(h for h in handles if h not in sel)
+        else:                                          # toggle
+            for h in handles:
+                sel.remove(h) if h in sel else sel.append(h)
+        self.show_selection()
+        if not sel:
+            self.session.notify("Selection cleared")
+        elif len(sel) == 1:
+            self.session.notify(f"Selected {self.describe(sel[0])}")
+        else:
+            self.session.notify(f"Selected {len(sel)} objects (get_db selected)")
+
+    def show_selection(self):
+        from core import objects
+        sel = objects.selected(self.session.db)
+        self.canvas.highlight(sel)
+        if not sel:
+            self.sel_label.setText("")
+        elif len(sel) == 1:
+            self.sel_label.setText(self.describe(sel[0]))
+        else:
+            self.sel_label.setText(f"{len(sel)} objects selected")
+
+    def describe(self, handle):
+        """One line about a selected object for the terminal and status bar."""
+        from core import objects
+        db = self.session.db
+        kind = objects.obj_type(handle)
+        if kind == "port":
+            fv = objects.format_value
+            return (f"{handle}  layers {' '.join(objects.get_attr(db, handle, 'layers'))}  "
+                    f"rect {{{fv(objects.get_attr(db, handle, 'rect'))}}}  "
+                    f"direction {fv(objects.get_attr(db, handle, 'direction'))}  "
+                    f"net {fv(objects.get_attr(db, handle, 'net'))}")
+        return handle

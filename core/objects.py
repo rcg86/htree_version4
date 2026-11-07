@@ -184,6 +184,20 @@ def check_exists(db, handle: str):
     raise _missing(handle)
 
 
+def exists(db, handle: str) -> bool:
+    try:
+        check_exists(db, handle)
+        return True
+    except HtreeError:
+        return False
+
+
+def selected(db):
+    """Selected handles that still exist (a new DEF can make old ones stale)."""
+    db.selection[:] = [h for h in db.selection if exists(db, h)]
+    return list(db.selection)
+
+
 def attr_names(handle: str):
     return ATTRS.get(obj_type(handle), [])
 
