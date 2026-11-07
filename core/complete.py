@@ -23,8 +23,9 @@ from core import objects
 # Path root -> object type it yields. Aliases complete only once typed.
 ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer",
               "library_physical": "library_physical", "lib_cells": "lib_cell",
-              "lib_cell": "lib_cell"}
-SHOWN_ROOTS = ["tech", "library_physical"]
+              "lib_cell": "lib_cell", "spine_specs": "spine_spec",
+              "spine_spec": "spine_spec"}
+SHOWN_ROOTS = ["tech", "library_physical", "spine_spec"]
 DELIMS = " \t\n[]{}()\"';"
 GET_DB_OPTIONS = ["-if"]
 
@@ -116,6 +117,8 @@ class Completer:
             names = db.lib_cell_names()
         elif kind == "lib_pin" and db.has_library():
             names = [f"{c}/{p}" for c, p in db.all_lib_pins()]
+        elif kind == "spine_spec" and db.has_spine_specs():
+            names = db.spine_spec_names()
         else:
             return []
         return [f"{kind}:{n} " for n in names if n.startswith(pattern)]

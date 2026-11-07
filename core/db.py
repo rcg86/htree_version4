@@ -5,7 +5,7 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 3   # 2: physical library (read_lef); 3: lib cells, pins, shapes
+SCHEMA_VERSION = 4   # 2: read_lef; 3: lib pins and shapes; 4: spine specs
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -90,6 +90,43 @@ CREATE INDEX layer_shape_port ON layer_shape (port_id);
 
 -- Unmodeled statements, verbatim. owner is lib_cell, lib_pin or lib_port.
 CREATE TABLE lib_extra (
+    owner TEXT,
+    owner_id INTEGER,
+    seq INTEGER,
+    statement TEXT
+);
+
+CREATE TABLE spine_spec (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    file TEXT,
+    line INTEGER,
+    type TEXT, units TEXT, point TEXT, root_net TEXT,
+    -- NUMERIC keeps numbers as written in the YAML: 1020 stays 1020, not 1020.0
+    max_drive_length NUMERIC, count_stub_in_drive TEXT,
+    origin_x NUMERIC, level_pitch_x NUMERIC,
+    orientation TEXT, span NUMERIC,
+    stub_count INTEGER, stub_gap NUMERIC, stub_tap TEXT,
+    stub_order TEXT,                     -- Tcl list text
+    yaml_text TEXT
+);
+
+CREATE TABLE spine_level (
+    id INTEGER PRIMARY KEY,
+    spec_id INTEGER REFERENCES spine_spec(id),
+    name TEXT NOT NULL
+);
+
+CREATE TABLE spine_cell (
+    id INTEGER PRIMARY KEY,
+    level_id INTEGER REFERENCES spine_level(id),
+    name TEXT NOT NULL,
+    input TEXT,
+    output TEXT
+);
+
+-- Unmodeled spine spec keys, verbatim. owner is spine_spec or spine_cell.
+CREATE TABLE spine_extra (
     owner TEXT,
     owner_id INTEGER,
     seq INTEGER,
@@ -288,6 +325,96 @@ class Database:
         return self.conn.execute(
             "SELECT lef_file.file AS file, kind, line, text FROM lef_extra "
             "JOIN lef_file ON lef_file.id = lef_extra.file_id ORDER BY seq").fetchall()
+
+    # -- spine specs -----------------------------------------------------------
+    SPINE_COLUMNS = ["type", "units", "point", "root_net", "max_drive_length",
+                     "count_stub_in_drive", "origin_x", "level_pitch_x", "orientation",
+                     "span", "stub_count", "stub_gap", "stub_tap", "stub_order"]
+
+    def has_spine_specs(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM spine_spec").fetchone() is not None
+
+    def add_spine_specs(self, path: str, specs, list_text):
+        """Add specs, atomically. A spec whose name is present replaces the old
+        one; the replaced names are returned. list_text(list) -> Tcl list text."""
+        replaced = []
+        with self.conn:
+            for spec in specs:
+                old = self.spine_spec_row(spec.name)
+                if old is not None:
+                    replaced.append(spec.name)
+                    self._delete_spine_spec(old["id"])
+                values = []
+                for col in self.SPINE_COLUMNS:
+                    v = getattr(spec, col)
+                    if isinstance(v, bool):
+                        v = "true" if v else "false"
+                    elif isinstance(v, list):
+                        v = list_text(v)
+                    values.append(v)
+                cols = ", ".join(self.SPINE_COLUMNS)
+                marks = ", ".join("?" for _ in self.SPINE_COLUMNS)
+                spec_id = self.conn.execute(
+                    f"INSERT INTO spine_spec (name, file, line, yaml_text, {cols}) "
+                    f"VALUES (?, ?, ?, ?, {marks})",
+                    [spec.name, os.path.abspath(path), spec.line, spec.yaml_text] + values
+                ).lastrowid
+                self._add_spine_extra("spine_spec", spec_id, spec.extra)
+                for level in spec.levels:
+                    level_id = self.conn.execute(
+                        "INSERT INTO spine_level (spec_id, name) VALUES (?, ?)",
+                        (spec_id, level.name)).lastrowid
+                    for cell in level.cells:
+                        cell_id = self.conn.execute(
+                            "INSERT INTO spine_cell (level_id, name, input, output) "
+                            "VALUES (?, ?, ?, ?)",
+                            (level_id, cell.name, cell.input, cell.output)).lastrowid
+                        self._add_spine_extra("spine_cell", cell_id, cell.extra)
+        return replaced
+
+    def _delete_spine_spec(self, spec_id):
+        ex = self.conn.execute
+        cells = "SELECT c.id FROM spine_cell c JOIN spine_level l ON l.id = c.level_id " \
+                "WHERE l.spec_id = ?"
+        ex(f"DELETE FROM spine_extra WHERE owner = 'spine_cell' AND owner_id IN ({cells})",
+           (spec_id,))
+        ex("DELETE FROM spine_extra WHERE owner = 'spine_spec' AND owner_id = ?", (spec_id,))
+        ex(f"DELETE FROM spine_cell WHERE id IN ({cells})", (spec_id,))
+        ex("DELETE FROM spine_level WHERE spec_id = ?", (spec_id,))
+        ex("DELETE FROM spine_spec WHERE id = ?", (spec_id,))
+
+    def _add_spine_extra(self, owner, owner_id, statements):
+        for seq, stmt in enumerate(statements, start=1):
+            self.conn.execute("INSERT INTO spine_extra VALUES (?, ?, ?, ?)",
+                              (owner, owner_id, seq, stmt))
+
+    def spine_extra(self, owner, owner_id):
+        return [r["statement"] for r in self.conn.execute(
+            "SELECT statement FROM spine_extra WHERE owner = ? AND owner_id = ? ORDER BY seq",
+            (owner, owner_id))]
+
+    def spine_spec_names(self):
+        return [r["name"] for r in self.conn.execute("SELECT name FROM spine_spec ORDER BY id")]
+
+    def spine_spec_row(self, name: str):
+        return self.conn.execute("SELECT * FROM spine_spec WHERE name = ?", (name,)).fetchone()
+
+    def spine_level_names(self, spec_id: int):
+        return [r["name"] for r in self.conn.execute(
+            "SELECT name FROM spine_level WHERE spec_id = ? ORDER BY id", (spec_id,))]
+
+    def spine_level_row(self, spec: str, level: str):
+        return self.conn.execute(
+            "SELECT l.* FROM spine_level l JOIN spine_spec s ON s.id = l.spec_id "
+            "WHERE s.name = ? AND l.name = ?", (spec, level)).fetchone()
+
+    def spine_cell_names(self, level_id: int):
+        return [r["name"] for r in self.conn.execute(
+            "SELECT name FROM spine_cell WHERE level_id = ? ORDER BY id", (level_id,))]
+
+    def spine_cell_row(self, level_id: int, name: str):
+        return self.conn.execute("SELECT * FROM spine_cell WHERE level_id = ? AND name = ?",
+                                 (level_id, name)).fetchone()
 
     # -- persistence ---------------------------------------------------------
     def write(self, path: str):

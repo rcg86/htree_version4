@@ -338,8 +338,29 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
 - Calls made by Claude (user to check): `lib_port` and `layer_shape` as
   objects (one per PORT, one per RECT/POLYGON); `.rect` is the normalized
   bounding box, also for polygons; `.in_tech` is evaluated at query time;
-  `.direction` holds the base direction, with `DIRECTION OUTPUT TRISTATE ;`
-  kept in `.extra`; `.class` keeps the subclass (`pad inout`); OBS is not
+  `.direction` holds the Cadence value (in, out, inout, feedthru; user
+  request 2026-11-07), with `DIRECTION OUTPUT TRISTATE ;` kept in `.extra`; `.class` keeps the subclass (`pad inout`); OBS is not
   modeled yet (kept in `.lef_text`); repeated `read_lef` appends and a
   duplicate MACRO keeps the first definition (HT4-062); tech data is not
   required to read a cell LEF.
+- `get_db -if` (user report, 2026-11-07): filters the objects at the end of
+  the attribute chain, as Cadence does. Before, it filtered the input
+  objects, so `get_db <cells> .lib_pins -if {.direction == out}` failed.
+
+## 16. Slice 3: `read_spine_spec` (user request, 2026-11-07)
+
+- `read_spine_spec -file <yaml>` reads spine specs; what to build from them
+  comes later. `get_db spine_spec` lists all specs.
+- Objects: `spine_spec:<spec>` -> `spine_level:<spec>/<L>` ->
+  `spine_cell:<spec>/<L>/<cell>`. Key-to-attribute map in
+  `docs/man/read_spine_spec.md`.
+- A file holds several specs as `---`-separated documents or a list under
+  `spine_spec:`. Duplicate keys are an error (PyYAML would silently keep the
+  last, merging two specs). The user's first `runs/custom_spine.yaml` had
+  this problem.
+- Dependency: PyYAML 6.0.2. Schema version 4.
+- Calls made by Claude (user to check): flattened attribute names
+  (`stubs.count` -> `stub_count`); unknown keys kept in `.extra`; re-reading
+  a spec name replaces it (HT4-082); values stored as written, no derived
+  values (stub length) and no cross-checks yet.
+

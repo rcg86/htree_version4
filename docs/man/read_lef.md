@@ -14,9 +14,10 @@ DESCRIPTION
       lib_cell     MACRO: name (.name, .ref_name), CLASS (lowercase, with
                    any subclass: "core", "pad inout"), SIZE x BY y
                    (.size_x, .size_y), SITE
-      lib_pin      PIN: DIRECTION (base direction, lowercase: input,
-                   output, inout, feedthru), USE (signal, power, ground,
-                   clock, ...)
+      lib_pin      PIN: DIRECTION as Cadence reports it (INPUT -> in,
+                   OUTPUT -> out, INOUT -> inout, FEEDTHRU -> feedthru;
+                   empty when the pin has no DIRECTION), USE (signal,
+                   power, ground, clock, ...)
       lib_port     each PORT block of a pin, numbered from 1
       layer_shape  each RECT and POLYGON in a port, numbered from 1, with
                    its LAYER, MASK and points
@@ -67,9 +68,10 @@ QUERIES
     get_db .lib_cell                                  all lib_cell handles
     get_db library_physical                           summary per cell
     get_db lib_cell:<cell> .lib_pins                  pins of a cell
-    get_db lib_cells.lib_pins -if {.use == signal} .name
-    get_db [get_db lib_pin:<cell>/Y .lib_ports.layer_shapes] \
-        -if {.in_tech == true} .rect                  Y pin rects on tech layers
+    get_db lib_cell:<cell> .lib_pins -if {.direction == out}   output pins
+    get_db lib_cells.lib_pins.name -if {.use == signal}
+    get_db lib_pin:<cell>/Y .lib_ports.layer_shapes.rect -if {.in_tech == true}
+                                                      Y pin rects on tech layers
 
 RETURN VALUE
     None. Prints the file, LEF version, counts of cells, pins, ports and

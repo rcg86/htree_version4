@@ -38,7 +38,7 @@ def test_parse_macros():
     assert inv.line == 10
     assert inv.lef_text.startswith("MACRO INV_D1") and inv.lef_text.endswith("END INV_D1")
     assert (pad.cls, pad.size_x, pad.site) == ("pad inout", None, None)
-    assert inv2.pins[0].direction == "output"
+    assert inv2.pins[0].direction == "out"
     assert inv2.pins[0].extra == ["DIRECTION OUTPUT TRISTATE ;"]
     assert [(e.kind, e.line) for e in lib.extras] == [("BUSBITCHARS", 2), ("SITE", 4)]
 
@@ -46,7 +46,7 @@ def test_parse_macros():
 def test_parse_pins_ports_shapes():
     inv = parse_cell_lef(str(CELLS_LEF)).macros[0]
     a, y = inv.pins
-    assert (a.name, a.direction, a.use) == ("A", "input", "signal")
+    assert (a.name, a.direction, a.use) == ("A", "in", "signal")
     assert a.extra == ["ANTENNAGATEAREA 0.01 LAYER M1 ;"]
     assert len(a.ports) == 2
     s1, s2 = a.ports[0].shapes
@@ -150,13 +150,13 @@ def test_cell_attrs(lib_session):
 def test_pin_attrs(lib_session):
     ev = lib_session.eval
     assert (ev(f"get_db {A} .name"), ev(f"get_db {A} .direction"), ev(f"get_db {A} .use")) == \
-        ("A", "input", "signal")
+        ("A", "in", "signal")
     assert ev(f"get_db {A} .lib_ports") == "lib_port:INV_D1/A/1 lib_port:INV_D1/A/2"
     assert ev(f"get_db {A} .layers") == "M1 H1"
     assert ev(f"get_db {A} .tech_layers") == "H1"
     assert ev(f"get_db {A} .lib_cell") == "lib_cell:INV_D1"
     assert ev(f"get_db {A} .extra") == "{ANTENNAGATEAREA 0.01 LAYER M1 ;}"
-    assert ev("get_db lib_cells.lib_pins -if {.direction == output} .name") == "Y INV_D2X"
+    assert ev("get_db lib_cells.lib_pins.name -if {.direction == out}") == "Y INV_D2X"
 
 
 def test_port_and_shape_attrs(lib_session):
@@ -221,3 +221,41 @@ def test_completion(lib_session):
     assert ".lib_ports" in comp("get_db lib_pin:INV_D1/A .")
     assert comp("get_db .lib_cell.lib_pins.lib_ports.layer_shapes.in") == \
         [".lib_cell.lib_pins.lib_ports.layer_shapes.in_tech "]
+
+
+# -- -if filters the end of the chain (Cadence behavior) -----------------------------
+
+def test_if_filters_returned_pins(lib_session):
+    # The user's form: -if applies to the pins .lib_pins returns, not to the cells.
+    got = lib_session.eval("get_db [get_db lib_cells -if {.name == INV_D1}] .lib_pins "
+                           "-if {.direction == out}")
+    assert got == "lib_pin:INV_D1/Y"
+    assert lib_session.eval("get_db lib_cell:INV_D1 .lib_pins.name -if {.direction == in}") == "A"
+
+
+def test_if_on_value_filters_owners(lib_session):
+    assert lib_session.eval("get_db lib_cells .name -if {.class == pad*}") == "PAD1"
+
+
+def test_if_through_deep_chain(lib_session):
+    got = lib_session.eval("get_db lib_cell:INV_D1 .lib_pins.lib_ports.layer_shapes.rect "
+                           "-if {.in_tech == true}")
+    assert lib_session.split_list(got) == ("0.2 0 0.3 0.1", "0 0 0.4 0.2")
+
+
+def test_pin_without_direction(lib_session, write_lef):
+    lef = write_lef("MACRO NODIR\n  PIN P\n  END P\nEND NODIR\n")
+    lib_session.eval(f"read_lef -file {lef}")
+    assert lib_session.eval("get_db lib_pin:NODIR/P .direction") == ""
+    assert lib_session.eval("get_db lib_cell:NODIR .lib_pins -if {.direction == out}") == ""
+    assert lib_session.eval('get_db lib_cell:NODIR .lib_pins -if {.direction == ""}') == \
+        "lib_pin:NODIR/P"
+    assert lib_session.eval("get_db lib_cell:NODIR .lib_pins -if {!.direction}") == \
+        "lib_pin:NODIR/P"
+
+
+@pytest.mark.parametrize("lef_dir, value", [("INPUT", "in"), ("OUTPUT", "out"),
+                                            ("INOUT", "inout"), ("FEEDTHRU", "feedthru")])
+def test_direction_values(write_lef, lef_dir, value):
+    lef = write_lef(f"MACRO C\n  PIN P\n    DIRECTION {lef_dir} ;\n  END P\nEND C\n")
+    assert parse_cell_lef(lef).macros[0].pins[0].direction == value

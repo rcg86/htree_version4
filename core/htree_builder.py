@@ -15,6 +15,7 @@ if str(ROOT) not in sys.path:      # allow "python core/htree_builder.py"
     sys.path.insert(0, str(ROOT))
 
 from core import commands as command_pkg  # noqa: E402
+from core.commands import source as source_cmd  # noqa: E402
 from core.db import Database  # noqa: E402
 from core.messages import HtreeError  # noqa: E402
 
@@ -42,6 +43,9 @@ class Session:
         self.tcl = tkinter.Tcl()
         self.commands = command_pkg.discover()
         self.tcl.createcommand("__htree_dispatch", self._dispatch)
+        # The source command replaces Tcl's; keep the original under another name.
+        self.tcl.eval("rename ::source ::__tcl_source")
+        self.tcl.eval(source_cmd.HELPER)
         for name in self.commands:
             self.tcl.eval(_WRAPPER.format(name=name))
 

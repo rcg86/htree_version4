@@ -1,0 +1,36 @@
+# Two specs as two YAML documents.
+spine_spec:
+  name: sp_a
+  type: spine
+  units: um
+  point: center
+  root_net: net
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+  placement:
+    origin_x: 10
+    level_pitch_x: 2.88
+  spine:
+    orientation: vertical
+    span: 5000
+  stubs:
+    count: 2
+    gap: 10
+    tap: center
+    order: [stub2, stub1]
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv2: {input: L1/inv1/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv2/Y, output: stub1, cell: INVX4}
+        inv2: {input: L1/inv2/Y, output: stub2}
+  future_key: 7
+---
+spine_spec:
+  name: sp_b
+  spine:
+    span: 1000

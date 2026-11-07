@@ -30,7 +30,14 @@ ROOTS = {
     "library_physical": lambda db: _singleton(db, "library_physical"),
     "lib_cells": lambda db: objects.get_attr(db, "library_physical", "lib_cells"),
     "lib_cell": lambda db: objects.get_attr(db, "library_physical", "lib_cells"),
+    "spine_specs": lambda db: _spine_specs(db),
+    "spine_spec": lambda db: _spine_specs(db),
 }
+
+
+def _spine_specs(db):
+    objects.require_spine_specs(db)
+    return [f"spine_spec:{n}" for n in db.spine_spec_names()]
 
 
 def _singleton(db, handle):
@@ -77,6 +84,12 @@ def run(session, argv):
         handles = [h for h in handles if fnmatchcase(_name(h), second)]
         second = None
 
+    if second is not None and second != ".*":
+        tail = tail + _attr_chain(second)
+    handles, attr = _walk_chain(db, handles, tail)
+
+    # Like Cadence, -if filters the objects at the end of the chain: the
+    # returned objects (.lib_pins), or the owners of a returned value (.name).
     if expr is not None:
         handles = [h for h in handles if expr.evaluate(lambda a, h=h: _as_text(db, h, a))]
 
@@ -84,9 +97,7 @@ def run(session, argv):
         for handle in handles:
             _print_all(db, handle, session.out)
         return ""
-    if second is not None:
-        tail = tail + _attr_chain(second)
-    return _result(db, handles, tail)
+    return _values(db, handles, attr)
 
 
 def _split_if(argv):
@@ -144,16 +155,23 @@ def _follow(db, handles, attr):
     return out
 
 
-def _result(db, handles, chain):
-    if not chain:
-        return tuple(handles)
-    while len(chain) > 1:
-        if handles and not objects.is_relation(handles[0], chain[0]):
-            raise HtreeError(USAGE, f"get_db: '.{chain[0]}' is a value, not an object; "
-                             f"it cannot be followed by '.{chain[1]}'")
+def _walk_chain(db, handles, chain):
+    """Follow the object attrs in chain. Returns (objects, value attr or None)."""
+    while chain and handles and objects.is_relation(handles[0], chain[0]):
         handles = _follow(db, handles, chain[0])
         chain = chain[1:]
-    attr = chain[0]
+    if not chain or not handles:
+        return handles, (chain[-1] if chain else None)
+    if len(chain) > 1:
+        objects.get_attr(db, handles[0], chain[0])  # raises for unknown attrs
+        raise HtreeError(USAGE, f"get_db: '.{chain[0]}' is a value, not an object; "
+                         f"it cannot be followed by '.{chain[1]}'")
+    return handles, chain[0]
+
+
+def _values(db, handles, attr):
+    if attr is None:
+        return tuple(handles)
     values, listed = [], False
     for handle in handles:
         value = objects.get_attr(db, handle, attr)
@@ -162,7 +180,7 @@ def _result(db, handles, chain):
             values.extend(objects.format_value(v) for v in value)
         else:
             values.append(objects.format_value(value))
-    if len(handles) == 1 and not listed and not objects.is_relation(handles[0], attr):
+    if len(handles) == 1 and not listed:
         return values[0]
     return tuple(values)
 

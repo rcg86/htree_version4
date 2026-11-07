@@ -16,8 +16,8 @@ def test_command_names(session):
 
 
 def test_dot_shows_roots(tech_session):
-    assert comp(tech_session, "get_db .") == [".tech", ".library_physical"]
-    assert comp(tech_session, "get_db ") == ["tech", "library_physical"]
+    assert comp(tech_session, "get_db .") == [".tech", ".library_physical", ".spine_spec"]
+    assert comp(tech_session, "get_db ") == ["tech", "library_physical", "spine_spec"]
 
 
 def test_tech_children(tech_session):

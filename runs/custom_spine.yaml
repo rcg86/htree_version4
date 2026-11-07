@@ -1,0 +1,101 @@
+
+spine_spec:
+  name: custom_spine_5000
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020       # 1000 +/- 20 um of wire per driver
+    count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
+
+  placement:
+    origin_x: 10                 # X of L1
+    level_pitch_x: 2.88          # X step between levels, and from L4 to the stubs
+
+  spine:
+    orientation: vertical
+    span: 5000                   # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center                  # driven at the midpoint
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv2: {input: L1/inv1/Y}
+        inv3: {input: L1/inv2/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv3/Y}
+    L3:
+      cells:
+        inv1: {input: L1/inv3/Y}
+        inv2: {input: L2/inv1/Y}
+        inv3: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, output: stub1}
+        inv2: {input: L3/inv1/Y, output: stub2}
+        inv3: {input: L3/inv2/Y, output: stub3}
+        inv4: {input: L3/inv2/Y, output: stub4}
+        inv5: {input: L3/inv3/Y, output: stub5}
+        inv6: {input: L3/inv3/Y, output: stub6}
+
+
+
+
+
+---
+spine_spec:
+  name: custom_spine_5001
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020       # 1000 +/- 20 um of wire per driver
+    count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
+
+  placement:
+    origin_x: 10                 # X of L1
+    level_pitch_x: 2.88          # X step between levels, and from L4 to the stubs
+
+  spine:
+    orientation: vertical
+    span: 5000                   # total Y covered by the stubs
+
+  stubs:
+    count: 6                     # length is derived: (span - (count - 1) * gap) / count
+    gap: 10
+    tap: center                  # driven at the midpoint
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv2: {input: L1/inv1/Y}
+        inv3: {input: L1/inv2/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv3/Y}
+    L3:
+      cells:
+        inv1: {input: L1/inv3/Y}
+        inv2: {input: L2/inv1/Y}
+        inv3: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, output: stub1}
+        inv2: {input: L3/inv1/Y, output: stub2}
+        inv3: {input: L3/inv2/Y, output: stub3}
+        inv4: {input: L3/inv2/Y, output: stub4}
+        inv5: {input: L3/inv3/Y, output: stub5}
+        inv6: {input: L3/inv3/Y, output: stub6}
+

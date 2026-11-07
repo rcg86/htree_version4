@@ -7,6 +7,9 @@
     lib_pin:<cell>/<pin>              a PIN of a cell
     lib_port:<cell>/<pin>/<n>         the n-th PORT of a pin (1-based)
     layer_shape:<cell>/<pin>/<n>/<k>  the k-th RECT or POLYGON of a port
+    spine_spec:<spec>                 a spine spec (read_spine_spec)
+    spine_level:<spec>/<level>        a level of a spine spec (L1, L2, ...)
+    spine_cell:<spec>/<level>/<cell>  a cell of a level
 
 Attribute values are Python scalars, None (empty), or lists. Attributes that
 refer to other objects return handles, so get_db can keep walking.
@@ -18,6 +21,7 @@ UNKNOWN_OBJECT = 22
 UNKNOWN_ATTR = 23
 NO_TECH = 25
 NO_LIBRARY = 26
+NO_SPINE_SPEC = 27
 
 # Ordered attribute names per object type. Relation attrs return handles.
 TECH_ATTRS = ["obj_type", "file", "lef_version", "db_units", "manufacturing_grid",
@@ -34,10 +38,17 @@ LIB_PIN_ATTRS = ["obj_type", "name", "direction", "use", "lib_ports", "layers",
 LIB_PORT_ATTRS = ["obj_type", "name", "layer_shapes", "layers", "extra", "lib_pin"]
 LAYER_SHAPE_ATTRS = ["obj_type", "name", "layer", "type", "rect", "points", "mask",
                      "in_tech", "lib_port"]
+SPINE_SPEC_ATTRS = ["obj_type", "name", "type", "units", "point", "root_net",
+                    "max_drive_length", "count_stub_in_drive", "origin_x", "level_pitch_x",
+                    "orientation", "span", "stub_count", "stub_gap", "stub_tap", "stub_order",
+                    "spine_levels", "file", "extra", "yaml_text"]
+SPINE_LEVEL_ATTRS = ["obj_type", "name", "spine_cells", "spine_spec"]
+SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "extra", "spine_level"]
 ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "library_physical": LIBRARY_PHYSICAL_ATTRS, "lib_cell": LIB_CELL_ATTRS,
          "lib_pin": LIB_PIN_ATTRS, "lib_port": LIB_PORT_ATTRS,
-         "layer_shape": LAYER_SHAPE_ATTRS}
+         "layer_shape": LAYER_SHAPE_ATTRS, "spine_spec": SPINE_SPEC_ATTRS,
+         "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS}
 # (object type, attr) -> object type of the handles the attr returns.
 RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("layer", "tech"): "tech",
@@ -46,11 +57,16 @@ RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("lib_cell", "lib_pins"): "lib_pin", ("lib_pin", "lib_cell"): "lib_cell",
              ("lib_pin", "lib_ports"): "lib_port", ("lib_port", "lib_pin"): "lib_pin",
              ("lib_port", "layer_shapes"): "layer_shape",
-             ("layer_shape", "lib_port"): "lib_port"}
+             ("layer_shape", "lib_port"): "lib_port",
+             ("spine_spec", "spine_levels"): "spine_level",
+             ("spine_level", "spine_spec"): "spine_spec",
+             ("spine_level", "spine_cells"): "spine_cell",
+             ("spine_cell", "spine_level"): "spine_level"}
 # Objects with exactly one instance; the handle is the type name.
 SINGLETONS = ("tech", "library_physical")
 # Number of '/'-separated parts in the name of each library object.
 _PARTS = {"lib_cell": 1, "lib_pin": 2, "lib_port": 3, "layer_shape": 4}
+_SPINE_PARTS = {"spine_spec": 1, "spine_level": 2, "spine_cell": 3}
 
 
 def is_handle(word: str) -> bool:
@@ -69,7 +85,8 @@ def name_of(handle: str) -> str:
     if handle in SINGLETONS:
         return handle
     name = handle.partition(":")[2]
-    return name.rsplit("/", 1)[-1] if obj_type(handle) in _PARTS else name
+    kind = obj_type(handle)
+    return name.rsplit("/", 1)[-1] if kind in _PARTS or kind in _SPINE_PARTS else name
 
 
 def require_tech(db):
@@ -80,6 +97,12 @@ def require_tech(db):
 def require_library(db):
     if not db.has_library():
         raise HtreeError(NO_LIBRARY, "no physical library in the database; run read_lef first")
+
+
+def require_spine_specs(db):
+    if not db.has_spine_specs():
+        raise HtreeError(NO_SPINE_SPEC, "no spine spec in the database; "
+                         "run read_spine_spec first")
 
 
 def _missing(handle):
@@ -124,6 +147,9 @@ def check_exists(db, handle: str):
     if kind in _PARTS:
         _lib_row(db, handle)
         return
+    if kind in _SPINE_PARTS:
+        _spine_row(db, handle)
+        return
     if kind == "layer" and db.layer_row(handle.partition(":")[2]) is not None:
         return
     raise _missing(handle)
@@ -160,6 +186,8 @@ def get_attr(db, handle: str, attr: str):
         return [r["text"] for r in db.lef_extra()]          # extra
     if kind in _PARTS:
         return _lib_attr(db, handle, kind, attr)
+    if kind in _SPINE_PARTS:
+        return _spine_attr(db, handle, kind, attr)
     row = db.layer_row(handle.partition(":")[2])
     if row is None:
         raise _missing(handle)
@@ -218,6 +246,45 @@ def _lib_attr(db, handle, kind, attr):
         return "true" if db.layer_row(row["layer"]) is not None else "false"
     if attr == "lib_port":
         return f"lib_port:{parent}"
+    return row[attr]
+
+
+def _spine_row(db, handle: str):
+    kind = obj_type(handle)
+    parts = handle.partition(":")[2].split("/")
+    if len(parts) != _SPINE_PARTS[kind]:
+        raise _missing(handle)
+    if kind == "spine_spec":
+        row = db.spine_spec_row(parts[0])
+    else:
+        row = db.spine_level_row(parts[0], parts[1])
+        if row is not None and kind == "spine_cell":
+            row = db.spine_cell_row(row["id"], parts[2])
+    if row is None:
+        raise _missing(handle)
+    return row
+
+
+def _spine_attr(db, handle, kind, attr):
+    row = _spine_row(db, handle)
+    name = handle.partition(":")[2]
+    parent = name.rsplit("/", 1)[0]
+    if attr == "name":
+        return name_of(handle)
+    if kind == "spine_spec":
+        if attr == "spine_levels":
+            return [f"spine_level:{name}/{l}" for l in db.spine_level_names(row["id"])]
+        if attr == "extra":
+            return db.spine_extra("spine_spec", row["id"])
+        return row[attr]          # stub_order is stored as Tcl list text
+    if kind == "spine_level":
+        if attr == "spine_cells":
+            return [f"spine_cell:{name}/{c}" for c in db.spine_cell_names(row["id"])]
+        return f"spine_spec:{parent}"                   # spine_spec
+    if attr == "extra":
+        return db.spine_extra("spine_cell", row["id"])
+    if attr == "spine_level":
+        return f"spine_level:{parent}"
     return row[attr]
 
 

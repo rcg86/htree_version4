@@ -17,7 +17,8 @@ DESCRIPTION
     cell library read by read_lef, 'lib_cell:<cell>' for one of its
     cells, 'lib_pin:<cell>/<pin>' for a pin, 'lib_port:<cell>/<pin>/<n>'
     for a pin's n-th PORT and 'layer_shape:<cell>/<pin>/<n>/<k>' for a
-    shape in it. Handles are plain
+    shape in it, and 'spine_spec:<spec>', 'spine_level:<spec>/<level>'
+    and 'spine_cell:<spec>/<level>/<cell>' for spine specs. Handles are plain
     strings, so they can be stored in Tcl variables and passed back to
     get_db.
 
@@ -35,7 +36,8 @@ DESCRIPTION
     get_db <path>
         A path starts at a root and follows attributes separated by dots.
         Roots: tech, head (same as tech), layers, layer, library_physical,
-        lib_cells, lib_cell (both same as library_physical.lib_cells). A leading dot is
+        lib_cells, lib_cell (both same as library_physical.lib_cells),
+        spine_spec, spine_specs (all spine specs). A leading dot is
         optional: get_db .tech.layer is the same as get_db tech.layer, and
         get_db .tech is the same as get_db tech.
             get_db tech.layer      -> layer:H1 layer:H2 ... (LEF order)
@@ -55,13 +57,22 @@ DESCRIPTION
         Prints every attribute of each object.
 
     -if {<expr>}
-        Keeps only objects for which <expr> is true, applied before the
-        attribute is taken. Operators: == != < > <= >= && || ! and
-        parentheses. == and != do glob matching when the right side has
-        * ? or [. Comparison is numeric when both sides are numbers,
-        string otherwise. A bare attribute is true when non-empty.
-        The Cadence form uses braces: -if {.name == IA}. The parenthesized
-        form -if (.name == IA) is also accepted.
+        Keeps only the objects for which <expr> is true. As in Cadence,
+        it applies to the objects at the end of the attribute chain:
+          - when the last attribute returns objects, those objects are
+            filtered:
+              get_db lib_cell:INV .lib_pins -if {.direction == out}
+          - when the last attribute is a value, the objects that own the
+            value are filtered before the value is taken:
+              get_db layers .name -if {.direction == vertical}
+              get_db lib_cell:INV .lib_pins.name -if {.direction == in}
+        Operators: == != < > <= >= && || ! and parentheses. == and != do
+        glob matching when the right side has * ? or [. Comparison is
+        numeric when both sides are numbers, string otherwise. A bare
+        attribute is true when non-empty (!.direction finds pins with no
+        DIRECTION); "" is the empty string. The Cadence form uses braces:
+        -if {.name == IA}. The parenthesized form -if (.name == IA) is also
+        accepted.
 
 OBJECT ATTRIBUTES
     tech
@@ -74,12 +85,14 @@ OBJECT ATTRIBUTES
         statements), lef_text (original LAYER block), tech (handle)
     library_physical, lib_cell, lib_pin, lib_port, layer_shape
         See 'man read_lef'.
+    spine_spec, spine_level, spine_cell
+        See 'man read_spine_spec'.
     Distances are microns. type and direction are lowercase.
 
 TAB COMPLETION
     At the interactive prompt, <tab> lists what can come next. Matching
     choices are listed on the first <tab>; a unique match is filled in.
-        get_db .<tab>                 tech library_physical
+        get_db .<tab>                 tech library_physical spine_spec
         get_db .tech.<tab>            db_units extra file layer layers ...
         get_db .tech.layer.<tab>      area direction ... width
         get_db layer:<tab>            layer:G1 layer:G2 ... (needs read_tech)
@@ -112,6 +125,7 @@ ERRORS
     HT4-024  -if expression cannot be parsed
     HT4-025  no tech data loaded; run read_tech first
     HT4-026  no physical library loaded; run read_lef first
+    HT4-027  no spine spec loaded; run read_spine_spec first
 
 SEE ALSO
-    read_tech, read_lef, write_db, read_db
+    read_tech, read_lef, read_spine_spec, write_db, read_db

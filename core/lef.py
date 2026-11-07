@@ -14,6 +14,8 @@ from typing import List, Optional, Tuple
 # when the block has no name).
 NAMED_BLOCKS = {"VIA", "VIARULE", "SITE", "MACRO", "NONDEFAULTRULE", "ARRAY"}
 UNNAMED_BLOCKS = {"PROPERTYDEFINITIONS", "SPACING", "UNITS"}
+# LEF pin DIRECTION -> the value Cadence tools report.
+PIN_DIRECTIONS = {"input": "in", "output": "out", "inout": "inout", "feedthru": "feedthru"}
 
 
 class LefParseError(Exception):
@@ -300,7 +302,10 @@ class _Parser:
             words, line, _ = self.statement()
             key = words[0].upper() if words else ""
             if key in ("DIRECTION", "USE") and len(words) >= 2:
-                setattr(pin, key.lower(), words[1].lower())
+                value = words[1].lower()
+                if key == "DIRECTION":          # Cadence values: in, out, inout, feedthru
+                    value = PIN_DIRECTIONS.get(value, value)
+                setattr(pin, key.lower(), value)
                 if len(words) > 2:              # DIRECTION OUTPUT TRISTATE: keep it all
                     pin.extra.append(" ".join(words) + " ;")
             else:
