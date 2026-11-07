@@ -5,7 +5,8 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 6   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks
+SCHEMA_VERSION = 7   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+                     # 7: track assignments
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -170,6 +171,15 @@ CREATE TABLE track_pattern (
     mask INTEGER,
     same_mask TEXT,                      -- true | false
     layers TEXT                          -- space separated
+);
+
+-- assign_track_for_route: a repeating net pattern over a layer's routing
+-- tracks. Kept as a rule; track positions come from track_pattern.
+CREATE TABLE track_assignment (
+    id INTEGER PRIMARY KEY,
+    layer TEXT UNIQUE NOT NULL,
+    direction TEXT,                      -- x | y: which DEF TRACKS are numbered
+    pattern TEXT                         -- space separated; '-' = any signal
 );
 
 CREATE TABLE port_extra (
@@ -530,6 +540,38 @@ class Database:
             for layer in layers.split():
                 seen.setdefault(layer, None)
         return list(seen)
+
+    def track_positions(self, layer: str, direction: str):
+        """Sorted, distinct track coordinates of all patterns on layer in
+        direction (several patterns, e.g. per-mask ones, are merged)."""
+        found = set()
+        for r in self.conn.execute("SELECT * FROM track_pattern WHERE direction = ?",
+                                   (direction,)):
+            if layer in r["layers"].split():
+                found.update(round(r["start"] + i * r["step"], 6)
+                             for i in range(r["num_tracks"]))
+        return sorted(found)
+
+    def track_directions(self, layer: str):
+        """Directions (x, y) in which layer has DEF tracks."""
+        return sorted({r["direction"] for r in self.conn.execute(
+            "SELECT direction, layers FROM track_pattern") if layer in r["layers"].split()})
+
+    def set_track_assignment(self, layer, direction, pattern):
+        """Store a layer's assignment; returns True if it replaced one."""
+        with self.conn:
+            old = self.conn.execute("DELETE FROM track_assignment WHERE layer = ?",
+                                    (layer,)).rowcount
+            self.conn.execute("INSERT INTO track_assignment (layer, direction, pattern) "
+                              "VALUES (?, ?, ?)", (layer, direction, " ".join(pattern)))
+        return old > 0
+
+    def track_assignment_layers(self):
+        return [r[0] for r in self.conn.execute("SELECT layer FROM track_assignment ORDER BY id")]
+
+    def track_assignment_row(self, layer: str):
+        return self.conn.execute("SELECT * FROM track_assignment WHERE layer = ?",
+                                 (layer,)).fetchone()
 
     def port_counts(self, column: str):
         """{value: count} of a port column (direction, use, status)."""

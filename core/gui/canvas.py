@@ -7,16 +7,24 @@ Mouse: left drag draws a box and zooms to it; Shift+drag selects every port
 with a shape inside the box (Ctrl+Shift+drag adds). Click selects the port
 under the cursor, Ctrl+click adds or removes it, click on empty space clears.
 Middle drag and the arrow keys pan (past any edge), the wheel zooms about the
-cursor, F fits the design in the window. Tracks are
+cursor, F fits the design in the window. In ruler mode, left clicks set the
+start and end of a ruler (snapped to drawn edges when snapping is on), right
+click cancels. Tracks are
 painted behind the shapes, and a pattern appears only once its lines are at
-least MIN_TRACK_PIXELS apart on screen.
+least MIN_TRACK_PIXELS apart on screen. Tech layers show only the tracks of
+their preferred direction (a horizontal layer: DEF TRACKS Y).
 """
 
 from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QPainter, QPen, QPolygonF
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QTransform
+from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem,
+                               QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
+                               QGraphicsSimpleTextItem, QGraphicsView)
 
-from core.gui.layout_data import clip_line_to_polygon, visible_track_positions
+from core.gui.layout_data import (SIGNAL, clip_line_to_polygon, constrain_orthogonal,
+                                  drawn_layers, nearest_on_segments, polygon_edges,
+                                  ruler_text, visible_assigned_tracks,
+                                  visible_track_positions)
 
 ZOOM_STEP = 1.15
 MIN_TRACK_PIXELS = 4      # draw a track pattern only when its lines are this far apart
@@ -34,6 +42,8 @@ BLINK_TIMES = 4           # on/off cycles
 BLINK_MS = 200            # per half cycle
 BLINK_MIN_PIXELS = 30     # the blink marker is at least this big on screen
 ZOOM_MIN_UM = 5.0         # zoom selected shows at least this much of the layout
+RULER_COLOR = "#00e5ff"
+SNAP_PIXELS = 10          # the ruler snaps to a drawn edge this close to the cursor
 
 
 def scene(x, y):
@@ -49,6 +59,7 @@ class LayoutCanvas(QGraphicsView):
     # Objects the user picked and how: "replace", "toggle" (Ctrl+click) or
     # "add". An empty list with "replace" clears the selection.
     selectRequested = Signal(list, str)
+    rulerPlaced = Signal(str, tuple, tuple)  # label, start, end (model coordinates)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -67,6 +78,7 @@ class LayoutCanvas(QGraphicsView):
         self.shape_items = {}                # layer -> [items]
         self.visible_layers = set()
         self.show = {"boundary": True, "ports": True, "tracks": False}
+        self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
         self.highlighted = {}                # item -> (pen, z) before highlighting
         self.owner_items = {}                # owner handle (port) -> [items]
         self._press = None
@@ -75,12 +87,21 @@ class LayoutCanvas(QGraphicsView):
         self._band = QRectF()                # last rubber band, scene coordinates
         self.rubberBandChanged.connect(self._on_band)
         self._blink = None                   # (timer, marker item, steps left)
+        # Ruler: mode and options, the first point of a ruler in progress, its
+        # preview items, the snap marker, and finished rulers (lists of items).
+        self.ruler = {"on": False, "diagonal": False, "snap": True}
+        self._ruler_start = None
+        self._ruler_preview = []
+        self._snap_marker = None
+        self.rulers = []
 
     # -- content ----------------------------------------------------------------
     def set_layout(self, layout, visible_layers):
         self.stop_blink()                     # before clear(), which deletes its marker
         sc = self.scene()
-        sc.clear()
+        sc.clear()                            # also deletes rulers and their previews
+        self.rulers, self._ruler_preview, self._snap_marker = [], [], None
+        self._ruler_start = None
         self.layout, self.boundary_item = layout, None
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
         self.visible_layers = set(visible_layers)
@@ -132,6 +153,10 @@ class LayoutCanvas(QGraphicsView):
     def set_show(self, key, on):
         self.show[key] = on
         self.apply_visibility()
+
+    def set_assigned_net_visible(self, layer, net, on):
+        (self.assign_hidden.discard if on else self.assign_hidden.add)((layer, net))
+        self.viewport().update()
 
     def set_layer_visible(self, layer, on):
         (self.visible_layers.add if on else self.visible_layers.discard)(layer)
@@ -241,37 +266,186 @@ class LayoutCanvas(QGraphicsView):
     # -- tracks: painted behind the shapes, only those on screen ---------------------
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
+        painter.setRenderHint(QPainter.Antialiasing, False)
+        pens = {}
+        for color, dotted, a, b in self.track_segments(rect):
+            key = (color, dotted)
+            if key not in pens:
+                pens[key] = QPen(QColor(color), 0, Qt.DotLine if dotted else Qt.SolidLine)
+            painter.setPen(pens[key])
+            painter.drawLine(scene(*a), scene(*b))
+
+    def track_segments(self, rect):
+        """(color, dotted, (x1, y1), (x2, y2)) in model coordinates for every
+        track segment drawn inside the scene rect. The one place that decides
+        which tracks show; the ruler snaps to exactly these."""
         lay = self.layout
         if not (lay and self.show["tracks"] and lay.tracks):
             return
         x_lo, y_hi = model(rect.topLeft())
         x_hi, y_lo = model(rect.bottomRight())
+        view = (x_lo, y_lo, x_hi, y_hi)
         colors = {l.name: l.color for l in lay.layers}
-        painter.setRenderHint(QPainter.Antialiasing, False)
         pixels_per_um = abs(self.transform().m11())
-        for t in lay.tracks:
-            shown = [l for l in t.layers if l in self.visible_layers]
+        assigned = {(a.layer, a.direction) for a in lay.assignments}
+        for a in lay.assignments:                 # assigned tracks: colored by net
+            if a.layer not in self.visible_layers or len(a.positions) < 2:
+                continue
+            gap = min(b - c for b, c in zip(a.positions[1:], a.positions))
+            if gap * pixels_per_um < MIN_TRACK_PIXELS:
+                continue                          # too dense to tell apart: zoom in
+            vertical = a.direction == "x"
+            shown = {n for n in a.colors if (a.layer, n) not in self.assign_hidden}
+            lines = visible_assigned_tracks(
+                a, *((x_lo, x_hi) if vertical else (y_lo, y_hi)), shown) or []
+            for c, net in lines:
+                for p, q in self._clipped(vertical, c, view):
+                    yield a.colors[net], net == SIGNAL, p, q
+        for t in lay.tracks:                      # tech layers: preferred direction only
+            shown = [l for l in drawn_layers(t, lay.preferred) if l in self.visible_layers
+                     and (l, t.direction) not in assigned]
             if not shown or t.step * pixels_per_um < MIN_TRACK_PIXELS:
                 continue
             vertical = t.direction == "x"
             pos = visible_track_positions(t, x_lo, x_hi) if vertical else \
                 visible_track_positions(t, y_lo, y_hi)
-            if not pos:
-                continue                              # none here, or too dense
-            pen = QPen(QColor(colors.get(shown[0], "#888888")), 0, Qt.DotLine)
-            painter.setPen(pen)
-            for c in pos:
-                spans = clip_line_to_polygon(lay.boundary, vertical, c) if lay.boundary \
-                    else [(y_lo, y_hi) if vertical else (x_lo, x_hi)]
-                for a, b in spans:
-                    if vertical:
-                        a, b = max(a, y_lo), min(b, y_hi)
-                        if a < b:
-                            painter.drawLine(scene(c, a), scene(c, b))
-                    else:
-                        a, b = max(a, x_lo), min(b, x_hi)
-                        if a < b:
-                            painter.drawLine(scene(a, c), scene(b, c))
+            for c in pos or []:                   # none here, or too dense
+                for p, q in self._clipped(vertical, c, view):
+                    yield colors.get(shown[0], "#888888"), True, p, q
+
+    def _clipped(self, vertical, c, view):
+        """Pieces of the track line x = c (vertical) or y = c inside the
+        boundary and the view, as model point pairs."""
+        x_lo, y_lo, x_hi, y_hi = view
+        lay = self.layout
+        spans = clip_line_to_polygon(lay.boundary, vertical, c) if lay.boundary \
+            else [(y_lo, y_hi) if vertical else (x_lo, x_hi)]
+        for a, b in spans:
+            if vertical:
+                a, b = max(a, y_lo), min(b, y_hi)
+                if a < b:
+                    yield (c, a), (c, b)
+            else:
+                a, b = max(a, x_lo), min(b, x_hi)
+                if a < b:
+                    yield (a, c), (b, c)
+
+    # -- ruler ------------------------------------------------------------------------
+    def set_ruler_mode(self, on):
+        self.ruler["on"] = on
+        self.cancel_ruler()
+        if self._snap_marker is not None:
+            self._snap_marker.setVisible(False)
+        if on:
+            self.viewport().setCursor(Qt.CrossCursor)
+        else:
+            self.viewport().unsetCursor()
+
+    def ruler_in_progress(self):
+        return self._ruler_start is not None
+
+    def cancel_ruler(self):
+        for item in self._ruler_preview:
+            self.scene().removeItem(item)
+        self._ruler_preview = []
+        self._ruler_start = None
+
+    def clear_rulers(self):
+        self.cancel_ruler()
+        for items in self.rulers:
+            for item in items:
+                self.scene().removeItem(item)
+        self.rulers = []
+
+    def ruler_point(self, scene_point):
+        """Model point for a ruler click: snapped to the nearest drawn edge when
+        snapping is on, then held orthogonal to the start if asked."""
+        p = model(scene_point)
+        if self.ruler["snap"]:
+            p = self.snap(p) or p
+        if self._ruler_start is not None and not self.ruler["diagonal"]:
+            p = constrain_orthogonal(self._ruler_start, p)
+        return p
+
+    def snap(self, p):
+        """Nearest point on an edge of something drawn, within SNAP_PIXELS:
+        visible port shapes, the boundary when shown, and the tracks drawn at
+        this zoom. Hidden objects are never snapped to."""
+        px = abs(self.transform().m11()) or 1.0
+        radius = SNAP_PIXELS / px
+        box = QRectF(scene(p[0] - radius, p[1] + radius), scene(p[0] + radius, p[1] - radius))
+        segments = []
+        for item in self.scene().items(box):
+            if not item.isVisible() or not item.data(HANDLE_KEY):
+                continue
+            if isinstance(item, QGraphicsRectItem):
+                r = item.rect()
+                (x1, y2), (x2, y1) = model(r.topLeft()), model(r.bottomRight())
+                segments += polygon_edges([x1, y1, x2, y1, x2, y2, x1, y2])
+            elif isinstance(item, QGraphicsPolygonItem):
+                pts = [c for q in item.polygon() for c in model(q)]
+                segments += polygon_edges(pts)
+        if self.boundary_item is not None and self.boundary_item.isVisible():
+            segments += polygon_edges(self.layout.boundary)
+        segments += [(a, b) for _, _, a, b in self.track_segments(box)]
+        return nearest_on_segments(p, segments, radius)
+
+    def _ruler_items(self, a, b, text):
+        pen = QPen(QColor(RULER_COLOR), 2)
+        pen.setCosmetic(True)
+        line = QGraphicsLineItem(scene(*a).x(), scene(*a).y(), scene(*b).x(), scene(*b).y())
+        line.setPen(pen)
+        items = [line]
+        for end in (a, b):                       # fixed-size end markers
+            dot = QGraphicsEllipseItem(-3, -3, 6, 6)
+            dot.setPen(pen)
+            dot.setPos(scene(*end))
+            dot.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+            items.append(dot)
+        label = QGraphicsSimpleTextItem(text)
+        label.setBrush(QColor(RULER_COLOR))
+        font = QFont()
+        font.setPointSize(9)
+        label.setFont(font)
+        label.setPos(scene((a[0] + b[0]) / 2, (a[1] + b[1]) / 2))
+        label.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        # In screen pixels (the label ignores zoom): sit just above the line.
+        label.setTransform(QTransform.fromTranslate(4, -label.boundingRect().height() - 3))
+        items.append(label)
+        for item in items:
+            item.setZValue(30)
+            self.scene().addItem(item)
+        return items
+
+    def _ruler_click(self, scene_point):
+        p = self.ruler_point(scene_point)
+        if self._ruler_start is None:
+            self._ruler_start = p
+            return
+        start = self._ruler_start
+        self.cancel_ruler()
+        text = ruler_text(start, p, self.ruler["diagonal"])
+        self.rulers.append(self._ruler_items(start, p, text))
+        self.rulerPlaced.emit(text, start, p)
+
+    def _ruler_move(self, scene_point):
+        p = self.ruler_point(scene_point)
+        if self._snap_marker is None:
+            pen = QPen(QColor(RULER_COLOR), 1)
+            pen.setCosmetic(True)
+            self._snap_marker = QGraphicsRectItem(-4, -4, 8, 8)
+            self._snap_marker.setPen(pen)
+            self._snap_marker.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+            self._snap_marker.setZValue(31)
+            self.scene().addItem(self._snap_marker)
+        snapped = self.ruler["snap"] and self.snap(model(scene_point)) is not None
+        self._snap_marker.setPos(scene(*p))
+        self._snap_marker.setVisible(snapped)     # shows where a click would land
+        if self._ruler_start is not None:
+            for item in self._ruler_preview:
+                self.scene().removeItem(item)
+            self._ruler_preview = self._ruler_items(
+                self._ruler_start, p, ruler_text(self._ruler_start, p, self.ruler["diagonal"]))
 
     # -- mouse and keys -------------------------------------------------------------
     def wheelEvent(self, ev):
@@ -287,6 +461,14 @@ class LayoutCanvas(QGraphicsView):
 
     def mousePressEvent(self, ev):
         self._press = ev.position().toPoint()
+        if self.ruler["on"] and ev.button() in (Qt.LeftButton, Qt.RightButton):
+            if ev.button() == Qt.LeftButton:      # ruler: click start, click end
+                self._ruler_click(self.mapToScene(self._press))
+            else:
+                self.cancel_ruler()               # right click cancels
+            self._press = None
+            ev.accept()
+            return
         if ev.button() == Qt.MiddleButton:                    # middle drag: pan
             self._pan_from = self._press
             self.viewport().setCursor(Qt.ClosedHandCursor)
@@ -302,6 +484,9 @@ class LayoutCanvas(QGraphicsView):
         if ev.button() == Qt.MiddleButton and self._pan_from is not None:
             self._pan_from = None
             self.viewport().unsetCursor()
+            ev.accept()
+            return
+        if self.ruler["on"] and ev.button() in (Qt.LeftButton, Qt.RightButton):
             ev.accept()
             return
         super().mouseReleaseEvent(ev)
@@ -363,6 +548,8 @@ class LayoutCanvas(QGraphicsView):
         if self._pan_from is not None:
             self.pan_by(point.x() - self._pan_from.x(), point.y() - self._pan_from.y())
             self._pan_from = point
+        elif self.ruler["on"]:
+            self._ruler_move(self.mapToScene(point))
         else:
             super().mouseMoveEvent(ev)
         x, y = model(self.mapToScene(point))

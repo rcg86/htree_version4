@@ -14,6 +14,7 @@
     port:<design>/<pin>               a top-level pin (DEF PINS)
     port_shape:<design>/<pin>/<k>     the k-th shape of a port
     track_pattern:<design>/<k>        the k-th TRACKS statement of the DEF
+    track_assignment:<layer>          a layer's net pattern (assign_track_for_route)
 
 Attribute values are Python scalars, None (empty), or lists. Attributes that
 refer to other objects return handles, so get_db can keep walking.
@@ -57,13 +58,15 @@ PORT_ATTRS = ["obj_type", "name", "net", "direction", "use", "special", "status"
               "location", "orient", "layers", "rect", "port_shapes", "extra", "design"]
 PORT_SHAPE_ATTRS = ["obj_type", "name", "layer", "type", "rect", "points", "mask",
                     "in_tech", "port"]
+TRACK_ASSIGNMENT_ATTRS = ["obj_type", "name", "layer", "direction", "pattern", "period",
+                          "num_tracks", "counts", "tracks"]
 ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "library_physical": LIBRARY_PHYSICAL_ATTRS, "lib_cell": LIB_CELL_ATTRS,
          "lib_pin": LIB_PIN_ATTRS, "lib_port": LIB_PORT_ATTRS,
          "layer_shape": LAYER_SHAPE_ATTRS, "spine_spec": SPINE_SPEC_ATTRS,
          "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS,
          "design": DESIGN_ATTRS, "port": PORT_ATTRS, "port_shape": PORT_SHAPE_ATTRS,
-         "track_pattern": TRACK_PATTERN_ATTRS}
+         "track_pattern": TRACK_PATTERN_ATTRS, "track_assignment": TRACK_ASSIGNMENT_ATTRS}
 # (object type, attr) -> object type of the handles the attr returns.
 RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("layer", "tech"): "tech",
@@ -179,6 +182,8 @@ def check_exists(db, handle: str):
     if kind in _DESIGN_PARTS:
         _design_row(db, handle)
         return
+    if kind == "track_assignment" and db.track_assignment_row(handle.partition(":")[2]):
+        return
     if kind == "layer" and db.layer_row(handle.partition(":")[2]) is not None:
         return
     raise _missing(handle)
@@ -233,6 +238,8 @@ def get_attr(db, handle: str, attr: str):
         return _spine_attr(db, handle, kind, attr)
     if kind in _DESIGN_PARTS:
         return _design_attr(db, handle, kind, attr)
+    if kind == "track_assignment":
+        return _track_assignment_attr(db, handle, attr)
     row = db.layer_row(handle.partition(":")[2])
     if row is None:
         raise _missing(handle)
@@ -429,6 +436,30 @@ def _design_attr(db, handle, kind, attr):
 def _num(value: float) -> str:
     text = repr(float(value))
     return text[:-2] if text.endswith(".0") else text
+
+
+def _track_assignment_attr(db, handle, attr):
+    layer = handle.partition(":")[2]
+    row = db.track_assignment_row(layer)
+    if row is None:
+        raise _missing(handle)
+    pattern = row["pattern"].split()
+    if attr in ("name", "layer"):
+        return layer
+    if attr in ("direction",):
+        return row["direction"]
+    if attr == "pattern":
+        return pattern
+    if attr == "period":
+        return len(pattern)
+    positions = db.track_positions(layer, row["direction"]) if db.has_design() else []
+    if attr == "num_tracks":
+        return len(positions)
+    if attr == "counts":                  # net count net count ...; '-' = signal
+        from core.commands.assign_track_for_route import summarize
+        return [w for net, n, _ in summarize(pattern, positions) for w in (net, str(n))]
+    # tracks: {coordinate net} per track, lowest first
+    return [f"{_num(c)} {pattern[i % len(pattern)]}" for i, c in enumerate(positions)]
 
 
 def format_value(value) -> str:

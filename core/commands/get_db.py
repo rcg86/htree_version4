@@ -42,6 +42,10 @@ ROOTS = {
     "track_patterns": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
     "track_pattern": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
     "selected": lambda db: objects.selected(db),    # GUI or select_obj; may be empty
+    "track_assignments": lambda db: [f"track_assignment:{l}"
+                                     for l in db.track_assignment_layers()],
+    "track_assignment": lambda db: [f"track_assignment:{l}"
+                                    for l in db.track_assignment_layers()],
 }
 
 

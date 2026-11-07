@@ -436,3 +436,37 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   (user: "within the bbox", "multiple objects can be selected"). Panning
   moved to middle drag and arrow keys (Claude's call: left drag is taken).
 
+## 19. `assign_track_for_route` (branch create_spine, user request, 2026-11-07)
+
+- `assign_track_for_route -net {VDD_SOC, -, VSS, -} -layer IA`: track 1
+  VDD_SOC, 2 signal, 3 VSS, 4 signal, then repeat (user's definition).
+- Claude's calls (user to check): tracks are the DEF patterns in the
+  layer's tech direction (horizontal -> TRACKS Y, vertical -> TRACKS X),
+  numbered from the lowest coordinate, several patterns merged; tracks
+  outside a rectilinear boundary still count; commas optional; layer must
+  be in tech; nets checked against port nets (warning); stored as a rule
+  per layer (`track_assignment` table, schema 7), saved by write_db,
+  re-run replaces; object `track_assignment:<layer>` with `.tracks`
+  ({coordinate net} pairs) and `.counts`.
+- cf999 IA: 19,645 tracks, y 0.36 + 0.72 n; VDD_SOC 4,912, VSS 4,911,
+  signal 9,822.
+- GUI (user request, 2026-11-07): a dropdown next to Tracks shows each
+  layer's assignment and a checkbox per "track segment", read by Claude as
+  one per net of the pattern (VDD_SOC, VSS, signal), not per track (19,645
+  on IA). Assigned tracks drawn in net colours (signal grey dotted), only
+  when lines are at least 4 px apart, clipped to the boundary.
+- GUI tracks (user request, 2026-11-07): tech layers show only tracks in
+  their preferred tech direction (IA horizontal: TRACKS Y only). Claude's
+  calls: the database keeps every DEF pattern (get_db unchanged); layers
+  not in tech have no direction and show all tracks.
+- Ruler (user request, 2026-11-07): toolbar button next to Blink Selected
+  with a side dropdown: Orthogonal / Diagonal, and "Snap to nearest object
+  edge" that only snaps to objects shown in the GUI. Claude's calls:
+  orthogonal = held horizontal or vertical by the larger mouse delta;
+  diagonal also shows dx/dy; snap radius 10 px; snap targets are visible
+  port shapes, the boundary when shown, and drawn tracks (track drawing and
+  snapping share one function, so they cannot disagree); snap on and
+  orthogonal by default; rulers persist until Clear Rulers; result printed
+  in the terminal; right click / Esc cancel. Checked on cf999: two clicks
+  0.004 um off two D12 pin edges measured 18.313 um, the exact gap.
+

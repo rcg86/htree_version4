@@ -14,11 +14,12 @@ DESCRIPTION
     Window:
       top      menu bar:
                  File    Close Window (Ctrl+W; the terminal session stays)
-                 View    Fit (F), Zoom Selected, Blink Selected,
-                         Show View Panel
-                 Select  Clear Selection (Esc)
+                 View    Fit (F), Zoom Selected, Blink Selected, Ruler,
+                         Clear Rulers, Show View Panel
+                 Select  Clear Selection (Esc; first cancels a ruler in
+                         progress)
                and under it a toolbar with small buttons: Fit, Zoom
-               Selected, Blink Selected.
+               Selected, Blink Selected, Ruler.
                  Zoom Selected   fits the view to the selected objects with a
                                  margin, showing at least 5 microns, so one
                                  tiny pin is shown with its neighbours.
@@ -28,14 +29,56 @@ DESCRIPTION
                                  find even at full-design zoom, where a pin
                                  is smaller than a pixel. Shapes on hidden
                                  layers stay hidden.
-               Both report "Nothing selected" in the status bar when nothing
-               is selected, or that the selected objects are not drawn
-               (for example a design or a spine spec).
+                 Ruler           toggles ruler mode: click the start point,
+                                 move (a live line follows), click the end
+                                 point. The ruler stays on the layout with
+                                 its length; the length and end points are
+                                 printed in the terminal and the status bar.
+                                 Right click or Esc cancels a ruler in
+                                 progress; wheel zoom and middle-drag pan
+                                 still work while measuring. The small arrow
+                                 beside the button opens its options:
+                                   Orthogonal / Diagonal  orthogonal (default)
+                                     holds the ruler horizontal or vertical,
+                                     whichever is closer to the mouse move;
+                                     diagonal measures a straight line at any
+                                     angle and also shows dx and dy.
+                                   Snap to nearest object edge (on by
+                                     default)  each click moves to the nearest
+                                     edge or corner within 10 pixels of
+                                     something drawn: visible port shapes, the
+                                     boundary when shown, and the tracks drawn
+                                     at the current zoom. Objects not shown
+                                     (hidden layers, unchecked categories,
+                                     tracks too dense to draw) are never
+                                     snapped to. A small square under the
+                                     cursor shows where a click will snap.
+                                   Clear Rulers  removes all rulers (also in
+                                     the View menu).
+               Zoom Selected and Blink Selected report "Nothing selected" in
+               the status bar when nothing is selected, or that the selected
+               objects are not drawn (for example a design or a spine spec).
       center   the layout: design boundary, port shapes coloured by layer,
                and routing tracks (drawn once few enough are visible,
-               clipped to the boundary).
+               clipped to the boundary). A tech layer shows only the tracks
+               of its preferred direction from the tech LEF: a HORIZONTAL
+               layer (IA) its DEF TRACKS Y, a VERTICAL layer (IB) its
+               TRACKS X. Layers that are not in tech have no direction and
+               show all their tracks. get_db track_patterns still lists
+               every TRACKS statement of the DEF.
       right    "View" panel with checkboxes:
                  Objects  Boundary, Ports, Tracks, Nets, Cells, Spine.
+                          The arrow next to Tracks opens the track
+                          assignments (assign_track_for_route): for each
+                          assigned layer its direction, track count and
+                          pattern, and a checkbox per net of the pattern
+                          (signal tracks are '-') with its colour and
+                          track count. Assigned tracks are drawn in their
+                          net's colour (signal tracks grey dotted), when
+                          Tracks and the layer are checked and the view is
+                          zoomed in far enough; unchecking a net hides its
+                          tracks. The other tracks of the layer keep the
+                          layer colour.
                           Categories with no data in the database are
                           greyed out (nets, placed cells and spine
                           geometry are not created yet).

@@ -48,7 +48,8 @@ def test_load_layout_layers_and_counts(loaded):
     assert names[:6] == ["H1", "H2", "G1", "G2", "IA", "IB"]        # tech order first
     assert names[6:] == ["M1"]                                      # then others
     h1 = lay.layer("H1")
-    assert (h1.in_tech, h1.port_shapes, h1.track_patterns) == (True, 4, 1)
+    # H1 is horizontal in tech; small.def has only TRACKS X for it: none drawn
+    assert (h1.in_tech, h1.port_shapes, h1.track_patterns) == (True, 4, 0)
     m1 = lay.layer("M1")
     assert (m1.in_tech, m1.port_shapes, m1.track_patterns) == (False, 1, 1)
     assert len(lay.shapes) == 6 and len(lay.tracks) == 3
@@ -276,9 +277,12 @@ def test_menu_and_toolbar(loaded):
     menus = {a.text().replace("&", ""): [x.text() for x in a.menu().actions() if x.text()]
              for a in w.menuBar().actions()}
     assert menus == {"File": ["Close Window"],
-                     "View": ["Fit", "Zoom Selected", "Blink Selected", "Show View Panel"],
+                     "View": ["Fit", "Zoom Selected", "Blink Selected", "Ruler", "Clear Rulers",
+                              "Show View Panel"],
                      "Select": ["Clear Selection"]}
-    assert [a.text() for a in w.toolbar.actions()] == ["Fit", "Zoom Selected", "Blink Selected"]
+    assert [a.text() for a in w.toolbar.actions() if a.text()] == \
+        ["Fit", "Zoom Selected", "Blink Selected"]
+    assert w.ruler_button.text() == "Ruler"                   # next to Blink Selected
     assert w.toolBarArea(w.toolbar) == w.toolBarArea(w.toolbar).TopToolBarArea  # under the menu
 
 
@@ -472,3 +476,307 @@ def _left():
 def _nobutton():
     from PySide6.QtCore import Qt
     return Qt.NoButton
+
+
+# -- track assignments in the GUI ---------------------------------------------------------
+
+ASSIGN_DEF = """DESIGN t ;
+UNITS DISTANCE MICRONS 100 ;
+DIEAREA ( 0 0 ) ( 1000 1000 ) ;
+TRACKS Y 50 DO 10 STEP 100 LAYER H1 ;
+TRACKS X 50 DO 10 STEP 100 LAYER H1 ;
+PINS 1 ;
+- VDD + NET VDD + SPECIAL + DIRECTION INOUT + USE POWER ;
+END PINS
+END DESIGN
+"""
+
+
+@pytest.fixture
+def assigned(tech_session, write_lef):
+    tech_session.eval(f"read_def -file {write_lef(ASSIGN_DEF, 'a.def')}")
+    tech_session.eval("assign_track_for_route -net {VDD, -, VSS, -} -layer H1")
+    return tech_session
+
+
+def test_load_assignment(assigned):
+    from core.gui.layout_data import SIGNAL_COLOR, visible_assigned_tracks
+    lay = load_layout(assigned.db)
+    a, = lay.assignments
+    assert (a.layer, a.direction, a.pattern) == ("H1", "y", ["VDD", "-", "VSS", "-"])
+    assert a.positions == [0.5 + i for i in range(10)]
+    assert a.counts == [("VDD", 3), ("VSS", 2), ("-", 5)]
+    assert a.colors["-"] == SIGNAL_COLOR and a.colors["VDD"] != a.colors["VSS"]
+    assert visible_assigned_tracks(a, 1, 5, {"VDD", "VSS", "-"}) == \
+        [(1.5, "-"), (2.5, "VSS"), (3.5, "-"), (4.5, "VDD")]
+    assert visible_assigned_tracks(a, 0, 10, {"VSS"}) == [(2.5, "VSS"), (6.5, "VSS")]
+    assert visible_assigned_tracks(a, 0, 10, {"VDD"}, limit=5) is None   # too dense
+
+
+def test_tracks_dropdown_panel(assigned):
+    assigned.eval("gui_show")
+    w = app.window()
+    assert not w.assign_panel.isVisibleTo(w)
+    w.assign_toggle.setChecked(True)                           # open the dropdown
+    assert w.assign_panel.isVisibleTo(w)
+    assert {k: b.text() for k, b in w.assign_boxes.items()} == {
+        ("H1", "VDD"): "VDD  (3)", ("H1", "VSS"): "VSS  (2)", ("H1", "-"): "signal (-)  (5)"}
+    w.assign_boxes[("H1", "-")].setChecked(False)
+    assert w.canvas.assign_hidden == {("H1", "-")}
+    w.assign_toggle.setChecked(False)
+    assert not w.assign_panel.isVisibleTo(w)
+
+
+def test_dropdown_without_assignments(loaded):
+    loaded.eval("gui_show")
+    w = app.window()
+    w.assign_toggle.setChecked(True)
+    assert w.assign_boxes == {}
+    labels = [w.assign_vbox.itemAt(i).widget().text() for i in range(w.assign_vbox.count())]
+    assert any("No track assignments" in t for t in labels)
+
+
+def test_assignment_after_gui_show_refreshes_and_keeps_choices(tech_session, write_lef):
+    tech_session.eval(f"read_def -file {write_lef(ASSIGN_DEF, 'a.def')}")
+    tech_session.eval("gui_show")
+    w = app.window()
+    assert w.assign_boxes == {}
+    tech_session.eval("assign_track_for_route -net {VDD - VSS -} -layer H1")
+    assert ("H1", "VSS") in w.assign_boxes
+    w.assign_boxes[("H1", "VSS")].setChecked(False)
+    tech_session.eval("assign_track_for_route -net {VDD - VSS -} -layer H1")   # refresh
+    assert not w.assign_boxes[("H1", "VSS")].isChecked()
+    assert ("H1", "VSS") in w.canvas.assign_hidden
+
+
+def test_assigned_tracks_drawn_in_net_colors(assigned):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    assigned.eval("gui_show")
+    w = app.window()
+    w.resize(900, 700)
+    w.object_boxes["tracks"].setChecked(True)
+    w.object_boxes["boundary"].setChecked(False)
+    w.canvas.fitInView(QRectF(scene(0, 10), scene(10, 0)), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+    a = w.layout.assignments[0]
+
+    def color_at_track(y):
+        img = w.canvas.viewport().grab().toImage()
+        p = w.canvas.mapFromScene(scene(3.0, y))          # between the vertical tracks
+        return {img.pixelColor(p.x(), p.y() + d).name() for d in (-1, 0, 1)}
+
+    assert QColor(a.colors["VDD"]).name() in color_at_track(0.5)
+    assert QColor(a.colors["VSS"]).name() in color_at_track(2.5)
+    w.assign_boxes[("H1", "VSS")].setChecked(False)
+    QApplication.processEvents()
+    assert QColor(a.colors["VSS"]).name() not in color_at_track(2.5)
+
+
+
+# -- tracks only in the tech layer's preferred direction ------------------------------------
+
+def test_drawn_layers_rule():
+    from core.gui.layout_data import drawn_layers
+    pref = {"IA": "y", "IB": "x"}
+    assert drawn_layers(Track("t", "y", 0, 1, 1, ["IA"]), pref) == ["IA"]
+    assert drawn_layers(Track("t", "x", 0, 1, 1, ["IA"]), pref) == []        # IA horizontal
+    assert drawn_layers(Track("t", "x", 0, 1, 1, ["IA", "IB"]), pref) == ["IB"]
+    assert drawn_layers(Track("t", "x", 0, 1, 1, ["M1"]), pref) == ["M1"]    # no tech direction
+    assert drawn_layers(Track("t", "y", 0, 1, 1, ["M1"]), pref) == ["M1"]
+
+
+def test_preferred_from_tech(loaded):
+    lay = load_layout(loaded.db)
+    assert lay.preferred == {"H1": "y", "H2": "x", "G1": "y", "G2": "x", "IA": "y", "IB": "x"}
+    assert lay.layer("H2").track_patterns == 0     # H2 vertical, small.def has only TRACKS Y
+    assert lay.layer("M1").track_patterns == 1     # not in tech: drawn as given
+
+
+NONPREF_DEF = """DESIGN t ;
+UNITS DISTANCE MICRONS 100 ;
+DIEAREA ( 0 0 ) ( 1000 1000 ) ;
+TRACKS Y 50 DO 10 STEP 100 LAYER H1 ;
+TRACKS X 50 DO 10 STEP 100 LAYER H1 ;
+END DESIGN
+"""
+
+
+def test_non_preferred_tracks_not_drawn(tech_session, write_lef):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    tech_session.eval(f"read_def -file {write_lef(NONPREF_DEF, 'n.def')}")
+    tech_session.eval("gui_show")
+    w = app.window()
+    w.resize(900, 700)
+    w.object_boxes["tracks"].setChecked(True)
+    w.object_boxes["boundary"].setChecked(False)
+    w.canvas.fitInView(QRectF(scene(0, 10), scene(10, 0)), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+    img = w.canvas.viewport().grab().toImage()
+    bg = img.pixelColor(2, 2).name()
+
+    def hits(x, y):
+        p = w.canvas.mapFromScene(scene(x, y))
+        return {img.pixelColor(p.x() + dx, p.y() + dy).name()
+                for dx in (-1, 0, 1) for dy in (-1, 0, 1)} - {bg}
+
+    assert hits(3.0, 0.5)          # horizontal H1 track at y 0.5 is drawn
+    assert not hits(0.5, 3.0)      # vertical H1 track at x 0.5 is not (H1 is horizontal)
+
+
+
+# -- ruler ------------------------------------------------------------------------------------
+
+def test_ruler_geometry():
+    from core.gui.layout_data import (constrain_orthogonal, nearest_on_segments,
+                                      polygon_edges, ruler_text)
+    square = polygon_edges([0, 0, 10, 0, 10, 10, 0, 10])
+    assert nearest_on_segments((10.3, 5), square, 1) == (10, 5)          # onto an edge
+    assert nearest_on_segments((10.2, 10.2), square, 1) == (10, 10)      # corner
+    assert nearest_on_segments((5, 5), square, 1) is None                # nothing close
+    assert constrain_orthogonal((0, 0), (5, 1)) == (5, 0)
+    assert constrain_orthogonal((0, 0), (1, 5)) == (0, 5)
+    assert ruler_text((0, 0), (3, 0), False) == "3 um"
+    assert ruler_text((0, 0), (3, 4), True) == "5 um  (dx 3, dy 4)"
+    assert ruler_text((0, 0), (0.12345, 0), False) == "0.12345 um"
+
+
+def test_ruler_button_dropdown(loaded):
+    loaded.eval("gui_show")
+    w = app.window()
+    from PySide6.QtWidgets import QToolButton
+    assert w.ruler_button.popupMode() == QToolButton.MenuButtonPopup
+    assert [a.text() for a in w.ruler_menu.actions() if a.text()] == \
+        ["Orthogonal", "Diagonal", "Snap to nearest object edge", "Clear Rulers"]
+    assert w.act_ortho.isChecked() and not w.act_diag.isChecked()      # orthogonal default
+    w.act_diag.setChecked(True)
+    assert not w.act_ortho.isChecked() and w.canvas.ruler["diagonal"]
+    w.act_snap.setChecked(False)
+    assert w.canvas.ruler["snap"] is False
+    w.act_ruler.setChecked(True)
+    assert w.canvas.ruler["on"]
+
+
+def _ruler_view(loaded):
+    from PySide6.QtCore import QRectF, Qt
+    from core.gui.canvas import scene
+    w = _view(loaded)
+    w.canvas.fitInView(QRectF(scene(0, 12), scene(32, -2)), Qt.KeepAspectRatio)
+    w.act_ruler.setChecked(True)
+    return w
+
+
+def _ruler_click(w, x, y):
+    from PySide6.QtCore import Qt
+    from core.gui.canvas import scene
+    p = w.canvas.mapFromScene(scene(x, y))
+    _send(w, "move", p, Qt.NoButton, Qt.NoButton)
+    _send(w, "press", p, Qt.LeftButton, Qt.LeftButton)
+    _send(w, "release", p, Qt.LeftButton, Qt.NoButton)
+
+
+def test_ruler_measures_with_clicks(loaded):
+    w = _ruler_view(loaded)
+    w.act_snap.setChecked(False)
+    _ruler_click(w, 2, 5)
+    assert w.canvas.ruler_in_progress()
+    _ruler_click(w, 12, 5.3)                 # orthogonal: held horizontal
+    assert not w.canvas.ruler_in_progress() and len(w.canvas.rulers) == 1
+    out = loaded.out.getvalue()
+    line = next(l for l in out.splitlines() if l.startswith("Ruler: "))
+    length = float(line.split()[1])
+    assert abs(length - 10) < 0.1 and "to (" in line
+    assert loaded.eval("get_db selected") == ""          # ruler clicks do not select
+
+
+def test_ruler_diagonal(loaded):
+    w = _ruler_view(loaded)
+    w.act_snap.setChecked(False)
+    w.act_diag.setChecked(True)
+    _ruler_click(w, 2, 2)
+    _ruler_click(w, 5, 6)
+    text = w.canvas.rulers[0][-1].text()
+    assert text.startswith("5") and "dx 3" in text and "dy 4" in text
+
+
+def test_ruler_snaps_to_visible_shape_edge(loaded):
+    w = _ruler_view(loaded)
+    # pin a: x 9.95..10.05, y 0..0.4 (H1, shown). A click just right of it snaps.
+    from core.gui.canvas import scene
+    p = w.canvas.ruler_point(scene(10.2, 0.2))
+    assert abs(p[0] - 10.05) < 1e-9 and abs(p[1] - 0.2) < 1e-9
+
+
+def test_ruler_does_not_snap_to_hidden_objects(loaded):
+    from core.gui.canvas import scene
+    w = _ruler_view(loaded)
+    w.object_boxes["boundary"].setChecked(False)
+    w.layer_boxes["H1"].setChecked(False)                  # pin a hidden
+    p = w.canvas.ruler_point(scene(10.2, 0.2))
+    assert abs(p[0] - 10.2) < 1e-6 and abs(p[1] - 0.2) < 1e-6   # stays where clicked
+    w.layer_boxes["H1"].setChecked(True)
+    w.act_snap.setChecked(False)                           # snapping off: no snap either
+    p = w.canvas.ruler_point(scene(10.2, 0.2))
+    assert abs(p[0] - 10.2) < 1e-6
+
+
+def test_ruler_snaps_to_boundary_only_when_shown(loaded):
+    from core.gui.canvas import scene
+    w = _ruler_view(loaded)
+    w.layer_boxes["H1"].setChecked(False)
+    # boundary edge x = 40 between y 50 and 80; click at (40.3, 60)
+    from PySide6.QtCore import QRectF, Qt
+    w.canvas.fitInView(QRectF(scene(30, 70), scene(50, 50)), Qt.KeepAspectRatio)
+    assert abs(w.canvas.ruler_point(scene(40.3, 60))[0] - 40) < 1e-9
+    w.object_boxes["boundary"].setChecked(False)
+    assert abs(w.canvas.ruler_point(scene(40.3, 60))[0] - 40.3) < 1e-6
+
+
+def test_ruler_snaps_to_drawn_tracks_only(tech_session, write_lef):
+    from PySide6.QtCore import QRectF, Qt
+    from core.gui.canvas import scene
+    tech_session.eval(f"read_def -file {write_lef(NONPREF_DEF, 'n.def')}")
+    tech_session.eval("gui_show")
+    w = app.window()
+    w.resize(900, 700)
+    w.object_boxes["boundary"].setChecked(False)
+    w.canvas.fitInView(QRectF(scene(0, 10), scene(10, 0)), Qt.KeepAspectRatio)
+    w.act_ruler.setChecked(True)
+    assert abs(w.canvas.ruler_point(scene(3, 0.6))[1] - 0.6) < 1e-6   # tracks off: no snap
+    w.object_boxes["tracks"].setChecked(True)
+    assert abs(w.canvas.ruler_point(scene(3, 0.6))[1] - 0.5) < 1e-9   # H1 track y 0.5
+    # H1 vertical tracks (x 0.5, 1.5, ...) are not drawn, so no snap to x = 0.5
+    assert abs(w.canvas.ruler_point(scene(0.6, 3.3))[0] - 0.6) < 1e-6
+
+
+def test_ruler_cancel_and_clear(loaded):
+    from PySide6.QtCore import Qt
+    w = _ruler_view(loaded)
+    _ruler_click(w, 2, 5)
+    w.on_escape()                                          # Esc cancels a ruler in progress
+    assert not w.canvas.ruler_in_progress() and w.canvas.rulers == []
+    _ruler_click(w, 2, 5)
+    _ruler_click(w, 6, 5)
+    _ruler_click(w, 2, 8)
+    _ruler_click(w, 2, 9)
+    assert len(w.canvas.rulers) == 2
+    w.act_clear_rulers.trigger()
+    assert w.canvas.rulers == []
+    _ruler_click(w, 2, 5)
+    from core.gui.canvas import scene
+    p = w.canvas.mapFromScene(scene(3, 5))
+    _send(w, "press", p, Qt.RightButton, Qt.RightButton)   # right click cancels
+    assert not w.canvas.ruler_in_progress()
+
+
+def test_ruler_off_restores_click_select(loaded):
+    w = _ruler_view(loaded)
+    w.act_ruler.setChecked(False)
+    _, point = _point_of(w, "port_shape:top/a/1")
+    _send(w, "press", point, *_left())
+    _send(w, "release", point, _left()[0], _nobutton())
+    assert loaded.eval("get_db selected") == "port:top/a"

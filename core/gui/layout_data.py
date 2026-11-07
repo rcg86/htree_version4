@@ -3,6 +3,7 @@
 Model coordinates are microns with y up, as in the database.
 """
 
+import bisect
 import math
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
@@ -13,6 +14,13 @@ PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f
            "#aaffc3", "#808000", "#ffd8b1", "#000075", "#a9a9a9", "#ffe119"]
 
 MAX_TRACK_LINES = 300        # per pattern; denser patterns are not drawn until zoomed in
+# Colors for the nets of a track assignment, in pattern order; signal tracks
+# ('-') are grey.
+NET_PALETTE = ["#ff4d4d", "#4da6ff", "#4dff88", "#ffd24d", "#d24dff", "#4dffff"]
+SIGNAL = "-"
+SIGNAL_COLOR = "#9e9e9e"
+# Tech DIRECTION -> the DEF TRACKS that run that way (TRACKS Y are horizontal lines).
+PREFERRED_TRACKS = {"horizontal": "y", "vertical": "x"}
 
 
 @dataclass
@@ -44,6 +52,19 @@ class Track:
 
 
 @dataclass
+class TrackAssignment:
+    layer: str
+    direction: str               # x | y: which tracks are numbered
+    pattern: List[str]
+    positions: List[float]       # every numbered track, lowest first
+    colors: Dict[str, str] = field(default_factory=dict)       # net -> color
+    counts: List[Tuple[str, int]] = field(default_factory=list)  # (net, tracks), pattern order
+
+    def nets(self) -> List[str]:
+        return [n for n, _ in self.counts]
+
+
+@dataclass
 class Layout:
     design: Optional[str] = None
     boundary: List[float] = field(default_factory=list)
@@ -51,6 +72,8 @@ class Layout:
     layers: List[LayerInfo] = field(default_factory=list)
     shapes: List[PortShape] = field(default_factory=list)
     tracks: List[Track] = field(default_factory=list)
+    assignments: List[TrackAssignment] = field(default_factory=list)
+    preferred: Dict[str, str] = field(default_factory=dict)   # tech layer -> x | y
 
     def layer(self, name) -> Optional[LayerInfo]:
         return next((l for l in self.layers if l.name == name), None)
@@ -61,6 +84,10 @@ def load_layout(db) -> Layout:
     other layers that carry port shapes or tracks, in first-use order."""
     lay = Layout()
     tech = db.layer_names() if db.has_tech() else []
+    for name in tech:
+        d = PREFERRED_TRACKS.get(db.layer_row(name)["direction"] or "")
+        if d:
+            lay.preferred[name] = d
     counts: Dict[str, List[int]] = {name: [0, 0] for name in tech}
     if db.has_design():
         row = db.design_row()
@@ -81,12 +108,52 @@ def load_layout(db) -> Layout:
             layers = r["layers"].split()
             lay.tracks.append(Track(f"track_pattern:{lay.design}/{r['id']}", r["direction"],
                                     r["start"], r["num_tracks"], r["step"], layers))
-            for name in layers:
+            for name in drawn_layers(lay.tracks[-1], lay.preferred):
                 counts.setdefault(name, [0, 0])[1] += 1
+        for name in db.track_assignment_layers():
+            lay.assignments.append(load_assignment(db, name))
     for i, (name, (shapes, tracks)) in enumerate(counts.items()):
         lay.layers.append(LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)],
                                     shapes, tracks))
     return lay
+
+
+def drawn_layers(track: "Track", preferred: Dict[str, str]) -> List[str]:
+    """Layers of a track pattern that the view draws: a tech layer only when
+    the pattern runs in its preferred direction (IA horizontal: TRACKS Y);
+    a layer with no tech direction always."""
+    return [l for l in track.layers if preferred.get(l, track.direction) == track.direction]
+
+
+def load_assignment(db, layer) -> TrackAssignment:
+    row = db.track_assignment_row(layer)
+    pattern = row["pattern"].split()
+    positions = db.track_positions(layer, row["direction"])
+    nets = [n for n in dict.fromkeys(pattern) if n != SIGNAL]
+    colors = {n: NET_PALETTE[i % len(NET_PALETTE)] for i, n in enumerate(nets)}
+    colors[SIGNAL] = SIGNAL_COLOR
+    per = {n: 0 for n in nets + ([SIGNAL] if SIGNAL in pattern else [])}
+    for i in range(len(positions)):
+        per[pattern[i % len(pattern)]] += 1
+    return TrackAssignment(layer, row["direction"], pattern, positions, colors,
+                           list(per.items()))
+
+
+def visible_assigned_tracks(a: TrackAssignment, lo: float, hi: float, shown_nets,
+                            limit: int = MAX_TRACK_LINES):
+    """(coordinate, net) for the tracks of a inside [lo, hi] whose net is in
+    shown_nets. None when more than limit tracks are in range (too dense)."""
+    first = bisect.bisect_left(a.positions, lo - 1e-9)
+    last = bisect.bisect_right(a.positions, hi + 1e-9)
+    if last - first > limit:
+        return None
+    period = len(a.pattern)
+    out = []
+    for i in range(first, last):
+        net = a.pattern[i % period]
+        if net in shown_nets:
+            out.append((a.positions[i], net))
+    return out
 
 
 def visible_track_positions(track: Track, lo: float, hi: float,
@@ -119,3 +186,47 @@ def clip_line_to_polygon(polygon: List[float], vertical: bool, c: float) -> List
             hits.append(b1 + (c - a1) * (b2 - b1) / (a2 - a1))
     hits.sort()
     return [(hits[i], hits[i + 1]) for i in range(0, len(hits) - 1, 2)]
+
+
+# -- ruler geometry (model coordinates, microns) --------------------------------------
+
+def nearest_on_segments(point, segments, radius):
+    """Nearest point to point on any segment ((x1, y1), (x2, y2)) within
+    radius, or None. Corners are covered: they are segment ends."""
+    px, py = point
+    best, best_d = None, radius * radius
+    for (x1, y1), (x2, y2) in segments:
+        dx, dy = x2 - x1, y2 - y1
+        length2 = dx * dx + dy * dy
+        t = 0.0 if length2 == 0 else max(0.0, min(1.0, ((px - x1) * dx + (py - y1) * dy) / length2))
+        qx, qy = x1 + t * dx, y1 + t * dy
+        d = (qx - px) ** 2 + (qy - py) ** 2
+        if d <= best_d:
+            best, best_d = (qx, qy), d
+    return best
+
+
+def polygon_edges(points):
+    pts = list(zip(points[0::2], points[1::2]))
+    return list(zip(pts, pts[1:] + pts[:1]))
+
+
+def constrain_orthogonal(start, end):
+    """end moved onto the horizontal or vertical line through start, whichever
+    is closer to the mouse movement."""
+    (x0, y0), (x1, y1) = start, end
+    return (x1, y0) if abs(x1 - x0) >= abs(y1 - y0) else (x0, y1)
+
+
+def ruler_text(start, end, diagonal):
+    """Label for a ruler: its length, and dx dy for a diagonal one."""
+    dx, dy = end[0] - start[0], end[1] - start[1]
+    length = math.hypot(dx, dy)
+    if not diagonal:
+        return f"{_fmt(length)} um"
+    return f"{_fmt(length)} um  (dx {_fmt(abs(dx))}, dy {_fmt(abs(dy))})"
+
+
+def _fmt(v):
+    text = f"{v:.5f}".rstrip("0").rstrip(".")
+    return text if text not in ("", "-0") else "0"

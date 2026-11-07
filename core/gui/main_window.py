@@ -3,10 +3,10 @@ middle, the visibility panel on the right, cursor position and selection in
 the status bar."""
 
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QColor, QIcon, QKeySequence, QPixmap
+from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, QLabel,
-                               QMainWindow, QPushButton, QScrollArea, QToolBar, QVBoxLayout,
-                               QWidget)
+                               QMainWindow, QMenu, QPushButton, QScrollArea, QToolBar,
+                               QToolButton, QVBoxLayout, QWidget)
 
 from core.gui.canvas import LayoutCanvas
 from core.gui.layout_data import load_layout
@@ -29,6 +29,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.canvas)
         self.object_boxes = {}
         self.layer_boxes = {}
+        self.assign_boxes = {}               # (layer, net) -> QCheckBox
         self.layout = None
         self._build_panel()
         self._build_actions()
@@ -49,8 +50,27 @@ class MainWindow(QMainWindow):
             box = QCheckBox(label)
             box.setChecked(self.canvas.show.get(key, False))
             box.toggled.connect(lambda on, k=key: self.canvas.set_show(k, on))
-            ovbox.addWidget(box)
             self.object_boxes[key] = box
+            if key != "tracks":
+                ovbox.addWidget(box)
+                continue
+            # Tracks: a dropdown arrow opens the per-layer track assignments.
+            row = QHBoxLayout()
+            row.addWidget(box)
+            self.assign_toggle = QToolButton()
+            self.assign_toggle.setArrowType(Qt.RightArrow)
+            self.assign_toggle.setCheckable(True)
+            self.assign_toggle.setAutoRaise(True)
+            self.assign_toggle.setToolTip("Track assignments per layer")
+            self.assign_toggle.toggled.connect(self._toggle_assignments)
+            row.addWidget(self.assign_toggle)
+            row.addStretch(1)
+            ovbox.addLayout(row)
+            self.assign_panel = QWidget()
+            self.assign_vbox = QVBoxLayout(self.assign_panel)
+            self.assign_vbox.setContentsMargins(18, 0, 0, 4)
+            self.assign_panel.setVisible(False)
+            ovbox.addWidget(self.assign_panel)
         vbox.addWidget(objects)
 
         self.layer_group = QGroupBox("Layers")
@@ -100,8 +120,25 @@ class MainWindow(QMainWindow):
                                    "Zoom to the selected objects")
         self.act_blink_sel = action("Blink Selected", self.blink_selected, None,
                                     "Flash the selected objects to find them")
-        self.act_clear_sel = action("Clear Selection", lambda: self.on_select([], "replace"),
-                                    "Esc", "Deselect everything")
+        self.act_clear_sel = action("Clear Selection", self.on_escape, "Esc",
+                                    "Deselect everything (Esc first cancels a ruler in progress)")
+        self.act_ruler = QAction("Ruler", self, checkable=True)
+        self.act_ruler.setToolTip("Measure: click the start and the end point")
+        self.act_ruler.setStatusTip("Measure: click the start and the end point")
+        self.act_ruler.toggled.connect(self.canvas.set_ruler_mode)   # also when set from code
+        self.act_ortho = QAction("Orthogonal", self, checkable=True, checked=True)
+        self.act_diag = QAction("Diagonal", self, checkable=True)
+        group = QActionGroup(self)
+        group.setExclusive(True)
+        for a in (self.act_ortho, self.act_diag):
+            group.addAction(a)
+        self.act_diag.toggled.connect(lambda on: self.canvas.ruler.update(diagonal=on))
+        self.act_snap = QAction("Snap to nearest object edge", self, checkable=True,
+                                checked=True)
+        self.act_snap.setToolTip("Snap to the nearest edge of an object shown in the layout")
+        self.act_snap.toggled.connect(lambda on: self.canvas.ruler.update(snap=on))
+        self.act_clear_rulers = action("Clear Rulers", self.canvas.clear_rulers, None,
+                                       "Remove all rulers")
         self.act_close = action("Close Window", self.close, "Ctrl+W",
                                 "Close the window; the terminal session continues")
 
@@ -111,6 +148,9 @@ class MainWindow(QMainWindow):
         view_menu = bar.addMenu("&View")
         for a in (self.act_fit, self.act_zoom_sel, self.act_blink_sel):
             view_menu.addAction(a)
+        view_menu.addSeparator()
+        view_menu.addAction(self.act_ruler)
+        view_menu.addAction(self.act_clear_rulers)
         view_menu.addSeparator()
         panel = self.findChild(QDockWidget, "view_panel").toggleViewAction()
         panel.setText("Show View Panel")
@@ -126,8 +166,35 @@ class MainWindow(QMainWindow):
         tools.setStyleSheet("QToolButton { padding: 1px 6px; font-size: 11px; }")
         for a in (self.act_fit, self.act_zoom_sel, self.act_blink_sel):
             tools.addAction(a)
+        # Ruler: a toggle button with a small side dropdown for its options.
+        self.ruler_menu = QMenu(self)
+        self.ruler_menu.addAction(self.act_ortho)
+        self.ruler_menu.addAction(self.act_diag)
+        self.ruler_menu.addSeparator()
+        self.ruler_menu.addAction(self.act_snap)
+        self.ruler_menu.addSeparator()
+        self.ruler_menu.addAction(self.act_clear_rulers)
+        self.ruler_button = QToolButton()
+        self.ruler_button.setDefaultAction(self.act_ruler)
+        self.ruler_button.setMenu(self.ruler_menu)
+        self.ruler_button.setPopupMode(QToolButton.MenuButtonPopup)
+        self.ruler_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tools.addWidget(self.ruler_button)
         self.addToolBar(Qt.TopToolBarArea, tools)
         self.toolbar = tools
+        self.canvas.rulerPlaced.connect(self.on_ruler)
+
+    def on_escape(self):
+        if self.canvas.ruler_in_progress():
+            self.canvas.cancel_ruler()
+        else:
+            self.on_select([], "replace")
+
+    def on_ruler(self, text, start, end):
+        from core.gui.layout_data import _fmt
+        where = f"from ({_fmt(start[0])}, {_fmt(start[1])}) to ({_fmt(end[0])}, {_fmt(end[1])})"
+        self.statusBar().showMessage(f"Ruler: {text}", 10000)
+        self.session.notify(f"Ruler: {text}  {where}")
 
     def zoom_selected(self):
         rect = self.canvas.selection_rect()
@@ -174,6 +241,44 @@ class MainWindow(QMainWindow):
             self.layer_list.addWidget(box)
             self.layer_boxes[info.name] = box
 
+    def _toggle_assignments(self, open_):
+        self.assign_toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
+        self.assign_panel.setVisible(open_)
+
+    def _rebuild_assignments(self):
+        """One block per assigned layer: its pattern and a checkbox per net."""
+        while self.assign_vbox.count():
+            w = self.assign_vbox.takeAt(0).widget()
+            if w is not None:
+                w.deleteLater()
+        old = {k: b.isChecked() for k, b in self.assign_boxes.items()}
+        self.assign_boxes = {}
+        self.canvas.assign_hidden = set()
+        if not self.layout.assignments:
+            note = QLabel("No track assignments.\nUse assign_track_for_route.")
+            note.setStyleSheet("color: #888;")
+            self.assign_vbox.addWidget(note)
+            return
+        for a in self.layout.assignments:
+            axis = "horizontal" if a.direction == "y" else "vertical"
+            title = QLabel(f"<b>{a.layer}</b>  {axis}, {len(a.positions)} tracks<br>"
+                           f"<span style='color:#888'>pattern: {' '.join(a.pattern)}</span>")
+            self.assign_vbox.addWidget(title)
+            for net, count in a.counts:
+                label = "signal (-)" if net == "-" else net
+                box = QCheckBox(f"{label}  ({count})")
+                pix = QPixmap(12, 12)
+                pix.fill(QColor(a.colors[net]))
+                box.setIcon(QIcon(pix))
+                on = old.get((a.layer, net), True)
+                box.setChecked(on)
+                if not on:
+                    self.canvas.assign_hidden.add((a.layer, net))
+                box.toggled.connect(lambda v, l=a.layer, n=net:
+                                    self.canvas.set_assigned_net_visible(l, n, v))
+                self.assign_vbox.addWidget(box)
+                self.assign_boxes[(a.layer, net)] = box
+
     def set_all_layers(self, on):
         for name, box in self.layer_boxes.items():
             box.setChecked(self.layout.layer(name).in_tech if on is None else on)
@@ -183,6 +288,7 @@ class MainWindow(QMainWindow):
         """Reload everything from the database (after a command changed it)."""
         self.layout = load_layout(self.session.db)
         self._rebuild_layer_boxes()
+        self._rebuild_assignments()
         for key, reason in NOT_YET.items():
             box = self.object_boxes[key]
             box.setChecked(False)
