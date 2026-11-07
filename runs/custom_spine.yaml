@@ -51,6 +51,8 @@ spine_spec:
 
 
 ---
+
+
 spine_spec:
   name: custom_spine_5001
   type: spine
@@ -59,7 +61,7 @@ spine_spec:
   root_net: net
 
   constraints:
-    max_drive_length: 1020       # 1000 +/- 20 um of wire per driver
+    max_drive_length: 1030       # 1000 +/- 20 um of wire per driver
     count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
 
   placement:
@@ -68,10 +70,9 @@ spine_spec:
 
   spine:
     orientation: vertical
-    span: 5000                   # total Y covered by the stubs
+    span: 4000                   # total Y covered by the stubs
 
   stubs:
-    count: 6                     # length is derived: (span - (count - 1) * gap) / count
     gap: 10
     tap: center                  # driven at the midpoint
 
@@ -98,4 +99,7 @@ spine_spec:
         inv4: {input: L3/inv2/Y, output: stub4}
         inv5: {input: L3/inv3/Y, output: stub5}
         inv6: {input: L3/inv3/Y, output: stub6}
+
+
+
 

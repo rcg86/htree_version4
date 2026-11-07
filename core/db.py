@@ -5,7 +5,7 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 4   # 2: read_lef; 3: lib pins and shapes; 4: spine specs
+SCHEMA_VERSION = 6   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -129,6 +129,51 @@ CREATE TABLE spine_cell (
 CREATE TABLE spine_extra (
     owner TEXT,
     owner_id INTEGER,
+    seq INTEGER,
+    statement TEXT
+);
+
+CREATE TABLE design (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    name TEXT NOT NULL,
+    file TEXT,
+    def_version TEXT,
+    units INTEGER,                       -- DEF database units per micron
+    boundary TEXT                        -- "x y x y ..." microns
+);
+
+CREATE TABLE port (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    net TEXT, direction TEXT, use TEXT,
+    special TEXT,                        -- true | false
+    status TEXT,                         -- fixed | placed | cover | unplaced
+    x REAL, y REAL, orient TEXT
+);
+
+CREATE TABLE port_shape (
+    id INTEGER PRIMARY KEY,
+    port_id INTEGER REFERENCES port(id),
+    seq INTEGER,                         -- 1-based within the port
+    layer TEXT,
+    type TEXT,                           -- rect | polygon
+    points TEXT,                         -- microns, absolute
+    mask INTEGER
+);
+CREATE INDEX port_shape_port ON port_shape (port_id);
+
+CREATE TABLE track_pattern (
+    id INTEGER PRIMARY KEY,              -- 1-based, file order
+    line INTEGER,
+    direction TEXT,                      -- x | y (as in DEF TRACKS X / Y)
+    start REAL, num_tracks INTEGER, step REAL,   -- microns
+    mask INTEGER,
+    same_mask TEXT,                      -- true | false
+    layers TEXT                          -- space separated
+);
+
+CREATE TABLE port_extra (
+    port_id INTEGER REFERENCES port(id),
     seq INTEGER,
     statement TEXT
 );
@@ -415,6 +460,83 @@ class Database:
     def spine_cell_row(self, level_id: int, name: str):
         return self.conn.execute("SELECT * FROM spine_cell WHERE level_id = ? AND name = ?",
                                  (level_id, name)).fetchone()
+
+    # -- design (DEF) ----------------------------------------------------------
+    def has_design(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM design").fetchone() is not None
+
+    def load_def(self, d):
+        """Replace the design with d (a DefDesign), atomically."""
+        with self.conn:
+            for table in ("track_pattern", "port_extra", "port_shape", "port", "design"):
+                self.conn.execute(f"DELETE FROM {table}")
+            self.conn.execute(
+                "INSERT INTO design (id, name, file, def_version, units, boundary) "
+                "VALUES (1, ?, ?, ?, ?, ?)",
+                (d.name, os.path.abspath(d.file), d.version, d.units,
+                 " ".join(_num(v) for v in d.boundary)))
+            self.conn.executemany(
+                "INSERT INTO port (id, name, net, direction, use, special, status, x, y, orient) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(i, p.name, p.net, p.direction, p.use, "true" if p.special else "false",
+                  p.status, p.x, p.y, p.orient) for i, p in enumerate(d.ports, start=1)])
+            self.conn.executemany(
+                "INSERT INTO port_shape (port_id, seq, layer, type, points, mask) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(i, k, sh.layer, sh.type, " ".join(_num(v) for v in sh.points), sh.mask)
+                 for i, p in enumerate(d.ports, start=1)
+                 for k, sh in enumerate(p.shapes, start=1)])
+            self.conn.executemany(
+                "INSERT INTO track_pattern (id, line, direction, start, num_tracks, step, mask, "
+                "same_mask, layers) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(i, t.line, t.direction, t.start, t.num_tracks, t.step, t.mask,
+                  "true" if t.same_mask else "false", " ".join(t.layers))
+                 for i, t in enumerate(d.tracks, start=1)])
+            self.conn.executemany(
+                "INSERT INTO port_extra VALUES (?, ?, ?)",
+                [(i, k, e) for i, p in enumerate(d.ports, start=1)
+                 for k, e in enumerate(p.extra, start=1)])
+
+    def design_row(self):
+        return self.conn.execute("SELECT * FROM design").fetchone()
+
+    def port_names(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM port ORDER BY id")]
+
+    def port_row(self, name: str):
+        return self.conn.execute("SELECT * FROM port WHERE name = ?", (name,)).fetchone()
+
+    def port_shape_rows(self, port_id: int):
+        return self.conn.execute("SELECT * FROM port_shape WHERE port_id = ? ORDER BY seq",
+                                 (port_id,)).fetchall()
+
+    def port_extra(self, port_id: int):
+        return [r[0] for r in self.conn.execute(
+            "SELECT statement FROM port_extra WHERE port_id = ? ORDER BY seq", (port_id,))]
+
+    def track_pattern_ids(self):
+        return [r[0] for r in self.conn.execute("SELECT id FROM track_pattern ORDER BY id")]
+
+    def track_pattern_row(self, seq: int):
+        return self.conn.execute("SELECT * FROM track_pattern WHERE id = ?", (seq,)).fetchone()
+
+    def track_layers(self):
+        """Layers with tracks, in first-use order."""
+        seen = {}
+        for (layers,) in self.conn.execute("SELECT layers FROM track_pattern ORDER BY id"):
+            for layer in layers.split():
+                seen.setdefault(layer, None)
+        return list(seen)
+
+    def port_counts(self, column: str):
+        """{value: count} of a port column (direction, use, status)."""
+        return {r[0]: r[1] for r in self.conn.execute(
+            f"SELECT {column}, COUNT(*) FROM port GROUP BY {column} "
+            f"ORDER BY COUNT(*) DESC, {column}")}
+
+    def port_shape_layer_counts(self):
+        return {r[0]: r[1] for r in self.conn.execute(
+            "SELECT layer, COUNT(*) FROM port_shape GROUP BY layer ORDER BY MIN(id)")}
 
     # -- persistence ---------------------------------------------------------
     def write(self, path: str):

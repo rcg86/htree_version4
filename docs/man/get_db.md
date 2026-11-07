@@ -5,6 +5,7 @@ SYNOPSIS
     get_db tech
     get_db library_physical
     get_db spine_spec
+    get_db design
     get_db <path> [<name_pattern>] [-if {<expr>}]
     get_db <objects> .<attr>[.<attr>...] [-if {<expr>}]
     get_db <objects> .*
@@ -19,7 +20,9 @@ DESCRIPTION
     cells, 'lib_pin:<cell>/<pin>' for a pin, 'lib_port:<cell>/<pin>/<n>'
     for a pin's n-th PORT and 'layer_shape:<cell>/<pin>/<n>/<k>' for a
     shape in it, and 'spine_spec:<spec>', 'spine_level:<spec>/<level>'
-    and 'spine_cell:<spec>/<level>/<cell>' for spine specs. Handles are plain
+    and 'spine_cell:<spec>/<level>/<cell>' for spine specs, and
+    'design:<design>', 'port:<design>/<pin>', 'port_shape:<design>/<pin>/<k>'
+    and 'track_pattern:<design>/<k>' for the design read by read_def. Handles are plain
     strings, so they can be stored in Tcl variables and passed back to
     get_db.
 
@@ -34,6 +37,13 @@ DESCRIPTION
         class, size, site and pins, and unmodeled top-level statements. Returns
         'library_physical'.
 
+    get_db design
+        Prints the design summary: file, units, bbox, area, boundary,
+        port counts by direction, use, status and shape layer, and the
+        number of track patterns and their tech layers.
+        Returns the design handle. get_db designs returns it without
+        printing.
+
     get_db spine_spec
         Prints every spine spec: its attributes, each level with its cells
         and their input and output, and unmodeled keys. Returns the
@@ -44,7 +54,8 @@ DESCRIPTION
         A path starts at a root and follows attributes separated by dots.
         Roots: tech, head (same as tech), layers, layer, library_physical,
         lib_cells, lib_cell (both same as library_physical.lib_cells),
-        spine_spec, spine_specs (all spine specs). A leading dot is
+        spine_spec, spine_specs (all spine specs), design, designs, ports,
+        port (all ports of the design), track_patterns, track_pattern. A leading dot is
         optional: get_db .tech.layer is the same as get_db tech.layer, and
         get_db .tech is the same as get_db tech.
             get_db tech.layer      -> layer:H1 layer:H2 ... (LEF order)
@@ -94,12 +105,14 @@ OBJECT ATTRIBUTES
         See 'man read_lef'.
     spine_spec, spine_level, spine_cell
         See 'man read_spine_spec'.
+    design, port, port_shape, track_pattern
+        See 'man read_def'.
     Distances are microns. type and direction are lowercase.
 
 TAB COMPLETION
     At the interactive prompt, <tab> lists what can come next. Matching
     choices are listed on the first <tab>; a unique match is filled in.
-        get_db .<tab>                 tech library_physical spine_spec
+        get_db .<tab>                 tech library_physical spine_spec design
         get_db .tech.<tab>            db_units extra file layer layers ...
         get_db .tech.layer.<tab>      area direction ... width
         get_db layer:<tab>            layer:G1 layer:G2 ... (needs read_tech)
@@ -133,6 +146,7 @@ ERRORS
     HT4-025  no tech data loaded; run read_tech first
     HT4-026  no physical library loaded; run read_lef first
     HT4-027  no spine spec loaded; run read_spine_spec first
+    HT4-028  no design loaded; run read_def first
 
 SEE ALSO
-    read_tech, read_lef, read_spine_spec, write_db, read_db
+    read_tech, read_lef, read_spine_spec, read_def, write_db, read_db

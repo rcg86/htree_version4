@@ -24,8 +24,10 @@ from core import objects
 ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer",
               "library_physical": "library_physical", "lib_cells": "lib_cell",
               "lib_cell": "lib_cell", "spine_specs": "spine_spec",
-              "spine_spec": "spine_spec"}
-SHOWN_ROOTS = ["tech", "library_physical", "spine_spec"]
+              "spine_spec": "spine_spec", "design": "design", "designs": "design",
+              "ports": "port", "port": "port", "track_patterns": "track_pattern",
+              "track_pattern": "track_pattern"}
+SHOWN_ROOTS = ["tech", "library_physical", "spine_spec", "design"]
 DELIMS = " \t\n[]{}()\"';"
 GET_DB_OPTIONS = ["-if"]
 
@@ -119,6 +121,11 @@ class Completer:
             names = [f"{c}/{p}" for c, p in db.all_lib_pins()]
         elif kind == "spine_spec" and db.has_spine_specs():
             names = db.spine_spec_names()
+        elif kind == "design" and db.has_design():
+            names = [db.design_row()["name"]]
+        elif kind == "port" and db.has_design():
+            top = db.design_row()["name"]
+            names = [f"{top}/{p}" for p in db.port_names()]
         else:
             return []
         return [f"{kind}:{n} " for n in names if n.startswith(pattern)]

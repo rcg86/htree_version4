@@ -10,6 +10,10 @@
     spine_spec:<spec>                 a spine spec (read_spine_spec)
     spine_level:<spec>/<level>        a level of a spine spec (L1, L2, ...)
     spine_cell:<spec>/<level>/<cell>  a cell of a level
+    design:<design>                   the design read by read_def
+    port:<design>/<pin>               a top-level pin (DEF PINS)
+    port_shape:<design>/<pin>/<k>     the k-th shape of a port
+    track_pattern:<design>/<k>        the k-th TRACKS statement of the DEF
 
 Attribute values are Python scalars, None (empty), or lists. Attributes that
 refer to other objects return handles, so get_db can keep walking.
@@ -22,6 +26,7 @@ UNKNOWN_ATTR = 23
 NO_TECH = 25
 NO_LIBRARY = 26
 NO_SPINE_SPEC = 27
+NO_DESIGN = 28
 
 # Ordered attribute names per object type. Relation attrs return handles.
 TECH_ATTRS = ["obj_type", "file", "lef_version", "db_units", "manufacturing_grid",
@@ -44,11 +49,21 @@ SPINE_SPEC_ATTRS = ["obj_type", "name", "type", "units", "point", "root_net",
                     "spine_levels", "file", "extra", "yaml_text"]
 SPINE_LEVEL_ATTRS = ["obj_type", "name", "spine_cells", "spine_spec"]
 SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "extra", "spine_level"]
+DESIGN_ATTRS = ["obj_type", "name", "file", "def_version", "units", "boundary", "bbox",
+                "area", "ports", "track_patterns"]
+TRACK_PATTERN_ATTRS = ["obj_type", "name", "direction", "start", "num_tracks", "step", "end",
+                       "mask", "same_mask", "layers", "design"]
+PORT_ATTRS = ["obj_type", "name", "net", "direction", "use", "special", "status",
+              "location", "orient", "layers", "rect", "port_shapes", "extra", "design"]
+PORT_SHAPE_ATTRS = ["obj_type", "name", "layer", "type", "rect", "points", "mask",
+                    "in_tech", "port"]
 ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "library_physical": LIBRARY_PHYSICAL_ATTRS, "lib_cell": LIB_CELL_ATTRS,
          "lib_pin": LIB_PIN_ATTRS, "lib_port": LIB_PORT_ATTRS,
          "layer_shape": LAYER_SHAPE_ATTRS, "spine_spec": SPINE_SPEC_ATTRS,
-         "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS}
+         "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS,
+         "design": DESIGN_ATTRS, "port": PORT_ATTRS, "port_shape": PORT_SHAPE_ATTRS,
+         "track_pattern": TRACK_PATTERN_ATTRS}
 # (object type, attr) -> object type of the handles the attr returns.
 RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("layer", "tech"): "tech",
@@ -61,12 +76,17 @@ RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("spine_spec", "spine_levels"): "spine_level",
              ("spine_level", "spine_spec"): "spine_spec",
              ("spine_level", "spine_cells"): "spine_cell",
-             ("spine_cell", "spine_level"): "spine_level"}
+             ("spine_cell", "spine_level"): "spine_level",
+             ("design", "ports"): "port", ("port", "design"): "design",
+             ("port", "port_shapes"): "port_shape", ("port_shape", "port"): "port",
+             ("design", "track_patterns"): "track_pattern",
+             ("track_pattern", "design"): "design"}
 # Objects with exactly one instance; the handle is the type name.
 SINGLETONS = ("tech", "library_physical")
 # Number of '/'-separated parts in the name of each library object.
 _PARTS = {"lib_cell": 1, "lib_pin": 2, "lib_port": 3, "layer_shape": 4}
 _SPINE_PARTS = {"spine_spec": 1, "spine_level": 2, "spine_cell": 3}
+_DESIGN_PARTS = {"design": 1, "port": 2, "port_shape": 3, "track_pattern": 2}
 
 
 def is_handle(word: str) -> bool:
@@ -86,7 +106,8 @@ def name_of(handle: str) -> str:
         return handle
     name = handle.partition(":")[2]
     kind = obj_type(handle)
-    return name.rsplit("/", 1)[-1] if kind in _PARTS or kind in _SPINE_PARTS else name
+    nested = kind in _PARTS or kind in _SPINE_PARTS or kind in _DESIGN_PARTS
+    return name.rsplit("/", 1)[-1] if nested else name
 
 
 def require_tech(db):
@@ -103,6 +124,11 @@ def require_spine_specs(db):
     if not db.has_spine_specs():
         raise HtreeError(NO_SPINE_SPEC, "no spine spec in the database; "
                          "run read_spine_spec first")
+
+
+def require_design(db):
+    if not db.has_design():
+        raise HtreeError(NO_DESIGN, "no design in the database; run read_def first")
 
 
 def _missing(handle):
@@ -150,6 +176,9 @@ def check_exists(db, handle: str):
     if kind in _SPINE_PARTS:
         _spine_row(db, handle)
         return
+    if kind in _DESIGN_PARTS:
+        _design_row(db, handle)
+        return
     if kind == "layer" and db.layer_row(handle.partition(":")[2]) is not None:
         return
     raise _missing(handle)
@@ -188,6 +217,8 @@ def get_attr(db, handle: str, attr: str):
         return _lib_attr(db, handle, kind, attr)
     if kind in _SPINE_PARTS:
         return _spine_attr(db, handle, kind, attr)
+    if kind in _DESIGN_PARTS:
+        return _design_attr(db, handle, kind, attr)
     row = db.layer_row(handle.partition(":")[2])
     if row is None:
         raise _missing(handle)
@@ -286,6 +317,104 @@ def _spine_attr(db, handle, kind, attr):
     if attr == "spine_level":
         return f"spine_level:{parent}"
     return row[attr]
+
+
+def _design_row(db, handle: str):
+    """Row of a design object. Pin names hold no '/' (DEF DIVIDERCHAR), so the
+    port name is everything between the design name and the shape index."""
+    kind = obj_type(handle)
+    name = handle.partition(":")[2]
+    design = db.design_row()
+    if design is None:
+        require_design(db)
+    dname, _, rest = name.partition("/")
+    if dname != design["name"]:
+        raise _missing(handle)
+    if kind == "design":
+        if rest:
+            raise _missing(handle)
+        return design
+    if kind == "port":
+        row = db.port_row(rest) if rest else None
+    elif kind == "track_pattern":
+        row = db.track_pattern_row(_index(rest)) if _index(rest) else None
+    else:
+        pin, _, k = rest.rpartition("/")
+        row = db.port_row(pin) if pin else None
+        if row is not None:
+            shapes = db.port_shape_rows(row["id"])
+            k = _index(k)
+            row = shapes[k - 1] if k and k <= len(shapes) else None
+    if row is None:
+        raise _missing(handle)
+    return row
+
+
+def _bbox(point_lists):
+    xs, ys = [], []
+    for points in point_lists:
+        words = points.split()       # keep the stored text: '0', not '0.0'
+        xs += words[0::2]
+        ys += words[1::2]
+    if not xs:
+        return None
+    return " ".join((min(xs, key=float), min(ys, key=float),
+                     max(xs, key=float), max(ys, key=float)))
+
+
+def _design_attr(db, handle, kind, attr):
+    row = _design_row(db, handle)
+    name = handle.partition(":")[2]
+    parent = name.rsplit("/", 1)[0]
+    if attr == "name":
+        return name_of(handle) if kind != "port" else name.partition("/")[2]
+    if kind == "design":
+        if attr == "ports":
+            return [f"port:{name}/{p}" for p in db.port_names()]
+        if attr == "track_patterns":
+            return [f"track_pattern:{name}/{k}" for k in db.track_pattern_ids()]
+        if attr == "bbox":
+            return _bbox([row["boundary"]])
+        if attr == "area":
+            from core.def_parser import polygon_area
+            return round(polygon_area([float(v) for v in row["boundary"].split()]), 6)
+        return row[attr]
+    if kind == "track_pattern":
+        if attr == "end":               # the last track
+            return round(row["start"] + (row["num_tracks"] - 1) * row["step"], 6)
+        if attr == "layers":
+            return row["layers"].split()
+        if attr == "design":
+            return f"design:{parent}"
+        return row[attr]
+    if kind == "port":
+        shapes = db.port_shape_rows(row["id"])
+        if attr == "port_shapes":
+            return [f"port_shape:{name}/{s['seq']}" for s in shapes]
+        if attr == "layers":
+            return list(dict.fromkeys(s["layer"] for s in shapes))
+        if attr == "rect":
+            return _bbox([s["points"] for s in shapes])
+        if attr == "location":
+            return None if row["x"] is None else f"{_num(row['x'])} {_num(row['y'])}"
+        if attr == "extra":
+            return db.port_extra(row["id"])
+        if attr == "design":
+            return f"design:{name.partition('/')[0]}"
+        return row[attr]
+    # port_shape
+    if attr == "rect":
+        return _bbox([row["points"]])
+    if attr == "in_tech":
+        return "true" if db.layer_row(row["layer"]) is not None else "false"
+    if attr == "port":
+        return f"port:{parent}"
+    return row[attr]
+
+
+def _num(value: float) -> str:
+    text = repr(float(value))
+    return text[:-2] if text.endswith(".0") else text
 
 
 def format_value(value) -> str:

@@ -10,3 +10,7 @@ __pycache__/
 /ln04lpp_*.lef
 /tech.lef
 /tech.new.lef
+
+# Design data (DEF) used for runs: keep out of the repo.
+/runs/*.def
+/runs/*.def.gz

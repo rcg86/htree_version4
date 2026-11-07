@@ -3,6 +3,7 @@
     get_db tech                                   print all tech data
     get_db library_physical                       print the physical library summary
     get_db spine_spec                             print every spine spec, return handles
+    get_db design                                 print the design summary (read_def)
     get_db .tech.layer                            leading dot is optional on paths
     get_db <path> [<name_pattern>] [-if {expr}]   objects on a path (tech.layer, layers)
     get_db <objects> .<attr>[.<attr>] [-if {expr}]
@@ -33,7 +34,18 @@ ROOTS = {
     "lib_cell": lambda db: objects.get_attr(db, "library_physical", "lib_cells"),
     "spine_specs": lambda db: _spine_specs(db),
     "spine_spec": lambda db: _spine_specs(db),
+    "design": lambda db: _design(db),
+    "designs": lambda db: _design(db),
+    "ports": lambda db: objects.get_attr(db, _design(db)[0], "ports"),
+    "port": lambda db: objects.get_attr(db, _design(db)[0], "ports"),
+    "track_patterns": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
+    "track_pattern": lambda db: objects.get_attr(db, _design(db)[0], "track_patterns"),
 }
+
+
+def _design(db):
+    objects.require_design(db)
+    return [f"design:{db.design_row()['name']}"]
 
 
 def _spine_specs(db):
@@ -68,6 +80,10 @@ def run(session, argv):
         objects.require_library(db)
         _dump_library(db, session.out)
         return "library_physical"
+    if target == "design" and second is None and expr is None:
+        handles = _design(db)                     # 'designs' lists without printing
+        _dump_design(db, handles[0], session.out)
+        return tuple(handles)
     if target == "spine_spec" and second is None and expr is None:
         handles = _spine_specs(db)                # 'spine_specs' lists without printing
         for handle in handles:
@@ -281,3 +297,31 @@ def _dump_spine_spec(db, handle, out):
             info(f"    {objects.name_of(cell):<18}: {'  '.join(parts)}", out)
     for stmt in objects.get_attr(db, handle, "extra"):
         info(f"  {'extra':<20}: {stmt}", out)
+
+
+def _dump_design(db, handle, out):
+    row = db.design_row()
+    info(handle, out)
+    for attr in ("file", "def_version", "units", "bbox", "area"):
+        info(f"  {attr:<20}: {objects.format_value(objects.get_attr(db, handle, attr))}", out)
+    points = row["boundary"].split()
+    kind = "rectangle" if len(points) == 8 else "polygon"
+    info(f"  {'boundary':<20}: {kind}, {len(points) // 2} points (.boundary)", out)
+    total = sum(db.port_counts("direction").values())
+    info(f"  {'ports':<20}: {total}", out)
+    for column in ("direction", "use", "status"):
+        counts = "  ".join(f"{objects.format_value(k) or '(none)'} {n}"
+                           for k, n in db.port_counts(column).items())
+        info(f"    {column:<18}: {counts}", out)
+    tech = set(db.layer_names())
+    tracks = db.track_pattern_ids()
+    track_layers = db.track_layers()
+    info(f"  {'track_patterns':<20}: {len(tracks)} on {len(track_layers)} layers", out)
+    if tech:
+        info(f"    {'tech layers':<18}: "
+             f"{' '.join(l for l in track_layers if l in tech) or '(none)'}", out)
+    layers = db.port_shape_layer_counts()
+    info(f"    {'shape layers':<18}: " + "  ".join(
+        f"{l} {n}" + ("" if l in tech or not tech else "*") for l, n in layers.items()), out)
+    if tech and any(l not in tech for l in layers):
+        info(f"    {'':<18}  (* not in tech, ignored in calculations)", out)

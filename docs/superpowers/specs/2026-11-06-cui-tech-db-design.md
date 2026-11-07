@@ -364,3 +364,25 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   a spec name replaces it (HT4-082); values stored as written, no derived
   values (stub length) and no cross-checks yet.
 
+## 17. Slice 4: `read_def` (user request, 2026-11-07)
+
+- `read_def -file <def>` reads only the boundary (DIEAREA) and PINS; all
+  other sections are skipped and counted. Example input: cf999.def
+  (G0857_pnr inputs, 45 MB, 110,728 pins, 26-point rectilinear DIEAREA).
+- Objects: `design:<d>` -> `port:<d>/<pin>` -> `port_shape:<d>/<pin>/<k>`
+  (Cadence names: top-level pins are ports). Coordinates in microns; pin
+  shapes absolute (orientation applied, checked: all 110,725 cf999 shapes
+  fall inside the die polygon).
+- Pin layers not in tech are reported (HT4-093), as for read_lef.
+- Tables: `design`, `port`, `port_shape`, `port_extra`. Schema version 5.
+- Calls made by Claude (user to check): `port` naming; one design per
+  database (re-read replaces); status/location/orient from a pin's first
+  PORT; skipped sections are not stored at all (user: "rest not needed");
+  `.gz` input supported; `get_db design` prints a summary.
+- TRACKS added (user request, 2026-11-07): each statement is a
+  `track_pattern:<d>/<k>` (Cadence name) with direction x|y, start,
+  num_tracks, step, end, mask, same_mask, layers. Inline '#' comments after
+  ';' are ignored. Schema version 6. Noted: cf999 D12 tracks start at 0.038
+  while the tech LEF D12 OFFSET is 0; list attributes compare as whole text
+  in -if (open question whether == should match any element).
+
