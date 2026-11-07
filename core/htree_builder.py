@@ -40,6 +40,8 @@ class Session:
         self.db = Database()
         self.man_dir = MAN_DIR
         self.exit_code = None          # set by the exit command
+        self.after_command = []        # callables run after every command (GUI refresh)
+        self._at_prompt = False        # True while the REPL waits for a line
         self.tcl = tkinter.Tcl()
         self.commands = command_pkg.discover()
         self.tcl.createcommand("__htree_dispatch", self._dispatch)
@@ -60,6 +62,8 @@ class Session:
             return self._run(name, argv)
         finally:
             self.out.flush()
+            for hook in self.after_command:
+                hook()
 
     def _run(self, name, argv):
         try:
@@ -80,6 +84,23 @@ class Session:
             result = tuple(result)
         return ("ok", result)
 
+    def notify(self, text: str):
+        """Print a message from outside a command (e.g. a GUI selection). At the
+        prompt, it goes above the line being typed, which is then redrawn."""
+        if not self._at_prompt:
+            print(text, file=self.out, flush=True)
+            return
+        print(f"\r\033[K{text}", file=self.out, flush=True)
+        try:
+            from core import complete
+            if complete._FORCED_REDISPLAY is not None:
+                complete._FORCED_REDISPLAY()
+                return
+            import readline
+            print(PROMPT + readline.get_line_buffer(), end="", file=self.out, flush=True)
+        except ImportError:
+            pass
+
     def eval(self, script: str) -> str:
         """Evaluate Tcl. Raises tkinter.TclError on error."""
         return self.tcl.eval(script)
@@ -98,6 +119,7 @@ class Session:
         buffer = ""
         while True:
             prompt = PROMPT if not buffer else "> "
+            self._at_prompt = True
             try:
                 line = input(prompt)
             except EOFError:
@@ -107,6 +129,8 @@ class Session:
                 print(file=self.out)
                 buffer = ""
                 continue
+            finally:
+                self._at_prompt = False
             buffer = f"{buffer}\n{line}" if buffer else line
             if not self.tcl.call("info", "complete", buffer):
                 continue

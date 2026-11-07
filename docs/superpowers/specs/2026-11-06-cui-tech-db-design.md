@@ -386,3 +386,29 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   while the tech LEF D12 OFFSET is 0; list attributes compare as whole text
   in -if (open question whether == should match any element).
 
+## 18. GUI, first version (branch create_gui, user request, 2026-11-07)
+
+- User: PySide6 (PySide6-Essentials 6.9.3); `gui_show` opens the GUI and the
+  terminal stays usable; a layout canvas; a right-side panel with checkboxes
+  to show or hide nets, layers, cells, spine and ports; all GUI code in
+  `core/gui/`. v3 (PyQt5) was used as reference for the canvas (y flip,
+  wheel zoom, clipped track painting) and the visibility panel.
+- How the terminal stays usable (Claude's call, spiked first): one thread;
+  a PyOS_InputHook runs the Qt event loop while readline waits for input.
+  The Tcl interpreter and SQLite connection are only used from that thread.
+  The window refreshes after any command that changes the database
+  (detected with sqlite total_changes and the connection identity).
+- Canvas: boundary polygon, port shapes coloured by layer, tracks painted
+  behind shapes, clipped to the boundary, only when lines are at least 4 px
+  apart. Wheel zoom about the cursor, left drag pans, F fits, click selects
+  the nearest port shape within 3 px and prints it in the terminal and the
+  status bar (Claude's call; the user had not said what a click does).
+- Panel: Objects (Boundary, Ports, Tracks, Nets, Cells, Spine; categories
+  with no data are disabled and unchecked: nets, placed cells and spine
+  geometry do not exist yet) and Layers (tech layers first and checked,
+  non-tech layers marked * and unchecked; All / None / Tech only).
+- gui_show checks the display in a child process first, because Qt aborts
+  the whole process (losing the in-memory database) when it cannot connect.
+- Measured on cf999 (offscreen): gui_show 2.0 s with 110,725 shapes; full
+  view repaint about 0.1 s.
+
