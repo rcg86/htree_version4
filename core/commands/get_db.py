@@ -2,6 +2,7 @@
 
     get_db tech                                   print all tech data
     get_db library_physical                       print the physical library summary
+    get_db spine_spec                             print every spine spec, return handles
     get_db .tech.layer                            leading dot is optional on paths
     get_db <path> [<name_pattern>] [-if {expr}]   objects on a path (tech.layer, layers)
     get_db <objects> .<attr>[.<attr>] [-if {expr}]
@@ -67,6 +68,11 @@ def run(session, argv):
         objects.require_library(db)
         _dump_library(db, session.out)
         return "library_physical"
+    if target == "spine_spec" and second is None and expr is None:
+        handles = _spine_specs(db)                # 'spine_specs' lists without printing
+        for handle in handles:
+            _dump_spine_spec(db, handle, session.out)
+        return tuple(handles)
 
     items = list(session.split_list(target))
     if items and all(objects.is_handle(i) for i in items):
@@ -255,3 +261,23 @@ def _dump_library(db, out):
         for row in extras:
             first = row["text"].splitlines()[0] if row["text"] else ""
             info(f"  {os.path.basename(row['file'])}:{row['line']:<6} {row['kind']:<20}: {first}", out)
+
+
+def _dump_spine_spec(db, handle, out):
+    skip = {"obj_type", "name", "spine_levels", "extra", "yaml_text"}
+    info(handle, out)
+    for attr in objects.SPINE_SPEC_ATTRS:
+        if attr not in skip:
+            value = objects.get_attr(db, handle, attr)
+            info(f"  {attr:<20}: {objects.format_value(value)}", out)
+    levels = objects.get_attr(db, handle, "spine_levels")
+    info(f"  {'levels':<20}: {len(levels)}", out)
+    for level in levels:
+        info(f"  {objects.name_of(level)}", out)
+        for cell in objects.get_attr(db, level, "spine_cells"):
+            parts = [f"{a} {objects.get_attr(db, cell, a)}" for a in ("input", "output")
+                     if objects.get_attr(db, cell, a) is not None]
+            parts += objects.get_attr(db, cell, "extra")
+            info(f"    {objects.name_of(cell):<18}: {'  '.join(parts)}", out)
+    for stmt in objects.get_attr(db, handle, "extra"):
+        info(f"  {'extra':<20}: {stmt}", out)

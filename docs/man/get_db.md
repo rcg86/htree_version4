@@ -4,6 +4,7 @@ NAME
 SYNOPSIS
     get_db tech
     get_db library_physical
+    get_db spine_spec
     get_db <path> [<name_pattern>] [-if {<expr>}]
     get_db <objects> .<attr>[.<attr>...] [-if {<expr>}]
     get_db <objects> .*
@@ -32,6 +33,12 @@ DESCRIPTION
         Prints the cell LEF files read, the number of cells, each cell's
         class, size, site and pins, and unmodeled top-level statements. Returns
         'library_physical'.
+
+    get_db spine_spec
+        Prints every spine spec: its attributes, each level with its cells
+        and their input and output, and unmodeled keys. Returns the
+        spine_spec handles. get_db spine_specs returns the same handles
+        without printing.
 
     get_db <path>
         A path starts at a root and follows attributes separated by dots.

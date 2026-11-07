@@ -124,6 +124,27 @@ def test_get_db_spine_spec_lists_all(spine_session, path):
     assert spine_session.eval(f"get_db {path}") == "spine_spec:sp_a spine_spec:sp_b"
 
 
+def test_get_db_spine_spec_prints_details(spine_session):
+    spine_session.eval("get_db spine_spec")
+    out = spine_session.out.getvalue()
+    assert out.startswith("spine_spec:sp_a\n  type                : spine\n")
+    for line in ["  max_drive_length    : 1020", "  count_stub_in_drive : true",
+                 "  stub_order          : stub2 stub1", "  levels              : 2",
+                 "  L1\n    inv1              : input net\n",
+                 "    inv1              : input L1/inv2/Y  output stub1  cell: INVX4\n",
+                 "  extra               : future_key: 7\n",
+                 "spine_spec:sp_b\n", "  span                : 1000\n"]:
+        assert line in out, line
+    assert out.index("spine_spec:sp_a") < out.index("spine_spec:sp_b")
+
+
+def test_plural_and_filters_do_not_print(spine_session):
+    spine_session.eval("get_db spine_specs")
+    spine_session.eval("get_db spine_spec -if {.span > 0}")
+    spine_session.eval("get_db spine_spec .name")
+    assert spine_session.out.getvalue() == ""
+
+
 def test_spec_attrs(spine_session):
     ev = spine_session.eval
     expected = {"name": "sp_a", "type": "spine", "units": "um", "point": "center",

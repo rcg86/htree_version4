@@ -76,7 +76,10 @@ OBJECTS AND ATTRIBUTES
         obj_type, name, input, output, extra, spine_level
 
 QUERIES
-    get_db spine_spec                           all spine_spec handles
+    get_db spine_spec                           print every spec (all attributes,
+                                                levels and cells), return handles
+    get_db spine_specs                          all spine_spec handles, no printing
+                                                (use this in scripts and loops)
     get_db spine_spec .name                     their names
     get_db spine_spec:<spec> .stub_order
     get_db spine_spec:<spec> .spine_levels.spine_cells.name -if {.output == stub3}
