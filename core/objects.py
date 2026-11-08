@@ -15,6 +15,8 @@
     port_shape:<design>/<pin>/<k>     the k-th shape of a port
     track_pattern:<design>/<k>        the k-th TRACKS statement of the DEF
     track_assignment:<layer>          a layer's net pattern (assign_track_for_route)
+    inst:<name>                       a placed instance of a lib cell (create_inst)
+    pin:<inst>/<pin>                  a pin of an instance
 
 Attribute values are Python scalars, None (empty), or lists. Attributes that
 refer to other objects return handles, so get_db can keep walking.
@@ -60,13 +62,17 @@ PORT_SHAPE_ATTRS = ["obj_type", "name", "layer", "type", "rect", "points", "mask
                     "in_tech", "port"]
 TRACK_ASSIGNMENT_ATTRS = ["obj_type", "name", "layer", "direction", "pattern", "period",
                           "num_tracks", "counts", "tracks"]
+INST_ATTRS = ["obj_type", "name", "ref_name", "lib_cell", "location", "orient", "bbox",
+              "status", "pins"]
+PIN_ATTRS = ["obj_type", "name", "inst", "lib_pin", "direction", "use", "layers", "rect"]
 ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "library_physical": LIBRARY_PHYSICAL_ATTRS, "lib_cell": LIB_CELL_ATTRS,
          "lib_pin": LIB_PIN_ATTRS, "lib_port": LIB_PORT_ATTRS,
          "layer_shape": LAYER_SHAPE_ATTRS, "spine_spec": SPINE_SPEC_ATTRS,
          "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS,
          "design": DESIGN_ATTRS, "port": PORT_ATTRS, "port_shape": PORT_SHAPE_ATTRS,
-         "track_pattern": TRACK_PATTERN_ATTRS, "track_assignment": TRACK_ASSIGNMENT_ATTRS}
+         "track_pattern": TRACK_PATTERN_ATTRS, "track_assignment": TRACK_ASSIGNMENT_ATTRS,
+         "inst": INST_ATTRS, "pin": PIN_ATTRS}
 # (object type, attr) -> object type of the handles the attr returns.
 RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("layer", "tech"): "tech",
@@ -83,7 +89,9 @@ RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("design", "ports"): "port", ("port", "design"): "design",
              ("port", "port_shapes"): "port_shape", ("port_shape", "port"): "port",
              ("design", "track_patterns"): "track_pattern",
-             ("track_pattern", "design"): "design"}
+             ("track_pattern", "design"): "design",
+             ("inst", "lib_cell"): "lib_cell", ("inst", "pins"): "pin",
+             ("pin", "inst"): "inst", ("pin", "lib_pin"): "lib_pin"}
 # Objects with exactly one instance; the handle is the type name.
 SINGLETONS = ("tech", "library_physical")
 # Number of '/'-separated parts in the name of each library object.
@@ -184,6 +192,10 @@ def check_exists(db, handle: str):
         return
     if kind == "track_assignment" and db.track_assignment_row(handle.partition(":")[2]):
         return
+    if kind == "inst" and db.inst_row(handle.partition(":")[2]):
+        return
+    if kind == "pin" and _pin_rows(db, handle) is not None:
+        return
     if kind == "layer" and db.layer_row(handle.partition(":")[2]) is not None:
         return
     raise _missing(handle)
@@ -240,6 +252,10 @@ def get_attr(db, handle: str, attr: str):
         return _design_attr(db, handle, kind, attr)
     if kind == "track_assignment":
         return _track_assignment_attr(db, handle, attr)
+    if kind == "inst":
+        return _inst_attr(db, handle, attr)
+    if kind == "pin":
+        return _pin_attr(db, handle, attr)
     row = db.layer_row(handle.partition(":")[2])
     if row is None:
         raise _missing(handle)
@@ -436,6 +452,79 @@ def _design_attr(db, handle, kind, attr):
 def _num(value: float) -> str:
     text = repr(float(value))
     return text[:-2] if text.endswith(".0") else text
+
+
+def inst_bbox(db, row):
+    """Placed bbox of an inst row, or None if its cell has no SIZE."""
+    from core.placement import placed_bbox
+    cell = db.lib_cell_row(row["ref_cell"])
+    if cell is None or cell["size_x"] is None:
+        return None
+    return placed_bbox(cell["size_x"], cell["size_y"], row["orient"], row["x"], row["y"])
+
+
+def _inst_attr(db, handle, attr):
+    name = handle.partition(":")[2]
+    row = db.inst_row(name)
+    if row is None:
+        raise _missing(handle)
+    if attr == "name":
+        return name
+    if attr == "ref_name":
+        return row["ref_cell"]
+    if attr == "lib_cell":
+        return f"lib_cell:{row['ref_cell']}"
+    if attr == "location":
+        return f"{_num(row['x'])} {_num(row['y'])}"
+    if attr == "bbox":
+        box = inst_bbox(db, row)
+        return None if box is None else " ".join(_num(v) for v in box)
+    if attr == "pins":
+        cell = db.lib_cell_row(row["ref_cell"])
+        return [] if cell is None else [f"pin:{name}/{p}" for p in db.lib_pin_names(cell["id"])]
+    return row[attr]                       # orient, status
+
+
+def _pin_rows(db, handle):
+    """(inst row, lib cell row, lib pin row) for pin:<inst>/<pin>, or None."""
+    inst, _, pin = handle.partition(":")[2].partition("/")
+    row = db.inst_row(inst) if inst and pin else None
+    cell = db.lib_cell_row(row["ref_cell"]) if row is not None else None
+    lpin = db.lib_pin_row(cell["name"], pin) if cell is not None else None
+    return None if lpin is None else (row, cell, lpin)
+
+
+def pin_shapes(db, handle):
+    """(layer, type, placed points) of an instance pin's shapes."""
+    from core.placement import placed_points, placer
+    rows = _pin_rows(db, handle)
+    if rows is None:
+        raise _missing(handle)
+    inst, cell, lpin = rows
+    place = placer(cell["size_x"], cell["size_y"], inst["orient"], inst["x"], inst["y"])
+    return [(layer, kind, placed_points([float(v) for v in pts.split()], place))
+            for p, layer, kind, pts in db.lib_cell_shapes(cell["name"]) if p == lpin["name"]]
+
+
+def _pin_attr(db, handle, attr):
+    rows = _pin_rows(db, handle)
+    if rows is None:
+        raise _missing(handle)
+    inst, cell, lpin = rows
+    if attr == "name":
+        return lpin["name"]
+    if attr == "inst":
+        return f"inst:{inst['name']}"
+    if attr == "lib_pin":
+        return f"lib_pin:{cell['name']}/{lpin['name']}"
+    if attr in ("direction", "use"):
+        return lpin[attr]
+    shapes = pin_shapes(db, handle)
+    if attr == "layers":
+        return list(dict.fromkeys(layer for layer, _, _ in shapes))
+    xs = [c for _, _, pts in shapes for c in pts[0::2]]       # rect: placed bbox
+    ys = [c for _, _, pts in shapes for c in pts[1::2]]
+    return None if not xs else " ".join(_num(v) for v in (min(xs), min(ys), max(xs), max(ys)))
 
 
 def _track_assignment_attr(db, handle, attr):

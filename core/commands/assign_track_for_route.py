@@ -4,7 +4,8 @@ routing tracks a repeating net pattern.
     assign_track_for_route -net {VDD_SOC, -, VSS, -} -layer IA
 
 Track 1 (the lowest coordinate) gets VDD_SOC, track 2 any signal ('-'),
-track 3 VSS, track 4 any signal, track 5 VDD_SOC again, and so on.
+track 3 VSS, track 4 any signal, track 5 VDD_SOC again, and so on. 'NA'
+leaves a track blank: nothing may use it.
 """
 
 from core.db import _num
@@ -19,7 +20,9 @@ NO_LAYER = 110
 NO_TRACKS = 111
 UNKNOWN_NET = 112
 REPLACED = 113
-SIGNAL = "-"
+SIGNAL = "-"          # any signal may use the track
+BLANK = "NA"          # the track is left blank: not used at all
+RESERVED = (SIGNAL, BLANK)
 # Tech DIRECTION -> the DEF TRACKS whose lines run that way.
 TRACKS_FOR = {"horizontal": "y", "vertical": "x"}
 
@@ -38,8 +41,9 @@ def run(session, argv):
     layer = opts["-layer"]
     if not pattern:
         raise HtreeError(USAGE, "assign_track_for_route: -net is empty")
-    if all(n == SIGNAL for n in pattern):
-        raise HtreeError(USAGE, "assign_track_for_route: -net names no net, only '-'")
+    if all(n in RESERVED for n in pattern):
+        raise HtreeError(USAGE, "assign_track_for_route: -net names no net, only "
+                         "'-' (signal) and 'NA' (blank)")
 
     db = session.db
     if not db.has_tech():
@@ -64,7 +68,7 @@ def run(session, argv):
                             if have else f"no tracks on {layer}"))
 
     port_nets = {r[0] for r in db.conn.execute("SELECT DISTINCT net FROM port")}
-    for net in dict.fromkeys(n for n in pattern if n != SIGNAL):
+    for net in dict.fromkeys(n for n in pattern if n not in RESERVED):
         if net not in port_nets:
             warn(UNKNOWN_NET, f"net '{net}' is not the net of any port in design "
                  f"{db.design_row()['name']}; check the spelling", session.out)
@@ -77,19 +81,20 @@ def run(session, argv):
          f"{len(positions)} tracks, {axis} {_num(positions[0])} .. {_num(positions[-1])}", out)
     info(f"  Pattern (repeats every {len(pattern)}): {' '.join(pattern)}", out)
     for net, count, first in summarize(pattern, positions):
-        label = "signal" if net == SIGNAL else net
+        label = {SIGNAL: "signal", BLANK: "blank (NA)"}.get(net, net)
         info(f"  {label:<12}: {count} tracks, first at {axis} {_num(first)}", out)
     return None
 
 
 def summarize(pattern, positions):
-    """[(net, track count, first coordinate)] in pattern order, '-' last."""
+    """[(net, track count, first coordinate)]: nets in pattern order, then '-'
+    (signal), then 'NA' (blank)."""
     seen = {}
     for i, c in enumerate(positions):
         net = pattern[i % len(pattern)]
         if net not in seen:
             seen[net] = [0, c]
         seen[net][0] += 1
-    order = [n for n in dict.fromkeys(pattern) if n != SIGNAL] + \
-        ([SIGNAL] if SIGNAL in seen else [])
+    order = [n for n in dict.fromkeys(pattern) if n not in RESERVED] + \
+        [n for n in RESERVED if n in seen]
     return [(n, seen[n][0], seen[n][1]) for n in order if n in seen]

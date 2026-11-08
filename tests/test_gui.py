@@ -86,9 +86,10 @@ def test_gui_show_opens_window(loaded):
     w = app.window()
     assert w is not None and w.windowTitle() == "htree4 - top"
     assert {k for k, b in w.object_boxes.items() if b.isEnabled()} == \
-        {"boundary", "ports", "tracks"}
-    for key in ("nets", "cells", "spine"):
+        {"boundary", "ports", "tracks", "labels"}                 # no instances: no Pins
+    for key in ("nets", "spine"):
         assert not w.object_boxes[key].isChecked()
+    assert not w.object_boxes["cells"].isEnabled()             # no instances yet
     assert w.layer_boxes["H1"].isChecked() and not w.layer_boxes["M1"].isChecked()
     loaded.eval("gui_show")                                           # again: same window
     assert app.window() is w
@@ -780,3 +781,251 @@ def test_ruler_off_restores_click_select(loaded):
     _send(w, "press", point, *_left())
     _send(w, "release", point, _left()[0], _nobutton())
     assert loaded.eval("get_db selected") == "port:top/a"
+
+
+def test_blank_tracks_start_hidden_and_draw_dashed(tech_session, write_lef):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    from core.gui.layout_data import BLANK_COLOR
+    tech_session.eval(f"read_def -file {write_lef(ASSIGN_DEF, 'a.def')}")
+    tech_session.eval("assign_track_for_route -layer H1 -net {VDD, -, NA, VSS, -, NA}")
+    tech_session.eval("gui_show")
+    w = app.window()
+    box = w.assign_boxes[("H1", "NA")]
+    assert box.text() == "blank (NA)  (3)" and not box.isChecked()
+    assert ("H1", "NA") in w.canvas.assign_hidden
+    w.resize(900, 700)
+    w.object_boxes["tracks"].setChecked(True)
+    w.object_boxes["boundary"].setChecked(False)
+    w.canvas.fitInView(QRectF(scene(0, 10), scene(10, 0)), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+    styles = {(round(a[1], 3)): style for _, style, a, b in
+              w.canvas.track_segments(w.canvas.sceneRect()) if a[1] == b[1]}
+    assert 2.5 not in styles                                   # blank track hidden
+    box.setChecked(True)
+    styles = {(round(a[1], 3)): style for _, style, a, b in
+              w.canvas.track_segments(w.canvas.sceneRect()) if a[1] == b[1]}
+    assert styles[2.5] == "dash" and styles[0.5] == "solid" and styles[1.5] == "dot"
+    assert w.layout.assignments[0].colors["NA"] == BLANK_COLOR
+
+
+
+# -- instances in the GUI ---------------------------------------------------------------------
+
+CELLS_LEF_PATH = ROOT / "tests" / "data" / "cells.lef"
+
+
+@pytest.fixture
+def with_inst(loaded):
+    loaded.eval(f"read_lef -file {{{CELLS_LEF_PATH}}}")
+    loaded.eval("create_inst -ref_cell INV_D1 -location {50 40} -name u1")
+    loaded.out.seek(0)
+    loaded.out.truncate()
+    return loaded
+
+
+def test_load_insts_places_pins(with_inst):
+    lay = load_layout(with_inst.db)
+    inst, = lay.insts
+    assert (inst.handle, inst.ref, inst.bbox) == ("inst:u1", "INV_D1", (50, 40, 50.6, 40.254))
+    # INV_D1 pin A: M1 rect (0.1 0.2 0 0) -> placed and normalized at (50, 40)
+    assert ("A", "M1", "rect", [50, 40, 50.1, 40.2]) in inst.pins
+    assert lay.layer("M1").port_shapes == 1 + 2                # port y[0] + INV_D1 A and Y on M1
+
+
+def test_insts_drawn_and_selectable(with_inst):
+    with_inst.eval("gui_show")
+    w = app.window()
+    assert w.object_boxes["cells"].isEnabled() and w.object_boxes["cells"].isChecked()
+    box, = w.canvas.inst_items
+    assert box.isVisible() and box.data(1) == "inst:u1"
+    w.canvas.centerOn(box)
+    point = w.canvas.mapFromScene(box.sceneBoundingRect().center())
+    assert w.canvas.owner_at(point) == "inst:u1"
+    w.on_select(["inst:u1"], "replace")
+    assert with_inst.eval("get_db selected") == "inst:u1"
+    assert box in w.canvas.highlighted
+    assert "Selected inst:u1  INV_D1  at {50 40} N  bbox {50 40 50.6 40.254}" in \
+        with_inst.out.getvalue()
+    w.object_boxes["cells"].setChecked(False)
+    assert not box.isVisible()
+
+
+def test_create_inst_after_gui_show_appears(loaded):
+    loaded.eval(f"read_lef -file {{{CELLS_LEF_PATH}}}")
+    loaded.eval("gui_show")
+    w = app.window()
+    assert w.canvas.inst_items == []
+    loaded.eval("create_inst -ref_cell INV_D2 -location {10 10}")
+    assert len(w.canvas.inst_items) == 1
+
+
+def test_rebuilt_layer_list_has_no_stale_widgets(with_inst):
+    from PySide6.QtWidgets import QCheckBox
+    with_inst.eval("gui_show")
+    w = app.window()
+    with_inst.eval("create_inst -ref_cell INV_D2 -location {10 10}")   # refresh rebuilds
+    shown = [b for b in w.layer_group.findChildren(QCheckBox) if b.isVisibleTo(w)]
+    assert len(shown) == len(w.layer_boxes)
+
+
+
+# -- Pins checkbox and pin name labels ---------------------------------------------------------
+
+def test_pins_checkbox_is_separate_from_cells(with_inst):
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.layer_boxes["M1"].setChecked(True)
+    pins = [i for its in w.canvas.inst_pin_items.values() for i in its]
+    box, = w.canvas.inst_items
+    assert w.object_boxes["pins"].isEnabled() and all(i.isVisible() for i in pins)
+    w.object_boxes["pins"].setChecked(False)                   # pins off, outline stays
+    assert not any(i.isVisible() for i in pins) and box.isVisible()
+    w.object_boxes["pins"].setChecked(True)
+    w.object_boxes["cells"].setChecked(False)                  # outline off, pins stay
+    assert all(i.isVisible() for i in pins) and not box.isVisible()
+
+
+def test_labels(with_inst):
+    from PySide6.QtCore import QRectF, Qt
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    view = QRectF(scene(49.5, 40.5), scene(51, 39.5))           # around inst u1
+    assert w.canvas.label_positions(view) == []                 # labels off by default
+    w.object_boxes["labels"].setChecked(True)
+    names = sorted(n for n, _ in w.canvas.label_positions(view))
+    assert names == ["A", "A"]          # INV_D1 pin A: H1 rect + H1 polygon shown (M1 hidden)
+    w.layer_boxes["M1"].setChecked(True)
+    names = sorted(n for n, _ in w.canvas.label_positions(view))
+    assert names == ["A", "A", "A", "Y"]                        # + A and Y on M1
+    # the label sits at the shape centre
+    centers = {round(c.x(), 3): n for n, c in w.canvas.label_positions(view) if n == "Y"}
+    assert list(centers) == [50.55]                             # Y rect x 50.5..50.6
+    w.object_boxes["pins"].setChecked(False)                    # hidden pins: no labels
+    assert w.canvas.label_positions(view) == []
+
+
+def test_port_labels_and_limit(loaded, monkeypatch):
+    from core.gui import canvas as canvas_mod
+    loaded.eval("gui_show")
+    w = app.window()
+    w.object_boxes["labels"].setChecked(True)
+    names = {n for n, _ in w.canvas.label_positions(w.canvas.sceneRect())}
+    assert names == {"a", "b", "c", "d"}                        # H1/H2 ports shown; y[0] on M1 hidden
+    monkeypatch.setattr(canvas_mod, "MAX_LABELS", 2)
+    assert w.canvas.label_positions(w.canvas.sceneRect()) == []  # too many: zoom in
+
+
+def test_labels_painted(with_inst):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.resize(900, 700)
+    w.canvas.fitInView(QRectF(scene(49.8, 40.4), scene(50.8, 39.8)), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+    before = w.canvas.viewport().grab().toImage()
+    w.object_boxes["labels"].setChecked(True)
+    QApplication.processEvents()
+    after = w.canvas.viewport().grab().toImage()
+    # anti-aliased 8 pt text blends with the pin colour, so count changed pixels
+    changed = sum(1 for x in range(after.width()) for y in range(after.height())
+                  if after.pixelColor(x, y) != before.pixelColor(x, y))
+    assert changed > 40                                         # two "A" labels drawn
+
+
+
+# -- selecting instance pins -------------------------------------------------------------------
+
+def _zoom_on(w, x1, y1, x2, y2):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    w.resize(900, 700)
+    w.canvas.fitInView(QRectF(scene(x1, y2), scene(x2, y1)), Qt.KeepAspectRatio)
+    QApplication.processEvents()
+
+
+def test_click_on_shown_pin_selects_the_pin(with_inst):
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.layer_boxes["M1"].setChecked(True)
+    _zoom_on(w, 49.9, 39.9, 50.7, 40.35)                        # cell u1 fills the view
+    on_y = w.canvas.mapFromScene(scene(50.55, 40.05))           # on pin Y (M1 50.5..50.6)
+    assert w.canvas.owner_at(on_y) == "pin:u1/Y"
+    _send(w, "press", on_y, *_left())
+    _send(w, "release", on_y, _left()[0], _nobutton())
+    assert with_inst.eval("get_db selected") == "pin:u1/Y"
+    assert "Selected pin:u1/Y  direction out  use signal  layers M1  rect {50.5 40 50.6 40.1}" \
+        in with_inst.out.getvalue()
+    lit = w.canvas.highlighted
+    assert lit and all(i.data(1) == "pin:u1/Y" for i in lit)   # only that pin lights up
+    empty = w.canvas.mapFromScene(scene(50.45, 40.22))          # inside the cell, off pins
+    assert w.canvas.owner_at(empty) == "inst:u1"
+
+
+def test_hidden_pins_select_the_instance(with_inst):
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.layer_boxes["M1"].setChecked(True)
+    _zoom_on(w, 49.9, 39.9, 50.7, 40.35)
+    w.object_boxes["pins"].setChecked(False)
+    assert w.canvas.owner_at(w.canvas.mapFromScene(scene(50.55, 40.05))) == "inst:u1"
+
+
+def test_shift_drag_selects_pins_or_whole_instance(with_inst):
+    from PySide6.QtCore import QRectF
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.layer_boxes["M1"].setChecked(True)
+    _zoom_on(w, 49.9, 39.9, 50.7, 40.35)
+    around_y = QRectF(scene(50.45, 40.15), scene(50.65, 39.95))
+    assert w.canvas.owners_in(around_y) == ["pin:u1/Y"]
+    whole = QRectF(scene(49.95, 40.3), scene(50.65, 39.95))
+    assert w.canvas.owners_in(whole) == ["inst:u1"]             # not inst + every pin
+
+
+def test_inst_selection_lights_its_pins(with_inst):
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.on_select(["inst:u1"], "replace")
+    owners = {i.data(1) for i in w.canvas.highlighted}
+    assert owners == {"inst:u1", "pin:u1/A", "pin:u1/Y"}
+
+
+def test_pin_objects(with_inst):
+    ev = with_inst.eval
+    assert ev("get_db inst:u1 .pins") == "pin:u1/A pin:u1/Y"
+    assert ev("get_db pin:u1/A .name") == "A"
+    assert ev("get_db pin:u1/A .inst") == "inst:u1"
+    assert ev("get_db pin:u1/A .lib_pin") == "lib_pin:INV_D1/A"
+    assert (ev("get_db pin:u1/A .direction"), ev("get_db pin:u1/A .use")) == ("in", "signal")
+    assert ev("get_db pin:u1/A .layers") == "M1 H1"
+    assert ev("get_db pin:u1/A .rect") == "50 40 50.4 40.2"
+    assert ev("get_db inst:u1 .pins.name -if {.direction == out}") == "Y"
+    ev("select_obj pin:u1/Y")
+    assert ev("get_db selected .inst") == "inst:u1"
+    for bad in ("pin:u1/Z", "pin:nope/A", "pin:u1"):
+        with pytest.raises(tkinter.TclError):
+            ev(f"get_db {bad} .name")
+
+
+
+def test_highlight_pen_does_not_change_picking(with_inst):
+    from PySide6.QtCore import QRectF
+    from core.gui.canvas import scene
+    with_inst.eval("gui_show")
+    w = app.window()
+    w.layer_boxes["M1"].setChecked(True)
+    _zoom_on(w, 49.9, 39.9, 50.7, 40.35)
+    w.on_select(["pin:u1/Y"], "replace")                       # Y drawn with a thick outline
+    assert w.canvas.owner_at(w.canvas.mapFromScene(scene(50.45, 40.22))) == "inst:u1"
+    tight = QRectF(scene(50.49, 40.11), scene(50.61, 39.99))   # just around Y's rect
+    assert w.canvas.owners_in(tight) == ["pin:u1/Y"]

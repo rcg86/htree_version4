@@ -5,8 +5,8 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 7   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
-                     # 7: track assignments
+SCHEMA_VERSION = 8   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+                     # 7: track assignments; 8: instances
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -180,6 +180,17 @@ CREATE TABLE track_assignment (
     layer TEXT UNIQUE NOT NULL,
     direction TEXT,                      -- x | y: which DEF TRACKS are numbered
     pattern TEXT                         -- space separated; '-' = any signal
+);
+
+-- create_inst: placed instances of library cells. x, y: lower-left corner
+-- of the placed cell (microns), as in DEF placement.
+CREATE TABLE inst (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    ref_cell TEXT NOT NULL,
+    x REAL, y REAL,
+    orient TEXT,
+    status TEXT                          -- placed
 );
 
 CREATE TABLE port_extra (
@@ -572,6 +583,30 @@ class Database:
     def track_assignment_row(self, layer: str):
         return self.conn.execute("SELECT * FROM track_assignment WHERE layer = ?",
                                  (layer,)).fetchone()
+
+    def add_inst(self, name, ref_cell, x, y, orient, status="placed"):
+        with self.conn:
+            self.conn.execute("INSERT INTO inst (name, ref_cell, x, y, orient, status) "
+                              "VALUES (?, ?, ?, ?, ?, ?)", (name, ref_cell, x, y, orient, status))
+
+    def has_insts(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM inst").fetchone() is not None
+
+    def inst_names(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM inst ORDER BY id")]
+
+    def inst_row(self, name: str):
+        return self.conn.execute("SELECT * FROM inst WHERE name = ?", (name,)).fetchone()
+
+    def inst_rows(self):
+        return self.conn.execute("SELECT * FROM inst ORDER BY id").fetchall()
+
+    def lib_cell_shapes(self, cell: str):
+        """(pin, layer, type, points text) for every pin shape of a lib cell."""
+        return [(r[0], r[1], r[2], r[3]) for r in self.conn.execute(
+            "SELECT p.name, s.layer, s.type, s.points FROM layer_shape s "
+            "JOIN lib_port pt ON pt.id = s.port_id JOIN lib_pin p ON p.id = pt.pin_id "
+            "JOIN lib_cell c ON c.id = p.cell_id WHERE c.name = ? ORDER BY s.id", (cell,))]
 
     def port_counts(self, column: str):
         """{value: count} of a port column (direction, use, status)."""

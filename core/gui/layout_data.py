@@ -15,10 +15,12 @@ PALETTE = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f
 
 MAX_TRACK_LINES = 300        # per pattern; denser patterns are not drawn until zoomed in
 # Colors for the nets of a track assignment, in pattern order; signal tracks
-# ('-') are grey.
+# ('-') are grey, blank tracks ('NA') dark grey.
 NET_PALETTE = ["#ff4d4d", "#4da6ff", "#4dff88", "#ffd24d", "#d24dff", "#4dffff"]
 SIGNAL = "-"
 SIGNAL_COLOR = "#9e9e9e"
+BLANK = "NA"                 # track left blank (assign_track_for_route)
+BLANK_COLOR = "#5f5f5f"
 # Tech DIRECTION -> the DEF TRACKS that run that way (TRACKS Y are horizontal lines).
 PREFERRED_TRACKS = {"horizontal": "y", "vertical": "x"}
 
@@ -52,6 +54,15 @@ class Track:
 
 
 @dataclass
+class Inst:
+    handle: str                  # inst:<name>
+    ref: str
+    bbox: Tuple[float, float, float, float]
+    pins: List[Tuple[str, str, str, List[float]]] = field(default_factory=list)
+    # (pin, layer, type, placed points)
+
+
+@dataclass
 class TrackAssignment:
     layer: str
     direction: str               # x | y: which tracks are numbered
@@ -74,6 +85,7 @@ class Layout:
     tracks: List[Track] = field(default_factory=list)
     assignments: List[TrackAssignment] = field(default_factory=list)
     preferred: Dict[str, str] = field(default_factory=dict)   # tech layer -> x | y
+    insts: List[Inst] = field(default_factory=list)
 
     def layer(self, name) -> Optional[LayerInfo]:
         return next((l for l in self.layers if l.name == name), None)
@@ -112,10 +124,34 @@ def load_layout(db) -> Layout:
                 counts.setdefault(name, [0, 0])[1] += 1
         for name in db.track_assignment_layers():
             lay.assignments.append(load_assignment(db, name))
+    for inst in load_insts(db):
+        lay.insts.append(inst)
+        for _, layer, _, _ in inst.pins:
+            counts.setdefault(layer, [0, 0])[0] += 1
     for i, (name, (shapes, tracks)) in enumerate(counts.items()):
         lay.layers.append(LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)],
                                     shapes, tracks))
     return lay
+
+
+def load_insts(db) -> List[Inst]:
+    """Placed instances with their bbox and their cell's pin shapes placed."""
+    from core.objects import inst_bbox
+    from core.placement import placed_points, placer
+    out = []
+    shapes_of = {}
+    for row in db.inst_rows():
+        cell = db.lib_cell_row(row["ref_cell"])
+        box = inst_bbox(db, row)
+        if cell is None or box is None:
+            continue
+        place = placer(cell["size_x"], cell["size_y"], row["orient"], row["x"], row["y"])
+        if row["ref_cell"] not in shapes_of:
+            shapes_of[row["ref_cell"]] = db.lib_cell_shapes(row["ref_cell"])
+        pins = [(pin, layer, kind, placed_points([float(v) for v in pts.split()], place))
+                for pin, layer, kind, pts in shapes_of[row["ref_cell"]]]
+        out.append(Inst(f"inst:{row['name']}", row["ref_cell"], box, pins))
+    return out
 
 
 def drawn_layers(track: "Track", preferred: Dict[str, str]) -> List[str]:
@@ -129,10 +165,11 @@ def load_assignment(db, layer) -> TrackAssignment:
     row = db.track_assignment_row(layer)
     pattern = row["pattern"].split()
     positions = db.track_positions(layer, row["direction"])
-    nets = [n for n in dict.fromkeys(pattern) if n != SIGNAL]
+    nets = [n for n in dict.fromkeys(pattern) if n not in (SIGNAL, BLANK)]
     colors = {n: NET_PALETTE[i % len(NET_PALETTE)] for i, n in enumerate(nets)}
     colors[SIGNAL] = SIGNAL_COLOR
-    per = {n: 0 for n in nets + ([SIGNAL] if SIGNAL in pattern else [])}
+    colors[BLANK] = BLANK_COLOR
+    per = {n: 0 for n in nets + [r for r in (SIGNAL, BLANK) if r in pattern]}
     for i in range(len(positions)):
         per[pattern[i % len(pattern)]] += 1
     return TrackAssignment(layer, row["direction"], pattern, positions, colors,

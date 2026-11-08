@@ -67,14 +67,21 @@ DESCRIPTION
                show all their tracks. get_db track_patterns still lists
                every TRACKS statement of the DEF.
       right    "View" panel with checkboxes:
-                 Objects  Boundary, Ports, Tracks, Nets, Cells, Spine.
+                 Objects  Boundary, Ports, Tracks, Nets, Cells
+                          (instance outlines), Pins (instance pin shapes)
+                          with Label beside it, Spine.
+                          Label writes each pin's name at the centre of its
+                          shapes, for instance pins and ports that are
+                          shown, at a fixed size; with more than 2000 pins
+                          in view no labels are drawn until you zoom in.
                           The arrow next to Tracks opens the track
                           assignments (assign_track_for_route): for each
                           assigned layer its direction, track count and
                           pattern, and a checkbox per net of the pattern
                           (signal tracks are '-') with its colour and
                           track count. Assigned tracks are drawn in their
-                          net's colour (signal tracks grey dotted), when
+                          net's colour (signal tracks grey dotted; blank
+                          'NA' tracks dim dashed and hidden at first), when
                           Tracks and the layer are checked and the view is
                           zoomed in far enough; unchecking a net hides its
                           tracks. The other tracks of the layer keep the
@@ -91,12 +98,19 @@ DESCRIPTION
     Mouse and keys:
       left drag          draw a box; the view zooms to it
       Shift+left drag    select every object with a shape fully inside the
-                         box (several at once); Ctrl+Shift+drag adds to the
-                         selection
-      left click         select the port under the cursor (the nearest
-                         visible port shape within 3 pixels; all shapes of
-                         the port light up); Ctrl+click adds or removes it;
-                         a click on empty space clears the selection
+                         box (several at once); an instance fully inside is
+                         selected as the instance, not pin by pin;
+                         Ctrl+Shift+drag adds to the selection
+      left click         select the object under the cursor (the nearest
+                         visible shape within 3 pixels): a port, an
+                         instance pin (pin:<inst>/<pin>) when Pins are
+                         shown, or the instance when the click is inside the
+                         cell but off its pins (or Pins are hidden). All
+                         shapes of the selected object light up; selecting
+                         an instance lights up its pins too. When the whole
+                         cell is smaller than the click area, the instance
+                         is picked. Ctrl+click adds or removes; a click on
+                         empty space clears the selection
       middle drag        pan; the design can be moved past any edge
       arrow keys         pan a quarter of the window
       wheel              zoom about the cursor (zoom-out stops when the

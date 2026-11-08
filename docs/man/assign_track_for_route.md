@@ -2,18 +2,24 @@ NAME
     assign_track_for_route - assign a repeating net pattern to a layer's tracks
 
 SYNOPSIS
-    assign_track_for_route -net {<net|-> ...} -layer <layer>
+    assign_track_for_route -net {<net|-|NA> ...} -layer <layer>
 
 DESCRIPTION
     Assigns nets to the routing tracks of a layer by repeating a pattern.
     Tracks are numbered from the lowest coordinate; track 1 gets the first
     entry of the pattern, track 2 the second, and so on, starting over
-    after the last entry. '-' means the track is free for any signal.
+    after the last entry. Two words are reserved:
+        -    the track is free for any signal
+        NA   the track is left blank: nothing may use it
 
         assign_track_for_route -net {VDD_SOC, -, VSS, -} -layer IA
 
     gives track 1 VDD_SOC, track 2 signal, track 3 VSS, track 4 signal,
     track 5 VDD_SOC, track 6 signal, track 7 VSS, ...
+
+        assign_track_for_route -net {VDD_SOC, -, NA, VSS, -, NA} -layer IA
+
+    gives VDD_SOC, signal, blank, VSS, signal, blank, then repeats.
 
     Which tracks: the layer's routing tracks run in its tech DIRECTION. A
     HORIZONTAL layer (IA) uses the DEF 'TRACKS Y' patterns (horizontal
@@ -35,9 +41,10 @@ DESCRIPTION
     keeps the pattern and applies it to the new tracks.
 
 OPTIONS
-    -net {<net|-> ...}
-        The pattern: net names and '-' (any signal), separated by spaces
-        and/or commas. At least one net name. Required.
+    -net {<net|-|NA> ...}
+        The pattern: net names, '-' (any signal) and 'NA' (blank),
+        separated by spaces and/or commas. At least one net name.
+        Required.
     -layer <layer>
         Tech layer whose tracks are assigned. Required.
 
@@ -45,8 +52,8 @@ OBJECTS AND ATTRIBUTES
     track_assignment:<layer>
         obj_type, name and layer (the layer), direction (x or y: which DEF
         TRACKS are numbered), pattern, period (pattern length), num_tracks,
-        counts ("net count ..." with '-' for signal tracks), tracks (one
-        {coordinate net} pair per track, lowest first)
+        counts ("net count ..." with '-' for signal and 'NA' for blank
+        tracks), tracks (one {coordinate net} pair per track, lowest first)
     get_db track_assignments lists them.
 
 RETURN VALUE
@@ -68,13 +75,15 @@ EXAMPLES
 
 ERRORS
     HT4-001  -net or -layer missing, empty pattern, or a pattern with no net
+             (only '-' and 'NA')
     HT4-110  no tech data, layer not in tech, or layer has no direction
     HT4-111  no design, or no DEF tracks on the layer in its direction
     HT4-112  WARN: a net in the pattern is not the net of any port
     HT4-113  WARN: the layer's previous assignment was replaced
 
     In the GUI (gui_show), open the arrow next to Tracks to see each
-    assignment and show or hide the tracks of each net.
+    assignment and show or hide the tracks of each net. Blank (NA) tracks
+    start hidden; checked, they are drawn as dim dashed lines.
 
 SEE ALSO
     read_def, read_tech, get_db, gui_show

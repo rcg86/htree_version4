@@ -469,4 +469,36 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   orthogonal by default; rulers persist until Clear Rulers; result printed
   in the terminal; right click / Esc cancel. Checked on cf999: two clicks
   0.004 um off two D12 pin edges measured 18.313 um, the exact gap.
+- NA in track patterns (user request, 2026-11-07): `NA` means the track is
+  left blank, not used for anything. Reserved like '-'; not checked as a
+  net; listed last; GUI checkbox "blank (NA)" starts unchecked and draws
+  dim dashed lines (Claude's calls).
+
+## 20. `create_inst` (branch create_spine, user request, 2026-11-07)
+
+- User: `create_inst -ref_cell <cell> -location {x y}`; example location
+  {5622.772 10066.7} on cf999.
+- Claude's calls (user to check): location = lower-left of the placed bbox
+  (DEF convention) for every orientation; optional -name (default inst_N)
+  and -orient (default N); errors for unknown cell / no SIZE / duplicate
+  name; warnings for outside boundary, overlap with another instance
+  (touching is fine), off manufacturing grid; no row/site check (ROWs are
+  not read); object `inst:<name>` with ref_name, lib_cell, location,
+  orient, bbox, status; table `inst` (schema 8), saved by write_db.
+- GUI: instances drawn as an outline plus the cell's pin shapes in layer
+  colours (pins follow layer visibility), under "Cells (instances)";
+  selectable by click, Shift+drag and select_obj (covers the earlier
+  "select instances" request).
+- Fixed: rebuilt panel lists painted stale checkboxes until deleted.
+- Pins and labels (user requests, 2026-11-07): a "Pins" checkbox for
+  instance pin shapes (Cells now only the outline) with a "Label" checkbox
+  that writes pin names at shape centres (instance pins and ports; drawn
+  in screen pixels; none when more than 2000 in view). Clicking a shown
+  instance pin selects that pin, not the instance: new object
+  `pin:<inst>/<pin>` (Cadence name) with inst, lib_pin, direction, use,
+  layers, rect; `inst .pins`. Picking fixes found on the way: hit tests
+  use shape geometry (an L-shaped polygon's bbox and the 2-unit highlight
+  pen used to swallow clicks); ties go to the shape on top when under the
+  cursor, to the larger shape on near misses (zoomed out: the instance);
+  Shift+drag over a whole instance selects the instance only.
 

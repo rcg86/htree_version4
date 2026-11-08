@@ -13,9 +13,9 @@ from core.gui.layout_data import load_layout
 
 # Object categories: (key, label). Categories with no data yet are disabled.
 OBJECTS = [("boundary", "Boundary"), ("ports", "Ports"), ("tracks", "Tracks"),
-           ("nets", "Nets"), ("cells", "Cells"), ("spine", "Spine")]
+           ("nets", "Nets"), ("cells", "Cells (instances)"), ("pins", "Pins"),
+           ("spine", "Spine")]
 NOT_YET = {"nets": "No nets in the database yet",
-           "cells": "No placed cells in the database yet",
            "spine": "No spine built yet (spine specs are read, not built)"}
 
 
@@ -51,6 +51,18 @@ class MainWindow(QMainWindow):
             box.setChecked(self.canvas.show.get(key, False))
             box.toggled.connect(lambda on, k=key: self.canvas.set_show(k, on))
             self.object_boxes[key] = box
+            if key == "pins":                     # Pins, with a Label box beside it
+                row = QHBoxLayout()
+                row.addWidget(box)
+                label = QCheckBox("Label")
+                label.setToolTip("Write pin names at the centre of the pins shown")
+                label.setChecked(self.canvas.show["labels"])
+                label.toggled.connect(lambda on: self.canvas.set_show("labels", on))
+                row.addWidget(label)
+                row.addStretch(1)
+                ovbox.addLayout(row)
+                self.object_boxes["labels"] = label
+                continue
             if key != "tracks":
                 ovbox.addWidget(box)
                 continue
@@ -89,7 +101,7 @@ class MainWindow(QMainWindow):
                       "Click: select   Ctrl+click: add/remove\n"
                       "Shift+drag: select in box   get_db selected\n"
                       "Tracks show when zoomed in enough.\n"
-                      "(n) = port shapes on the layer.\n"
+                      "(n) = pin shapes on the layer.\n"
                       "* = not in tech (starts hidden).")
         hint.setStyleSheet("color: #888;")
         vbox.addWidget(hint)
@@ -218,7 +230,8 @@ class MainWindow(QMainWindow):
     def _rebuild_layer_boxes(self):
         while self.layer_list.count():
             w = self.layer_list.takeAt(0).widget()
-            if w is not None:
+            if w is not None:                     # hide now: deleteLater paints until then
+                w.hide()
                 w.deleteLater()
         old = {name: box.isChecked() for name, box in self.layer_boxes.items()}
         self.layer_boxes = {}
@@ -250,6 +263,7 @@ class MainWindow(QMainWindow):
         while self.assign_vbox.count():
             w = self.assign_vbox.takeAt(0).widget()
             if w is not None:
+                w.hide()
                 w.deleteLater()
         old = {k: b.isChecked() for k, b in self.assign_boxes.items()}
         self.assign_boxes = {}
@@ -265,12 +279,13 @@ class MainWindow(QMainWindow):
                            f"<span style='color:#888'>pattern: {' '.join(a.pattern)}</span>")
             self.assign_vbox.addWidget(title)
             for net, count in a.counts:
-                label = "signal (-)" if net == "-" else net
+                label = {"-": "signal (-)", "NA": "blank (NA)"}.get(net, net)
                 box = QCheckBox(f"{label}  ({count})")
                 pix = QPixmap(12, 12)
                 pix.fill(QColor(a.colors[net]))
                 box.setIcon(QIcon(pix))
-                on = old.get((a.layer, net), True)
+                # Blank tracks carry nothing, so they start hidden.
+                on = old.get((a.layer, net), net != "NA")
                 box.setChecked(on)
                 if not on:
                     self.canvas.assign_hidden.add((a.layer, net))
@@ -294,8 +309,10 @@ class MainWindow(QMainWindow):
             box.setChecked(False)
             box.setEnabled(False)
             box.setToolTip(reason)
+        inst_pins = any(i.pins for i in self.layout.insts)
         has = {"boundary": bool(self.layout.boundary), "ports": bool(self.layout.shapes),
-               "tracks": bool(self.layout.tracks)}
+               "tracks": bool(self.layout.tracks), "cells": bool(self.layout.insts),
+               "pins": inst_pins, "labels": inst_pins or bool(self.layout.shapes)}
         for key, present in has.items():
             self.object_boxes[key].setEnabled(present)
             self.object_boxes[key].setToolTip("" if present else "Nothing in the database yet")
@@ -347,4 +364,13 @@ class MainWindow(QMainWindow):
                     f"rect {{{fv(objects.get_attr(db, handle, 'rect'))}}}  "
                     f"direction {fv(objects.get_attr(db, handle, 'direction'))}  "
                     f"net {fv(objects.get_attr(db, handle, 'net'))}")
+        if kind == "pin":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  direction {g('direction')}  use {g('use')}  "
+                    f"layers {' '.join(objects.get_attr(db, handle, 'layers'))}  "
+                    f"rect {{{g('rect')}}}")
+        if kind == "inst":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  {g('ref_name')}  at {{{g('location')}}} {g('orient')}  "
+                    f"bbox {{{g('bbox')}}}")
         return handle

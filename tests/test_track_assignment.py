@@ -117,3 +117,21 @@ def test_saved_by_write_db(design, tmp_path):
 
 def test_missing_object(design):
     assert "HT4-022" in err(design, "get_db track_assignment:H1 .pattern")
+
+
+# -- NA: blank tracks ------------------------------------------------------------------
+
+def test_na_leaves_tracks_blank(design):
+    design.eval("assign_track_for_route -layer H1 -net {VDD, -, NA, VSS, -, NA}")
+    tracks = design.split_list(design.eval("get_db track_assignment:H1 .tracks"))
+    assert tracks == ("0.5 VDD", "1.5 -", "2.5 NA", "3.5 VSS", "4.5 -", "5.5 NA",
+                      "6.5 VDD", "7.5 -", "8.5 NA", "9.5 VSS")
+    assert design.eval("get_db track_assignment:H1 .counts") == "VDD 2 VSS 2 - 3 NA 3"
+    out = design.out.getvalue()
+    assert "  blank (NA)  : 3 tracks, first at y 2.5" in out
+    assert "HT4-112" not in out                     # NA is not checked as a net name
+
+
+def test_pattern_of_only_signal_and_blank_is_rejected(design):
+    msg = err(design, "assign_track_for_route -layer H1 -net {- NA}")
+    assert "HT4-001" in msg and "names no net" in msg

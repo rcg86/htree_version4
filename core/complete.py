@@ -27,7 +27,8 @@ ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer
               "spine_spec": "spine_spec", "design": "design", "designs": "design",
               "ports": "port", "port": "port", "track_patterns": "track_pattern",
               "track_pattern": "track_pattern", "selected": None,   # None: mixed types
-              "track_assignments": "track_assignment", "track_assignment": "track_assignment"}
+              "track_assignments": "track_assignment", "track_assignment": "track_assignment",
+              "insts": "inst", "inst": "inst"}
 SHOWN_ROOTS = ["tech", "library_physical", "spine_spec", "design"]
 DELIMS = " \t\n[]{}()\"';"
 GET_DB_OPTIONS = ["-if"]
@@ -124,6 +125,8 @@ class Completer:
             names = db.spine_spec_names()
         elif kind == "track_assignment":
             names = db.track_assignment_layers()
+        elif kind == "inst":
+            names = db.inst_names()
         elif kind == "design" and db.has_design():
             names = [db.design_row()["name"]]
         elif kind == "port" and db.has_design():

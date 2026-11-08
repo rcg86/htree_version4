@@ -46,6 +46,8 @@ ROOTS = {
                                      for l in db.track_assignment_layers()],
     "track_assignment": lambda db: [f"track_assignment:{l}"
                                     for l in db.track_assignment_layers()],
+    "insts": lambda db: [f"inst:{n}" for n in db.inst_names()],
+    "inst": lambda db: [f"inst:{n}" for n in db.inst_names()],
 }
 
 

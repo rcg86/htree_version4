@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLin
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
                                QGraphicsSimpleTextItem, QGraphicsView)
 
-from core.gui.layout_data import (SIGNAL, clip_line_to_polygon, constrain_orthogonal,
+from core.gui.layout_data import (BLANK, SIGNAL, clip_line_to_polygon, constrain_orthogonal,
                                   drawn_layers, nearest_on_segments, polygon_edges,
                                   ruler_text, visible_assigned_tracks,
                                   visible_track_positions)
@@ -36,7 +36,10 @@ PAN_MARGIN = 10
 MIN_CONTENT_PIXELS = 20   # zoom-out stops when the design is this small
 HANDLE_KEY = 0            # QGraphicsItem.data key holding the shape's handle
 OWNER_KEY = 1             # ... and the selectable object it belongs to (its port)
+LABEL_KEY = 2             # ... and the pin name written on it when labels are on
+MAX_LABELS = 2000         # more pins than this in view: no labels until zoomed in
 SELECT_COLOR = "#ffff00"
+INST_COLOR = "#26c6da"        # instance outline
 BLINK_COLOR = "#ff00ff"
 BLINK_TIMES = 4           # on/off cycles
 BLINK_MS = 200            # per half cycle
@@ -48,6 +51,26 @@ SNAP_PIXELS = 10          # the ruler snaps to a drawn edge this close to the cu
 
 def scene(x, y):
     return QPointF(x, -y)
+
+
+def _geometry_rect(item):
+    """Bounding rect of the item's geometry, without its outline pen."""
+    if isinstance(item, QGraphicsRectItem):
+        return item.rect()
+    if isinstance(item, QGraphicsPolygonItem):
+        return item.polygon().boundingRect()
+    return item.sceneBoundingRect()
+
+
+def _inside(item, p):
+    """True if scene point p is inside the item's geometry. QGraphicsItem
+    contains() counts the outline, and a highlight pen 2 'units' wide would
+    swallow everything within 2 um, so test the rect or polygon itself."""
+    if isinstance(item, QGraphicsRectItem):
+        return item.rect().contains(p)
+    if isinstance(item, QGraphicsPolygonItem):
+        return item.polygon().containsPoint(p, Qt.OddEvenFill)
+    return item.contains(item.mapFromScene(p))
 
 
 def model(p: QPointF):
@@ -77,7 +100,8 @@ class LayoutCanvas(QGraphicsView):
         self.boundary_item = None
         self.shape_items = {}                # layer -> [items]
         self.visible_layers = set()
-        self.show = {"boundary": True, "ports": True, "tracks": False}
+        self.show = {"boundary": True, "ports": True, "tracks": False, "cells": True,
+                     "pins": True, "labels": False}
         self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
         self.highlighted = {}                # item -> (pen, z) before highlighting
         self.owner_items = {}                # owner handle (port) -> [items]
@@ -104,6 +128,7 @@ class LayoutCanvas(QGraphicsView):
         self._ruler_start = None
         self.layout, self.boundary_item = layout, None
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
+        self.inst_items, self.inst_pin_items = [], {}       # outlines; layer -> pin items
         self.visible_layers = set(visible_layers)
         if layout.boundary:
             poly = QPolygonF([scene(x, y) for x, y in
@@ -124,15 +149,52 @@ class LayoutCanvas(QGraphicsView):
                                      pen, QBrush(color))
             item.setData(HANDLE_KEY, s.handle)
             item.setData(OWNER_KEY, s.port)
+            item.setData(LABEL_KEY, s.port.rpartition("/")[2])
             item.setFlag(QGraphicsItem.ItemIsSelectable, False)
             self.shape_items.setdefault(s.layer, []).append(item)
             self.owner_items.setdefault(s.port, []).append(item)
+        self._add_insts(layout, colors)
         self.content = self._content_rect()
         if not self.content.isEmpty():
             pad = PAN_MARGIN * max(self.content.width(), self.content.height())
             sc.setSceneRect(self.content.adjusted(-pad, -pad, pad, pad))
         self.apply_visibility()
         self.fit()
+
+    def _add_insts(self, layout, colors):
+        """Instances: a cell outline owned by the inst, and the cell's pin
+        shapes, each owned by its instance pin (pin:<inst>/<pin>). Clicking a
+        shown pin selects the pin; clicking elsewhere in the cell selects the
+        instance. Selecting the instance lights up its pins too."""
+        sc = self.scene()
+        outline = QPen(QColor(INST_COLOR), 0)
+        fill = QBrush(QColor(38, 198, 218, 40))
+        for inst in layout.insts:
+            x1, y1, x2, y2 = inst.bbox
+            box = sc.addRect(QRectF(scene(x1, y2), scene(x2, y1)), outline, fill)
+            box.setData(HANDLE_KEY, inst.handle)
+            box.setData(OWNER_KEY, inst.handle)
+            box.setZValue(1)
+            self.inst_items.append(box)
+            self.owner_items.setdefault(inst.handle, []).append(box)
+            for pin, layer, kind, pts in inst.pins:
+                color = QColor(colors.get(layer, "#ffffff"))
+                if kind == "rect":
+                    a, b, c, d = pts
+                    item = sc.addRect(QRectF(scene(a, d), scene(c, b)), QPen(color, 0),
+                                      QBrush(color))
+                else:
+                    item = sc.addPolygon(QPolygonF([scene(px, py) for px, py in
+                                                    zip(pts[0::2], pts[1::2])]),
+                                         QPen(color, 0), QBrush(color))
+                pin_handle = f"pin:{inst.handle.partition(':')[2]}/{pin}"
+                item.setData(HANDLE_KEY, pin_handle)
+                item.setData(OWNER_KEY, pin_handle)
+                item.setData(LABEL_KEY, pin)
+                item.setZValue(2)
+                self.inst_pin_items.setdefault(layer, []).append(item)
+                self.owner_items[inst.handle].append(item)
+                self.owner_items.setdefault(pin_handle, []).append(item)
 
     def _content_rect(self):
         lay = self.layout
@@ -148,11 +210,17 @@ class LayoutCanvas(QGraphicsView):
             on = self.show["ports"] and layer in self.visible_layers
             for item in items:
                 item.setVisible(on)
+        for item in self.inst_items:
+            item.setVisible(self.show["cells"])
+        for layer, items in self.inst_pin_items.items():
+            on = self.show["pins"] and layer in self.visible_layers
+            for item in items:
+                item.setVisible(on)
         self.viewport().update()
 
     def set_show(self, key, on):
         self.show[key] = on
-        self.apply_visibility()
+        self.apply_visibility()                   # also repaints (labels, tracks)
 
     def set_assigned_net_visible(self, layer, net, on):
         (self.assign_hidden.discard if on else self.assign_hidden.add)((layer, net))
@@ -255,28 +323,70 @@ class LayoutCanvas(QGraphicsView):
         self.viewport().update()
 
     def owners_in(self, scene_rect):
-        """Selectable objects with a visible shape inside scene_rect."""
+        """Selectable objects with a visible shape inside scene_rect. A whole
+        instance inside the box is selected as the instance, not pin by pin."""
         owners = []
-        for item in self.scene().items(scene_rect, Qt.ContainsItemShape):
+        for item in self.scene().items(scene_rect, Qt.IntersectsItemBoundingRect):
             owner = item.data(OWNER_KEY)
-            if owner and item.isVisible() and owner not in owners:
+            if owner and item.isVisible() and owner not in owners and \
+                    scene_rect.contains(_geometry_rect(item)):   # outline pen not counted
                 owners.append(owner)
-        return owners
+        insts = {o.partition(":")[2] for o in owners if o.startswith("inst:")}
+        return [o for o in owners if not (o.startswith("pin:") and
+                                          o.partition(":")[2].partition("/")[0] in insts)]
 
     # -- tracks: painted behind the shapes, only those on screen ---------------------
     def drawBackground(self, painter, rect):
         super().drawBackground(painter, rect)
         painter.setRenderHint(QPainter.Antialiasing, False)
         pens = {}
-        for color, dotted, a, b in self.track_segments(rect):
-            key = (color, dotted)
+        styles = {"solid": Qt.SolidLine, "dot": Qt.DotLine, "dash": Qt.DashLine}
+        for color, style, a, b in self.track_segments(rect):
+            key = (color, style)
             if key not in pens:
-                pens[key] = QPen(QColor(color), 0, Qt.DotLine if dotted else Qt.SolidLine)
+                pens[key] = QPen(QColor(color), 0, styles[style])
             painter.setPen(pens[key])
             painter.drawLine(scene(*a), scene(*b))
 
+    # -- pin labels: painted in screen pixels, only for shapes in view -------------
+    def drawForeground(self, painter, rect):
+        super().drawForeground(painter, rect)
+        labels = self.label_positions(rect)
+        if not labels:
+            return
+        painter.save()
+        painter.resetTransform()                  # draw in viewport pixels: fixed size
+        font = QFont()
+        font.setPointSize(8)
+        painter.setFont(font)
+        metrics = painter.fontMetrics()
+        for name, center in labels:
+            p = self.mapFromScene(center)
+            w = metrics.horizontalAdvance(name)
+            x, y = p.x() - w / 2, p.y() + metrics.ascent() / 2 - 1
+            painter.setPen(QColor("#000000"))     # dark halo keeps it readable
+            for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                painter.drawText(QPointF(x + dx, y + dy), name)
+            painter.setPen(QColor("#ffffff"))
+            painter.drawText(QPointF(x, y), name)
+        painter.restore()
+
+    def label_positions(self, rect):
+        """(pin name, scene center) for each shown pin shape in rect, when
+        labels are on; [] when off or when more than MAX_LABELS are in view."""
+        if not self.show["labels"]:
+            return []
+        out = []
+        for item in self.scene().items(rect):
+            name = item.data(LABEL_KEY)
+            if name and item.isVisible():
+                out.append((name, item.sceneBoundingRect().center()))
+                if len(out) > MAX_LABELS:
+                    return []
+        return out
+
     def track_segments(self, rect):
-        """(color, dotted, (x1, y1), (x2, y2)) in model coordinates for every
+        """(color, style, (x1, y1), (x2, y2)) in model coordinates for every
         track segment drawn inside the scene rect. The one place that decides
         which tracks show; the ruler snaps to exactly these."""
         lay = self.layout
@@ -300,7 +410,8 @@ class LayoutCanvas(QGraphicsView):
                 a, *((x_lo, x_hi) if vertical else (y_lo, y_hi)), shown) or []
             for c, net in lines:
                 for p, q in self._clipped(vertical, c, view):
-                    yield a.colors[net], net == SIGNAL, p, q
+                    style = "dot" if net == SIGNAL else "dash" if net == BLANK else "solid"
+                    yield a.colors[net], style, p, q
         for t in lay.tracks:                      # tech layers: preferred direction only
             shown = [l for l in drawn_layers(t, lay.preferred) if l in self.visible_layers
                      and (l, t.direction) not in assigned]
@@ -311,7 +422,7 @@ class LayoutCanvas(QGraphicsView):
                 visible_track_positions(t, y_lo, y_hi)
             for c in pos or []:                   # none here, or too dense
                 for p, q in self._clipped(vertical, c, view):
-                    yield colors.get(shown[0], "#888888"), True, p, q
+                    yield colors.get(shown[0], "#888888"), "dot", p, q
 
     def _clipped(self, vertical, c, view):
         """Pieces of the track line x = c (vertical) or y = c inside the
@@ -535,12 +646,23 @@ class LayoutCanvas(QGraphicsView):
         for item in self.items(box):
             if not item.data(HANDLE_KEY) or not item.isVisible():
                 continue
+            if _inside(item, p):
+                d = 0.0                               # inside the actual shape
+            else:
+                b = item.sceneBoundingRect()
+                dx = max(b.left() - p.x(), 0, p.x() - b.right())
+                dy = max(b.top() - p.y(), 0, p.y() - b.bottom())
+                # inside an L-shaped polygon's bbox but not the polygon: a near
+                # miss, so a shape really under the cursor wins
+                d = max(dx * dx + dy * dy, 1e-12)
+            # Ties: shapes really under the cursor -> the one drawn on top (a
+            # pin over its cell); near misses (e.g. a whole cell under one
+            # pixel) -> the larger shape, so a zoomed-out click picks the cell.
             b = item.sceneBoundingRect()
-            dx = max(b.left() - p.x(), 0, p.x() - b.right())
-            dy = max(b.top() - p.y(), 0, p.y() - b.bottom())
-            d = dx * dx + dy * dy                     # 0 when the point is inside
-            if best_d is None or d < best_d:
-                best, best_d = item, d
+            area = b.width() * b.height()
+            key = (0.0, -item.zValue(), area) if d == 0 else (d, 0, -area)
+            if best_d is None or key < best_d:
+                best, best_d = item, key
         return best
 
     def mouseMoveEvent(self, ev):
