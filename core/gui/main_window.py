@@ -1,12 +1,13 @@
 """Main window: menu bar, a small toolbar under it, the layout canvas in the
-middle, the visibility panel on the right, cursor position and selection in
-the status bar."""
+middle (a Layout tab, and a Schematic tab once create_spine -validate -show
+has drawn one), the visibility panel on the right, cursor position and
+selection in the status bar."""
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
 from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QPushButton, QScrollArea, QToolBar,
-                               QToolButton, QVBoxLayout, QWidget)
+                               QMainWindow, QMenu, QPushButton, QScrollArea, QTabWidget,
+                               QToolBar, QToolButton, QVBoxLayout, QWidget)
 
 from core.gui.canvas import LayoutCanvas
 from core.gui.layout_data import load_layout
@@ -15,8 +16,7 @@ from core.gui.layout_data import load_layout
 OBJECTS = [("boundary", "Boundary"), ("ports", "Ports"), ("tracks", "Tracks"),
            ("nets", "Nets"), ("cells", "Cells (instances)"), ("pins", "Pins"),
            ("spine", "Spine")]
-NOT_YET = {"nets": "No nets in the database yet",
-           "spine": "No spine built yet (spine specs are read, not built)"}
+NOT_YET = {"nets": "No nets in the database yet"}
 
 
 class MainWindow(QMainWindow):
@@ -26,7 +26,10 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("htree4")
         self.resize(1400, 900)
         self.canvas = LayoutCanvas(self)
-        self.setCentralWidget(self.canvas)
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self.canvas, "Layout")
+        self.schematic = None                # SchematicView, made on first use
+        self.setCentralWidget(self.tabs)
         self.object_boxes = {}
         self.layer_boxes = {}
         self.assign_boxes = {}               # (layer, net) -> QCheckBox
@@ -312,6 +315,7 @@ class MainWindow(QMainWindow):
         inst_pins = any(i.pins for i in self.layout.insts)
         has = {"boundary": bool(self.layout.boundary), "ports": bool(self.layout.shapes),
                "tracks": bool(self.layout.tracks), "cells": bool(self.layout.insts),
+               "spine": bool(self.layout.spines),
                "pins": inst_pins, "labels": inst_pins or bool(self.layout.shapes)}
         for key, present in has.items():
             self.object_boxes[key].setEnabled(present)
@@ -321,6 +325,16 @@ class MainWindow(QMainWindow):
         self.show_selection()
         title = f"htree4 - {self.layout.design}" if self.layout.design else "htree4"
         self.setWindowTitle(title)
+
+    def show_schematic(self, plan):
+        """Draw a create_spine plan in the Schematic tab and switch to it."""
+        from core.gui.schematic import SchematicView
+        if self.schematic is None:
+            self.schematic = SchematicView(self)
+            self.tabs.addTab(self.schematic, "Schematic")
+        self.tabs.setTabText(self.tabs.indexOf(self.schematic), f"Schematic: {plan.name}")
+        self.tabs.setCurrentWidget(self.schematic)
+        self.schematic.set_plan(plan)
 
     # -- selection: lives in the session, so get_db selected sees it -------------
     def on_select(self, handles, mode):

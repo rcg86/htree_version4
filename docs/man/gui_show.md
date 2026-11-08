@@ -134,7 +134,8 @@ DESCRIPTION
     missing display gives an error instead of ending the session.
 
 OPTIONS
-    None.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None.

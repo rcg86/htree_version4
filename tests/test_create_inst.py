@@ -122,3 +122,28 @@ def test_saved_by_write_db_and_selectable(lib, tmp_path):
     fresh = Session(out=io.StringIO())
     fresh.eval(f"read_db {tmp_path}/i.db")
     assert fresh.eval("get_db inst:u1 .bbox") == "50 40 50.6 40.254"
+
+
+def test_read_db_file_option_continues_the_session(lib, tmp_path):
+    lib.eval("create_inst -ref_cell INV_D1 -location {50 40}")
+    lib.eval("create_route_rule -layer H2 -width 0.1 -spacing 0.1")
+    lib.eval(f"write_db -file {tmp_path}/c.db")
+    fresh = Session(out=io.StringIO())
+    fresh.db.selection.append("inst:stale")          # left over from before the read
+    fresh.eval(f"read_db -file {tmp_path}/c.db")
+    out = fresh.out.getvalue()
+    for label in ("Tech", "Library", "Design", "Route rules", "Instances"):
+        assert f"  {label}" in out, label
+    assert fresh.db.selection == []
+    # the next instance continues the numbering of the saved session
+    assert fresh.eval("create_inst -ref_cell INV_D1 -location {60 40}") == "inst:inst_2"
+    assert fresh.eval("get_db route_rule:H2 .spacing") == "0.1"
+
+
+def test_read_db_file_errors(session, tmp_path):
+    assert "HT4-001" in err(session, f"read_db -file {tmp_path}/a.db {tmp_path}/a.db")
+    assert "HT4-040" in err(session, f"read_db -file {tmp_path}/none.db")
+    assert "HT4-001" in err(session, f"write_db -file {tmp_path}/a.db {tmp_path}/b.db")
+    session.eval(f"write_db -file {tmp_path}/empty.db")
+    session.eval(f"read_db -file {tmp_path}/empty.db")
+    assert "(the database is empty)" in session.out.getvalue()

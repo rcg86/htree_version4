@@ -34,7 +34,8 @@ def test_parse_two_documents():
     assert (a.line, b.line) == (3, 34)
     assert (a.type, a.units, a.point, a.root_net) == ("spine", "um", "center", "net")
     assert (a.max_drive_length, a.count_stub_in_drive) == (1020, True)
-    assert (a.origin_x, a.level_pitch_x, a.orientation, a.span) == (10, 2.88, "vertical", 5000)
+    # level_pitch_x (older key) is read as level_pitch
+    assert (a.origin_x, a.level_pitch, a.orientation, a.span) == (10, 2.88, "vertical", 5000)
     assert (a.stub_count, a.stub_gap, a.stub_tap, a.stub_order) == (2, 10, "center",
                                                                     ["stub2", "stub1"])
     assert [l.name for l in a.levels] == ["L1", "L2"]
@@ -75,12 +76,27 @@ DUP = """spine_spec:
     ("spine_spec: [\n", 2, "YAML syntax"),
     ("spine_spec:\n  name: a\n        type: spine\n", 3, "check the indentation"),
     ("other: 1\n", None, "no spine_spec found"),
+    ("spine_spec:\n  name: a\n  placement:\n    level_pitch: 2\n    level_pitch_x: 2\n", 4,
+     "give only one of placement.level_pitch"),
+    ("spine_spec:\n  name: a\n  placement:\n    deviation: x\n", 4,
+     "'placement.deviation' must be a number"),
+    ("spine_spec:\n  name: a\n  levels:\n    L1:\n      cells:\n"
+     "        i1: {input: net, location: up}\n", 6, "i1 location must be a number"),
 ])
 def test_parse_errors(write_lef, body, line, text):
     with pytest.raises(SpineSpecError) as e:
         parse_spine_spec(write_lef(body, "s.yaml"))
     assert text in e.value.text
     assert e.value.line == line
+
+
+def test_level_pitch_and_deviation(write_lef):
+    path = write_lef("spine_spec:\n  name: a\n  placement:\n    level_pitch: 1.44\n"
+                     "    deviation: 10\n", "s.yaml")
+    spec = parse_spine_spec(path).specs[0]
+    assert (spec.level_pitch, spec.deviation, spec.extra) == (1.44, 10, [])
+    path = write_lef("spine_spec:\n  name: a\n  placement:\n    level_pitch_y: 3\n", "t.yaml")
+    assert parse_spine_spec(path).specs[0].level_pitch == 3
 
 
 # -- read_spine_spec ----------------------------------------------------------------
@@ -149,7 +165,7 @@ def test_spec_attrs(spine_session):
     ev = spine_session.eval
     expected = {"name": "sp_a", "type": "spine", "units": "um", "point": "center",
                 "root_net": "net", "max_drive_length": "1020", "count_stub_in_drive": "true",
-                "origin_x": "10", "level_pitch_x": "2.88", "orientation": "vertical",
+                "origin_x": "10", "level_pitch": "2.88", "orientation": "vertical",
                 "span": "5000", "stub_count": "2", "stub_gap": "10", "stub_tap": "center",
                 "stub_order": "stub2 stub1", "extra": "{future_key: 7}",
                 "file": str(SPINE_YAML)}
@@ -205,3 +221,19 @@ def test_completion(spine_session):
     assert ".spine_spec.spine_levels" in comp("get_db .spine_spec.")
     assert comp("get_db .spine_spec.spine_levels.spine_cells.ou") == \
         [".spine_spec.spine_levels.spine_cells.output "]
+
+
+def test_cell_location(session, write_lef):
+    path = write_lef("spine_spec:\n  name: a\n  levels:\n    L1:\n      cells:\n"
+                     "        i1: {input: net}\n        i2: {input: L1/i1/Y, location: -500}\n"
+                     "        i3:\n          input: L1/i2/Y\n          location: 12.5\n",
+                     "s.yaml")
+    cells = parse_spine_spec(path).specs[0].levels[0].cells
+    assert [(c.location, c.extra) for c in cells] == [(None, []), (-500, []), (12.5, [])]
+    session.eval(f"read_spine_spec -file {path}")
+    assert session.eval("get_db spine_cell:a/L1/i2 .location") == "-500"
+    assert session.eval("get_db spine_cell:a/L1/i1 .location") == ""
+    session.out.seek(0)
+    session.out.truncate()
+    session.eval("get_db spine_spec")
+    assert "    i2                : input L1/i1/Y  location -500\n" in session.out.getvalue()

@@ -30,6 +30,8 @@ DESCRIPTION
 OPTIONS
     -file <lef_file>
         Tech LEF file to read. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None. Prints the file, LEF version, DB units and layer names.

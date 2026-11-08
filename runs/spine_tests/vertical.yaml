@@ -1,0 +1,294 @@
+# vertical: root drives the one leaf; expect no warnings
+# 1 stub(s) x 1000.000 um
+spine_spec:
+  name: v_1stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 1000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y, output: stub1}
+
+---
+
+# vertical: one repeater, then 2 leaves; expect no warnings
+# with -ref_cell INV12M3..._C60L04 also HT4-157: the cell is 3.12 um wide,
+# more than level_pitch 2.88, so neighbouring columns can overlap
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: v_2stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 2000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+
+---
+
+# vertical: one cell drives 3 leaves about 1000 um apart;
+# expect HT4-154: that net is about 2010 um
+# with -ref_cell INV12M3..._C60L04 also HT4-157: the cell is 3.12 um wide,
+# more than level_pitch 2.88, so neighbouring columns can overlap
+# 3 stub(s) x 993.333 um
+spine_spec:
+  name: v_3stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 3000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+        inv3: {input: L2/inv1/Y, output: stub3}
+
+---
+
+# vertical: 2 repeaters climb up, then a binary split; expect no warnings
+# with -ref_cell INV12M3..._C60L04 also HT4-157: the cell is 3.12 um wide,
+# more than level_pitch 2.88, so neighbouring columns can overlap
+# 4 stub(s) x 992.500 um
+spine_spec:
+  name: v_4stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 4000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y}
+        inv2: {input: L3/inv1/Y}
+    L5:
+      cells:
+        inv1: {input: L4/inv1/Y, output: stub1}
+        inv2: {input: L4/inv1/Y, output: stub2}
+        inv3: {input: L4/inv2/Y, output: stub3}
+        inv4: {input: L4/inv2/Y, output: stub4}
+
+---
+
+# vertical: a trunk of repeaters climbs up; the lower branch has as many
+# inverters as the upper one, so all 8 stubs have the same delay;
+# expect no warnings (short nets are padded with detour)
+# with -ref_cell INV12M3..._C60L04 also HT4-157: the cell is 3.12 um wide,
+# more than level_pitch 2.88, so neighbouring columns can overlap
+# 8 stub(s) x 991.250 um
+spine_spec:
+  name: v_8stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 8000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y}
+        inv2: {input: L3/inv1/Y}
+    L5:
+      cells:
+        inv1: {input: L4/inv1/Y}
+        inv2: {input: L4/inv2/Y}
+    L6:
+      cells:
+        inv1: {input: L5/inv1/Y}
+        inv2: {input: L5/inv2/Y}
+    L7:
+      cells:
+        inv1: {input: L6/inv1/Y}
+        inv2: {input: L6/inv2/Y}
+    L8:
+      cells:
+        inv1: {input: L7/inv1/Y}
+        inv2: {input: L7/inv1/Y}
+        inv3: {input: L7/inv2/Y}
+        inv4: {input: L7/inv2/Y}
+    L9:
+      cells:
+        inv1: {input: L8/inv1/Y, output: stub1}
+        inv2: {input: L8/inv1/Y, output: stub2}
+        inv3: {input: L8/inv2/Y, output: stub3}
+        inv4: {input: L8/inv2/Y, output: stub4}
+        inv5: {input: L8/inv3/Y, output: stub5}
+        inv6: {input: L8/inv3/Y, output: stub6}
+        inv7: {input: L8/inv4/Y, output: stub7}
+        inv8: {input: L8/inv4/Y, output: stub8}
+
+---
+
+# vertical: the custom_spine_5000 tree with the root at the start of the span;
+# expect HT4-154 (L2/inv1 net), HT4-156 (5 vs 4 inverters), HT4-158 (L2/inv2)
+# with -ref_cell INV12M3..._C60L04 also HT4-157: the cell is 3.12 um wide,
+# more than level_pitch 2.88, so neighbouring columns can overlap
+# 6 stub(s) x 991.667 um
+spine_spec:
+  name: v_6stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 6000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv2: {input: L1/inv1/Y}
+        inv3: {input: L1/inv2/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv3/Y}
+    L3:
+      cells:
+        inv1: {input: L1/inv3/Y}
+        inv2: {input: L2/inv1/Y}
+        inv3: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, output: stub1}
+        inv2: {input: L3/inv1/Y, output: stub2}
+        inv3: {input: L3/inv2/Y, output: stub3}
+        inv4: {input: L3/inv2/Y, output: stub4}
+        inv5: {input: L3/inv3/Y, output: stub5}
+        inv6: {input: L3/inv3/Y, output: stub6}

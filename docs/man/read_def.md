@@ -49,6 +49,8 @@ DESCRIPTION
 OPTIONS
     -file <def_file>
         DEF file to read (.def or .def.gz). Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 OBJECTS AND ATTRIBUTES
     design:<design>

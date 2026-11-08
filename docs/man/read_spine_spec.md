@@ -41,7 +41,14 @@ DESCRIPTION
         constraints.max_drive_length  max_drive_length (number)
         constraints.count_stub_in_drive  count_stub_in_drive (true/false)
         placement.origin_x            origin_x (number)
-        placement.level_pitch_x       level_pitch_x (number)
+        placement.level_pitch         level_pitch (number); the column step,
+                                      along x for a vertical spine and y
+                                      for a horizontal one. level_pitch_x
+                                      and level_pitch_y are read as
+                                      level_pitch (give only one)
+        placement.deviation           deviation (number): how much a net
+                                      may exceed max_drive_length, and
+                                      how far apart a level's nets may be
         spine.orientation             orientation
         spine.span                    span (number)
         stubs.count                   stub_count (integer)
@@ -49,9 +56,12 @@ DESCRIPTION
         stubs.tap                     stub_tap
         stubs.order                   stub_order (list of names)
         levels.<L>.cells.<cell>       a spine_level and spine_cell object;
-                                      the cell's input and output keys
+                                      the cell's input, output and
+                                      location keys (location: a number,
+                                      um from the cell's driver along the
+                                      spine; see create_spine)
     Values are stored as written; nothing is derived or checked against
-    other specs, tech or the library yet.
+    other specs, tech or the library here (create_spine does that).
 
     Nothing is dropped: keys that are not modeled are kept verbatim as
     'path: value' in the spec's .extra (or the cell's .extra for keys in a
@@ -63,17 +73,19 @@ DESCRIPTION
 OPTIONS
     -file <yaml_file>
         YAML file to read. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 OBJECTS AND ATTRIBUTES
     spine_spec:<spec>
         obj_type, name, type, units, point, root_net, max_drive_length,
-        count_stub_in_drive, origin_x, level_pitch_x, orientation, span,
+        count_stub_in_drive, origin_x, level_pitch, deviation, orientation, span,
         stub_count, stub_gap, stub_tap, stub_order, spine_levels (handles),
         file, extra, yaml_text
     spine_level:<spec>/<level>
         obj_type, name, spine_cells (handles), spine_spec
     spine_cell:<spec>/<level>/<cell>
-        obj_type, name, input, output, extra, spine_level
+        obj_type, name, input, output, location, extra, spine_level
 
 QUERIES
     get_db spine_spec                           print every spec (all attributes,

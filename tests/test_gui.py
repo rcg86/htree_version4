@@ -87,8 +87,8 @@ def test_gui_show_opens_window(loaded):
     assert w is not None and w.windowTitle() == "htree4 - top"
     assert {k for k, b in w.object_boxes.items() if b.isEnabled()} == \
         {"boundary", "ports", "tracks", "labels"}                 # no instances: no Pins
-    for key in ("nets", "spine"):
-        assert not w.object_boxes[key].isChecked()
+    assert not w.object_boxes["nets"].isChecked()
+    assert not w.object_boxes["spine"].isEnabled()             # no spine built
     assert not w.object_boxes["cells"].isEnabled()             # no instances yet
     assert w.layer_boxes["H1"].isChecked() and not w.layer_boxes["M1"].isChecked()
     loaded.eval("gui_show")                                           # again: same window
@@ -1029,3 +1029,62 @@ def test_highlight_pen_does_not_change_picking(with_inst):
     assert w.canvas.owner_at(w.canvas.mapFromScene(scene(50.45, 40.22))) == "inst:u1"
     tight = QRectF(scene(50.49, 40.11), scene(50.61, 39.99))   # just around Y's rect
     assert w.canvas.owners_in(tight) == ["pin:u1/Y"]
+
+
+# -- create_spine -------------------------------------------------------------------------
+
+SPINE_YAML = """spine_spec:
+  name: sp1
+  constraints:
+    max_drive_length: 30
+  placement:
+    level_pitch: 2.88
+  spine:
+    orientation: vertical
+    span: 40
+  stubs:
+    gap: 2
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y, output: stub1}
+        inv2: {input: L1/inv1/Y, output: stub2}
+"""
+
+
+@pytest.fixture
+def spine_loaded(loaded, write_lef):
+    pytest.importorskip("scipy")
+    loaded.eval(f"read_lef -file {{{ROOT / 'tests' / 'data' / 'cells.lef'}}}")
+    loaded.eval(f"read_spine_spec -file {{{write_lef(SPINE_YAML, 'sp.yaml')}}}")
+    return loaded
+
+
+def test_validate_show_draws_schematic_tab(spine_loaded):
+    spine_loaded.eval("create_spine -name sp1 -spec_name sp1 -location {10 5} -validate -show")
+    w = app.window()
+    assert w.tabs.count() == 2 and w.tabs.currentWidget() is w.schematic
+    assert w.tabs.tabText(1) == "Schematic: sp1"
+    texts = [i.text() for i in w.schematic.scene().items() if hasattr(i, "text")]
+    assert {"L1_inv1", "L2_inv1", "L2_inv2", "stubs"} <= set(texts)
+    assert spine_loaded.eval("get_db insts") == ""              # nothing built
+    spine_loaded.eval("create_spine -name sp1 -spec_name sp1 -location {20 5} -validate -show")
+    assert w.tabs.count() == 2                                  # the same tab, redrawn
+
+
+def test_built_spine_in_layout_tab(spine_loaded):
+    spine_loaded.eval("gui_show")
+    w = app.window()
+    assert not w.object_boxes["spine"].isEnabled()
+    spine_loaded.eval("create_spine -name sp1 -spec_name sp1 -location {10 5} -build "
+                      "-ref_cell INV_D1")
+    assert w.object_boxes["spine"].isEnabled()
+    assert len(w.layout.spines) == 1 and len(w.layout.spines[0].stubs) == 2
+    items = w.canvas.spine_items
+    assert items and all(i.isVisible() for i in items)
+    w.object_boxes["spine"].setChecked(False)
+    assert not any(i.isVisible() for i in items)
+    assert len(w.layout.insts) == 3                             # the cells are instances

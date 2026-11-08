@@ -5,8 +5,9 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 8   # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
-                     # 7: track assignments; 8: instances
+SCHEMA_VERSION = 11  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+                     # 7: track assignments; 8: instances; 9: route rules;
+                     # 10: level_pitch, deviation, built spines; 11: spine cell location
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -105,7 +106,7 @@ CREATE TABLE spine_spec (
     type TEXT, units TEXT, point TEXT, root_net TEXT,
     -- NUMERIC keeps numbers as written in the YAML: 1020 stays 1020, not 1020.0
     max_drive_length NUMERIC, count_stub_in_drive TEXT,
-    origin_x NUMERIC, level_pitch_x NUMERIC,
+    origin_x NUMERIC, level_pitch NUMERIC, deviation NUMERIC,
     orientation TEXT, span NUMERIC,
     stub_count INTEGER, stub_gap NUMERIC, stub_tap TEXT,
     stub_order TEXT,                     -- Tcl list text
@@ -123,7 +124,8 @@ CREATE TABLE spine_cell (
     level_id INTEGER REFERENCES spine_level(id),
     name TEXT NOT NULL,
     input TEXT,
-    output TEXT
+    output TEXT,
+    location NUMERIC            -- um along the spine from the cell's driver
 );
 
 -- Unmodeled spine spec keys, verbatim. owner is spine_spec or spine_cell.
@@ -191,6 +193,58 @@ CREATE TABLE inst (
     x REAL, y REAL,
     orient TEXT,
     status TEXT                          -- placed
+);
+
+-- create_route_rule: wire width and the spacing kept on each side of a
+-- route, one rule per layer (microns).
+CREATE TABLE route_rule (
+    id INTEGER PRIMARY KEY,
+    layer TEXT UNIQUE NOT NULL,
+    width REAL NOT NULL,
+    spacing REAL NOT NULL,
+    spacing_given TEXT                   -- true: -spacing; false: from tech
+);
+
+-- create_spine -build: a built spine. Its cells are inst rows; spine_member
+-- maps them back to the spec. Stubs and net routes are centre lines (microns).
+CREATE TABLE spine (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    spec TEXT,
+    orientation TEXT,
+    build_direction TEXT,
+    x REAL, y REAL,                      -- -location: centre of the root cell
+    ref_cell TEXT,
+    level_pitch REAL, deviation REAL, max_drive REAL,
+    stub_length REAL
+);
+
+CREATE TABLE spine_member (
+    spine_id INTEGER REFERENCES spine(id),
+    inst TEXT,
+    level TEXT,
+    cell TEXT,
+    driver TEXT                          -- inst name; empty for the root
+);
+
+CREATE TABLE spine_stub (
+    id INTEGER PRIMARY KEY,
+    spine_id INTEGER REFERENCES spine(id),
+    name TEXT,
+    driver TEXT,                         -- inst name of the leaf
+    points TEXT                          -- "x1 y1 x2 y2"
+);
+
+CREATE TABLE spine_net (
+    id INTEGER PRIMARY KEY,
+    spine_id INTEGER REFERENCES spine(id),
+    name TEXT,
+    driver TEXT,                         -- inst name
+    loads TEXT,                          -- inst names, or the stub name
+    grp TEXT,                            -- L1-L2, L2-L3, ..., L4-stubs
+    length REAL,
+    detour REAL,
+    route TEXT                           -- "x1 y1 x2 y2" per segment, ';' between
 );
 
 CREATE TABLE port_extra (
@@ -397,7 +451,7 @@ class Database:
 
     # -- spine specs -----------------------------------------------------------
     SPINE_COLUMNS = ["type", "units", "point", "root_net", "max_drive_length",
-                     "count_stub_in_drive", "origin_x", "level_pitch_x", "orientation",
+                     "count_stub_in_drive", "origin_x", "level_pitch", "deviation", "orientation",
                      "span", "stub_count", "stub_gap", "stub_tap", "stub_order"]
 
     def has_spine_specs(self) -> bool:
@@ -435,9 +489,10 @@ class Database:
                         (spec_id, level.name)).lastrowid
                     for cell in level.cells:
                         cell_id = self.conn.execute(
-                            "INSERT INTO spine_cell (level_id, name, input, output) "
-                            "VALUES (?, ?, ?, ?)",
-                            (level_id, cell.name, cell.input, cell.output)).lastrowid
+                            "INSERT INTO spine_cell (level_id, name, input, output, location) "
+                            "VALUES (?, ?, ?, ?, ?)",
+                            (level_id, cell.name, cell.input, cell.output,
+                             cell.location)).lastrowid
                         self._add_spine_extra("spine_cell", cell_id, cell.extra)
         return replaced
 
@@ -583,6 +638,56 @@ class Database:
     def track_assignment_row(self, layer: str):
         return self.conn.execute("SELECT * FROM track_assignment WHERE layer = ?",
                                  (layer,)).fetchone()
+
+    def set_route_rule(self, layer, width, spacing, spacing_given):
+        """Store a layer's route rule; returns True if it replaced one."""
+        with self.conn:
+            old = self.conn.execute("DELETE FROM route_rule WHERE layer = ?", (layer,)).rowcount
+            self.conn.execute("INSERT INTO route_rule (layer, width, spacing, spacing_given) "
+                              "VALUES (?, ?, ?, ?)",
+                              (layer, width, spacing, "true" if spacing_given else "false"))
+        return old > 0
+
+    def route_rule_layers(self):
+        return [r[0] for r in self.conn.execute("SELECT layer FROM route_rule ORDER BY id")]
+
+    def route_rule_row(self, layer: str):
+        return self.conn.execute("SELECT * FROM route_rule WHERE layer = ?", (layer,)).fetchone()
+
+    def add_spine(self, spine, insts, members, stubs, nets):
+        """Store a built spine and its instances, atomically."""
+        with self.conn:
+            ex = self.conn.execute
+            sid = ex("INSERT INTO spine (name, spec, orientation, build_direction, x, y, ref_cell, "
+                     "level_pitch, deviation, max_drive, stub_length) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", spine).lastrowid
+            self.conn.executemany("INSERT INTO inst (name, ref_cell, x, y, orient, status) "
+                                  "VALUES (?, ?, ?, ?, ?, 'placed')", insts)
+            self.conn.executemany("INSERT INTO spine_member VALUES (?, ?, ?, ?, ?)",
+                                  [(sid,) + tuple(m) for m in members])
+            self.conn.executemany("INSERT INTO spine_stub (spine_id, name, driver, points) "
+                                  "VALUES (?, ?, ?, ?)", [(sid,) + tuple(s) for s in stubs])
+            self.conn.executemany("INSERT INTO spine_net (spine_id, name, driver, loads, grp, "
+                                  "length, detour, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                  [(sid,) + tuple(n) for n in nets])
+
+    def spine_names(self):
+        return [r[0] for r in self.conn.execute("SELECT name FROM spine ORDER BY id")]
+
+    def spine_row(self, name: str):
+        return self.conn.execute("SELECT * FROM spine WHERE name = ?", (name,)).fetchone()
+
+    def spine_members(self, spine_id: int):
+        return self.conn.execute("SELECT * FROM spine_member WHERE spine_id = ? ORDER BY rowid",
+                                 (spine_id,)).fetchall()
+
+    def spine_stub_rows(self, spine_id: int):
+        return self.conn.execute("SELECT * FROM spine_stub WHERE spine_id = ? ORDER BY id",
+                                 (spine_id,)).fetchall()
+
+    def spine_net_rows(self, spine_id: int):
+        return self.conn.execute("SELECT * FROM spine_net WHERE spine_id = ? ORDER BY id",
+                                 (spine_id,)).fetchall()
 
     def add_inst(self, name, ref_cell, x, y, orient, status="placed"):
         with self.conn:

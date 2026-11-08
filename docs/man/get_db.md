@@ -98,6 +98,12 @@ DESCRIPTION
         -if {.name == IA}. The parenthesized form -if (.name == IA) is also
         accepted.
 
+OPTIONS
+    -if {<expr>}
+        Keep only the objects for which <expr> is true (see DESCRIPTION).
+    -help
+        Print the definition, usage, options and an example of the command.
+
 OBJECT ATTRIBUTES
     tech
         obj_type, file, lef_version, db_units, manufacturing_grid,

@@ -1,4 +1,4 @@
-"""write_db <file> [-overwrite]: save the in-memory database to a SQLite file."""
+"""write_db -file <file> [-overwrite]: save the in-memory database to a SQLite file."""
 
 import os
 import sqlite3
@@ -14,10 +14,14 @@ WRITE_FAILED = 31
 
 
 def run(session, argv):
-    opts, pos = parse_options(NAME, argv, {"-overwrite": "flag"}, max_positionals=1)
-    if not pos:
-        raise HtreeError(1, "write_db: missing file name. Usage: write_db <file> [-overwrite]")
-    path = pos[0]
+    opts, pos = parse_options(NAME, argv, {"-file": "value", "-overwrite": "flag"},
+                              max_positionals=1)
+    if "-file" in opts and pos:
+        raise HtreeError(1, "write_db: give the file once, with -file")
+    path = opts.get("-file") or (pos[0] if pos else None)
+    if not path:
+        raise HtreeError(1, "write_db: missing file name. "
+                         "Usage: write_db -file <file> [-overwrite]")
     if os.path.exists(path) and not opts["-overwrite"]:
         raise HtreeError(EXISTS, f"write_db: '{path}' exists; use -overwrite to replace it")
     # Write beside the target and rename, so a failed write never loses the old file.

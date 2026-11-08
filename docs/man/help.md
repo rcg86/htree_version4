@@ -9,8 +9,12 @@ DESCRIPTION
     commands (set, foreach, puts, source, exit, ...) are also available
     and are not listed.
 
+    Every command also takes -help, which prints its definition, usage,
+    options and an example; 'man <command>' prints the full page.
+
 OPTIONS
-    None.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None.

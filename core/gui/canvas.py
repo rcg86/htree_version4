@@ -15,7 +15,7 @@ least MIN_TRACK_PIXELS apart on screen. Tech layers show only the tracks of
 their preferred direction (a horizontal layer: DEF TRACKS Y).
 """
 
-from PySide6.QtCore import QPointF, QRect, QRectF, Qt, QTimer, Signal
+from PySide6.QtCore import QLineF, QPointF, QRect, QRectF, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QTransform
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem,
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
@@ -40,6 +40,8 @@ LABEL_KEY = 2             # ... and the pin name written on it when labels are o
 MAX_LABELS = 2000         # more pins than this in view: no labels until zoomed in
 SELECT_COLOR = "#ffff00"
 INST_COLOR = "#26c6da"        # instance outline
+SPINE_STUB_COLOR = "#b388ff"  # built spine: stubs (3 px) and net centre lines (1 px)
+SPINE_NET_COLOR = "#7bd88f"
 BLINK_COLOR = "#ff00ff"
 BLINK_TIMES = 4           # on/off cycles
 BLINK_MS = 200            # per half cycle
@@ -101,7 +103,7 @@ class LayoutCanvas(QGraphicsView):
         self.shape_items = {}                # layer -> [items]
         self.visible_layers = set()
         self.show = {"boundary": True, "ports": True, "tracks": False, "cells": True,
-                     "pins": True, "labels": False}
+                     "pins": True, "labels": False, "spine": True}
         self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
         self.highlighted = {}                # item -> (pen, z) before highlighting
         self.owner_items = {}                # owner handle (port) -> [items]
@@ -129,6 +131,7 @@ class LayoutCanvas(QGraphicsView):
         self.layout, self.boundary_item = layout, None
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
         self.inst_items, self.inst_pin_items = [], {}       # outlines; layer -> pin items
+        self.spine_items = []
         self.visible_layers = set(visible_layers)
         if layout.boundary:
             poly = QPolygonF([scene(x, y) for x, y in
@@ -154,6 +157,7 @@ class LayoutCanvas(QGraphicsView):
             self.shape_items.setdefault(s.layer, []).append(item)
             self.owner_items.setdefault(s.port, []).append(item)
         self._add_insts(layout, colors)
+        self._add_spines(layout)
         self.content = self._content_rect()
         if not self.content.isEmpty():
             pad = PAN_MARGIN * max(self.content.width(), self.content.height())
@@ -196,6 +200,24 @@ class LayoutCanvas(QGraphicsView):
                 self.owner_items[inst.handle].append(item)
                 self.owner_items.setdefault(pin_handle, []).append(item)
 
+    def _add_spines(self, layout):
+        """Built spines: thick stub bars and thin net centre lines (not selectable;
+        their cells are instances)."""
+        sc = self.scene()
+        stub_pen = QPen(QColor(SPINE_STUB_COLOR), 3)
+        stub_pen.setCosmetic(True)
+        net_pen = QPen(QColor(SPINE_NET_COLOR), 1)
+        net_pen.setCosmetic(True)
+        for sp in layout.spines:
+            for _, (x1, y1, x2, y2) in sp.stubs:
+                self.spine_items.append(sc.addLine(QLineF(scene(x1, y1), scene(x2, y2)),
+                                                   stub_pen))
+            for x1, y1, x2, y2 in sp.segments:
+                self.spine_items.append(sc.addLine(QLineF(scene(x1, y1), scene(x2, y2)),
+                                                   net_pen))
+        for item in self.spine_items:
+            item.setZValue(3)
+
     def _content_rect(self):
         lay = self.layout
         if lay.bbox:
@@ -212,6 +234,8 @@ class LayoutCanvas(QGraphicsView):
                 item.setVisible(on)
         for item in self.inst_items:
             item.setVisible(self.show["cells"])
+        for item in self.spine_items:
+            item.setVisible(self.show["spine"])
         for layer, items in self.inst_pin_items.items():
             on = self.show["pins"] and layer in self.visible_layers
             for item in items:

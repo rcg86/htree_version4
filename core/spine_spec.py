@@ -29,6 +29,7 @@ class SpineCell:
     name: str
     input: Optional[str] = None
     output: Optional[str] = None
+    location: Optional[float] = None   # along the spine from its driver, um
     extra: List[str] = field(default_factory=list)
 
 
@@ -49,7 +50,8 @@ class SpineSpec:
     max_drive_length: Optional[float] = None
     count_stub_in_drive: Optional[bool] = None
     origin_x: Optional[float] = None
-    level_pitch_x: Optional[float] = None
+    level_pitch: Optional[float] = None
+    deviation: Optional[float] = None
     orientation: Optional[str] = None
     span: Optional[float] = None
     stub_count: Optional[int] = None
@@ -77,7 +79,8 @@ FIELDS = {
     ("constraints", "max_drive_length"): ("max_drive_length", "num"),
     ("constraints", "count_stub_in_drive"): ("count_stub_in_drive", "bool"),
     ("placement", "origin_x"): ("origin_x", "num"),
-    ("placement", "level_pitch_x"): ("level_pitch_x", "num"),
+    ("placement", "level_pitch"): ("level_pitch", "num"),
+    ("placement", "deviation"): ("deviation", "num"),
     ("spine", "orientation"): ("orientation", "str"),
     ("spine", "span"): ("span", "num"),
     ("stubs", "count"): ("stub_count", "int"),
@@ -85,6 +88,10 @@ FIELDS = {
     ("stubs", "tap"): ("stub_tap", "str"),
     ("stubs", "order"): ("stub_order", "list"),
 }
+# Older keys still read, as the key they became. orientation decides the
+# axis of level_pitch, so one key serves vertical and horizontal spines.
+ALIASES = {("placement", "level_pitch_x"): "level_pitch",
+           ("placement", "level_pitch_y"): "level_pitch"}
 SECTIONS = {s for s, _ in FIELDS if s}
 KIND_TEXT = {"str": "a string", "num": "a number", "int": "an integer",
              "bool": "true or false", "list": "a list of names"}
@@ -201,8 +208,12 @@ class _Parser:
         return spec
 
     def field(self, spec, section, key, value, line):
-        target = FIELDS.get((section, key))
         path = f"{section}.{key}" if section else key
+        key = ALIASES.get((section, key), key)
+        if (section, key) == ("placement", "level_pitch") and spec.level_pitch is not None:
+            self.error(f"{spec.name}: give only one of placement.level_pitch, "
+                       f"level_pitch_x and level_pitch_y", line)
+        target = FIELDS.get((section, key))
         if target is None:
             spec.extra.append(f"{path}: {_flow(value)}")
             return
@@ -255,6 +266,12 @@ class _Parser:
                         self.error(f"{spec.name}: {lname}/{cname} {key} must be a string, "
                                    f"got {_flow(kval)}", cline)
                     setattr(cell, key, kval)
+                elif key == "location":
+                    if kval is not None and not _is_kind(kval, "num"):
+                        self.error(f"{spec.name}: {lname}/{cname} location must be a number "
+                                   f"(um from its driver along the spine), got {_flow(kval)}",
+                                   cline)
+                    cell.location = kval
                 else:
                     cell.extra.append(f"{key}: {_flow(kval)}")
             cells.append(cell)

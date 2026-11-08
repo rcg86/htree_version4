@@ -63,6 +63,14 @@ class Inst:
 
 
 @dataclass
+class SpineDraw:
+    """A built spine (create_spine -build): stubs and net centre lines."""
+    handle: str                  # spine:<name>
+    stubs: List[Tuple[str, List[float]]] = field(default_factory=list)   # (name, x1 y1 x2 y2)
+    segments: List[List[float]] = field(default_factory=list)            # x1 y1 x2 y2
+
+
+@dataclass
 class TrackAssignment:
     layer: str
     direction: str               # x | y: which tracks are numbered
@@ -86,6 +94,7 @@ class Layout:
     assignments: List[TrackAssignment] = field(default_factory=list)
     preferred: Dict[str, str] = field(default_factory=dict)   # tech layer -> x | y
     insts: List[Inst] = field(default_factory=list)
+    spines: List[SpineDraw] = field(default_factory=list)
 
     def layer(self, name) -> Optional[LayerInfo]:
         return next((l for l in self.layers if l.name == name), None)
@@ -128,6 +137,7 @@ def load_layout(db) -> Layout:
         lay.insts.append(inst)
         for _, layer, _, _ in inst.pins:
             counts.setdefault(layer, [0, 0])[0] += 1
+    lay.spines = load_spines(db)
     for i, (name, (shapes, tracks)) in enumerate(counts.items()):
         lay.layers.append(LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)],
                                     shapes, tracks))
@@ -151,6 +161,20 @@ def load_insts(db) -> List[Inst]:
         pins = [(pin, layer, kind, placed_points([float(v) for v in pts.split()], place))
                 for pin, layer, kind, pts in shapes_of[row["ref_cell"]]]
         out.append(Inst(f"inst:{row['name']}", row["ref_cell"], box, pins))
+    return out
+
+
+def load_spines(db) -> List[SpineDraw]:
+    out = []
+    for name in db.spine_names():
+        row = db.spine_row(name)
+        sp = SpineDraw(f"spine:{name}")
+        for s in db.spine_stub_rows(row["id"]):
+            sp.stubs.append((s["name"], [float(v) for v in s["points"].split()]))
+        for n in db.spine_net_rows(row["id"]):
+            sp.segments += [[float(v) for v in seg.split()]
+                            for seg in (n["route"] or "").split(";") if seg]
+        out.append(sp)
     return out
 
 

@@ -47,6 +47,8 @@ DESCRIPTION
 OPTIONS
     -file <lef_file>
         Cell LEF file to read. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 OBJECTS AND ATTRIBUTES
     library_physical

@@ -15,6 +15,8 @@ OPTIONS
         Object handles or Tcl lists of handles.
     -all
         Clear the selection.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None.

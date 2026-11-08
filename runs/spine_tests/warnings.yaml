@@ -1,0 +1,197 @@
+# max_drive_length 600 is shorter than a stub: HT4-154
+# (HT4-157 too with the INV12M3 cell)
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: w_over
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 600
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 2000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+
+---
+
+# L2/a drives stub1 itself, L2/b two stubs: the L2-L3 nets differ by more
+# than deviation 5: HT4-155;
+# also HT4-154 (the root reaches L2/b near stub2) and HT4-156
+# 3 stub(s) x 993.333 um
+spine_spec:
+  name: w_spread
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 5
+
+  spine:
+    orientation: horizontal
+    span: 3000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        a: {input: L1/inv1/Y, output: stub1}
+        b: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/b/Y, output: stub2}
+        inv2: {input: L2/b/Y, output: stub3}
+
+---
+
+# stub1 is 3 inverters from the root, stub2 2: HT4-156
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: w_depth
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 2000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv1/Y, output: stub2}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+
+---
+
+# L2/inv2 drives nothing: HT4-158
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: w_dummy
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 2000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+
+---
+
+# level_pitch 1.0 is narrower than the inverter: HT4-157 with -ref_cell
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: w_overlap
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 1.0            # X step between levels
+    deviation: 10
+
+  spine:
+    orientation: vertical
+    span: 2000                  # total Y covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}

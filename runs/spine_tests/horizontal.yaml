@@ -1,0 +1,284 @@
+# horizontal: root drives the one leaf; expect no warnings
+# 1 stub(s) x 1000.000 um
+spine_spec:
+  name: h_1stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 1000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y, output: stub1}
+
+---
+
+# horizontal: one repeater, then 2 leaves; expect no warnings
+# 2 stub(s) x 995.000 um
+spine_spec:
+  name: h_2stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 2000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+
+---
+
+# horizontal: one cell drives 3 leaves about 1000 um apart;
+# expect HT4-154: that net is about 2010 um
+# 3 stub(s) x 993.333 um
+spine_spec:
+  name: h_3stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 3000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y, output: stub1}
+        inv2: {input: L2/inv1/Y, output: stub2}
+        inv3: {input: L2/inv1/Y, output: stub3}
+
+---
+
+# horizontal: 2 repeaters climb right, then a binary split; expect no warnings
+# 4 stub(s) x 992.500 um
+spine_spec:
+  name: h_4stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 4000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y}
+        inv2: {input: L3/inv1/Y}
+    L5:
+      cells:
+        inv1: {input: L4/inv1/Y, output: stub1}
+        inv2: {input: L4/inv1/Y, output: stub2}
+        inv3: {input: L4/inv2/Y, output: stub3}
+        inv4: {input: L4/inv2/Y, output: stub4}
+
+---
+
+# horizontal: a trunk of repeaters climbs right; the lower branch has as many
+# inverters as the upper one, so all 8 stubs have the same delay;
+# expect no warnings (short nets are padded with detour)
+# 8 stub(s) x 991.250 um
+spine_spec:
+  name: h_8stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 8000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y}
+        inv2: {input: L3/inv1/Y}
+    L5:
+      cells:
+        inv1: {input: L4/inv1/Y}
+        inv2: {input: L4/inv2/Y}
+    L6:
+      cells:
+        inv1: {input: L5/inv1/Y}
+        inv2: {input: L5/inv2/Y}
+    L7:
+      cells:
+        inv1: {input: L6/inv1/Y}
+        inv2: {input: L6/inv2/Y}
+    L8:
+      cells:
+        inv1: {input: L7/inv1/Y}
+        inv2: {input: L7/inv1/Y}
+        inv3: {input: L7/inv2/Y}
+        inv4: {input: L7/inv2/Y}
+    L9:
+      cells:
+        inv1: {input: L8/inv1/Y, output: stub1}
+        inv2: {input: L8/inv1/Y, output: stub2}
+        inv3: {input: L8/inv2/Y, output: stub3}
+        inv4: {input: L8/inv2/Y, output: stub4}
+        inv5: {input: L8/inv3/Y, output: stub5}
+        inv6: {input: L8/inv3/Y, output: stub6}
+        inv7: {input: L8/inv4/Y, output: stub7}
+        inv8: {input: L8/inv4/Y, output: stub8}
+
+---
+
+# horizontal: the custom_spine_5000 tree with the root at the start of the span;
+# expect HT4-154 (L2/inv1 net), HT4-156 (5 vs 4 inverters), HT4-158 (L2/inv2)
+# 6 stub(s) x 991.667 um
+spine_spec:
+  name: h_6stub
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+
+  placement:
+    level_pitch: 2.88            # Y step between levels
+    deviation: 10
+
+  spine:
+    orientation: horizontal
+    span: 6000                  # total X covered by the stubs
+
+  stubs:
+    gap: 10
+    tap: center
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv2: {input: L1/inv1/Y}
+        inv3: {input: L1/inv2/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv3/Y}
+    L3:
+      cells:
+        inv1: {input: L1/inv3/Y}
+        inv2: {input: L2/inv1/Y}
+        inv3: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, output: stub1}
+        inv2: {input: L3/inv1/Y, output: stub2}
+        inv3: {input: L3/inv2/Y, output: stub3}
+        inv4: {input: L3/inv2/Y, output: stub4}
+        inv5: {input: L3/inv3/Y, output: stub5}
+        inv6: {input: L3/inv3/Y, output: stub6}

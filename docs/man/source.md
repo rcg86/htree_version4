@@ -32,6 +32,8 @@ OPTIONS
     <file>
         Script to run. Relative paths are relative to the current
         directory. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     The result of the last command in the file, or the value given to

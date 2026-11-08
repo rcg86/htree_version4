@@ -47,6 +47,8 @@ OPTIONS
         Required.
     -layer <layer>
         Tech layer whose tracks are assigned. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 OBJECTS AND ATTRIBUTES
     track_assignment:<layer>

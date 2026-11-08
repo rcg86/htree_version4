@@ -70,6 +70,10 @@ class Session:
                           f"{type(exc).__name__}: {exc}", file=self.out)
 
     def _run(self, name, argv):
+        if "-help" in argv:               # every command: usage, options, an example
+            from core.commands import man
+            print(man.brief(self, name), file=self.out)
+            return ("ok", "")
         try:
             result = self.commands[name].run(self, list(argv))
         except HtreeError as exc:

@@ -17,6 +17,10 @@
     track_assignment:<layer>          a layer's net pattern (assign_track_for_route)
     inst:<name>                       a placed instance of a lib cell (create_inst)
     pin:<inst>/<pin>                  a pin of an instance
+    route_rule:<layer>                a layer's wire width and spacing (create_route_rule)
+    spine:<name>                      a spine built by create_spine -build
+    spine_stub:<spine>/<stub>         one of its stubs
+    spine_net:<spine>/<net>           one of its nets
 
 Attribute values are Python scalars, None (empty), or lists. Attributes that
 refer to other objects return handles, so get_db can keep walking.
@@ -47,11 +51,12 @@ LIB_PORT_ATTRS = ["obj_type", "name", "layer_shapes", "layers", "extra", "lib_pi
 LAYER_SHAPE_ATTRS = ["obj_type", "name", "layer", "type", "rect", "points", "mask",
                      "in_tech", "lib_port"]
 SPINE_SPEC_ATTRS = ["obj_type", "name", "type", "units", "point", "root_net",
-                    "max_drive_length", "count_stub_in_drive", "origin_x", "level_pitch_x",
-                    "orientation", "span", "stub_count", "stub_gap", "stub_tap", "stub_order",
+                    "max_drive_length", "count_stub_in_drive", "origin_x", "level_pitch",
+                    "deviation", "orientation", "span", "stub_count", "stub_gap", "stub_tap",
+                    "stub_order",
                     "spine_levels", "file", "extra", "yaml_text"]
 SPINE_LEVEL_ATTRS = ["obj_type", "name", "spine_cells", "spine_spec"]
-SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "extra", "spine_level"]
+SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "location", "extra", "spine_level"]
 DESIGN_ATTRS = ["obj_type", "name", "file", "def_version", "units", "boundary", "bbox",
                 "area", "ports", "track_patterns"]
 TRACK_PATTERN_ATTRS = ["obj_type", "name", "direction", "start", "num_tracks", "step", "end",
@@ -65,6 +70,14 @@ TRACK_ASSIGNMENT_ATTRS = ["obj_type", "name", "layer", "direction", "pattern", "
 INST_ATTRS = ["obj_type", "name", "ref_name", "lib_cell", "location", "orient", "bbox",
               "status", "pins"]
 PIN_ATTRS = ["obj_type", "name", "inst", "lib_pin", "direction", "use", "layers", "rect"]
+SPINE_ATTRS = ["obj_type", "name", "spine_spec", "orientation", "build_direction", "location",
+               "ref_cell", "level_pitch", "deviation", "max_drive_length", "stub_length",
+               "insts", "spine_stubs", "spine_nets"]
+SPINE_STUB_ATTRS = ["obj_type", "name", "driver", "points", "length", "tap", "spine"]
+SPINE_NET_ATTRS = ["obj_type", "name", "driver", "loads", "group", "length", "detour",
+                   "route", "spine"]
+ROUTE_RULE_ATTRS = ["obj_type", "name", "layer", "width", "spacing", "spacing_given", "pitch",
+                    "tech_min_width", "tech_spacing"]
 ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "library_physical": LIBRARY_PHYSICAL_ATTRS, "lib_cell": LIB_CELL_ATTRS,
          "lib_pin": LIB_PIN_ATTRS, "lib_port": LIB_PORT_ATTRS,
@@ -72,7 +85,8 @@ ATTRS = {"tech": TECH_ATTRS, "layer": LAYER_ATTRS,
          "spine_level": SPINE_LEVEL_ATTRS, "spine_cell": SPINE_CELL_ATTRS,
          "design": DESIGN_ATTRS, "port": PORT_ATTRS, "port_shape": PORT_SHAPE_ATTRS,
          "track_pattern": TRACK_PATTERN_ATTRS, "track_assignment": TRACK_ASSIGNMENT_ATTRS,
-         "inst": INST_ATTRS, "pin": PIN_ATTRS}
+         "inst": INST_ATTRS, "pin": PIN_ATTRS, "route_rule": ROUTE_RULE_ATTRS,
+         "spine": SPINE_ATTRS, "spine_stub": SPINE_STUB_ATTRS, "spine_net": SPINE_NET_ATTRS}
 # (object type, attr) -> object type of the handles the attr returns.
 RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("layer", "tech"): "tech",
@@ -91,7 +105,11 @@ RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("design", "track_patterns"): "track_pattern",
              ("track_pattern", "design"): "design",
              ("inst", "lib_cell"): "lib_cell", ("inst", "pins"): "pin",
-             ("pin", "inst"): "inst", ("pin", "lib_pin"): "lib_pin"}
+             ("pin", "inst"): "inst", ("pin", "lib_pin"): "lib_pin",
+             ("spine", "spine_spec"): "spine_spec", ("spine", "insts"): "inst",
+             ("spine", "spine_stubs"): "spine_stub", ("spine", "spine_nets"): "spine_net",
+             ("spine_stub", "driver"): "inst", ("spine_stub", "spine"): "spine",
+             ("spine_net", "driver"): "inst", ("spine_net", "spine"): "spine"}
 # Objects with exactly one instance; the handle is the type name.
 SINGLETONS = ("tech", "library_physical")
 # Number of '/'-separated parts in the name of each library object.
@@ -117,7 +135,8 @@ def name_of(handle: str) -> str:
         return handle
     name = handle.partition(":")[2]
     kind = obj_type(handle)
-    nested = kind in _PARTS or kind in _SPINE_PARTS or kind in _DESIGN_PARTS
+    nested = (kind in _PARTS or kind in _SPINE_PARTS or kind in _DESIGN_PARTS
+              or kind in ("spine_stub", "spine_net"))
     return name.rsplit("/", 1)[-1] if nested else name
 
 
@@ -194,6 +213,10 @@ def check_exists(db, handle: str):
         return
     if kind == "inst" and db.inst_row(handle.partition(":")[2]):
         return
+    if kind == "route_rule" and db.route_rule_row(handle.partition(":")[2]):
+        return
+    if kind in ("spine", "spine_stub", "spine_net") and _built_spine_row(db, handle) is not None:
+        return
     if kind == "pin" and _pin_rows(db, handle) is not None:
         return
     if kind == "layer" and db.layer_row(handle.partition(":")[2]) is not None:
@@ -256,6 +279,10 @@ def get_attr(db, handle: str, attr: str):
         return _inst_attr(db, handle, attr)
     if kind == "pin":
         return _pin_attr(db, handle, attr)
+    if kind == "route_rule":
+        return _route_rule_attr(db, handle, attr)
+    if kind in ("spine", "spine_stub", "spine_net"):
+        return _built_spine_attr(db, handle, kind, attr)
     row = db.layer_row(handle.partition(":")[2])
     if row is None:
         raise _missing(handle)
@@ -549,6 +576,86 @@ def _track_assignment_attr(db, handle, attr):
         return [w for net, n, _ in summarize(pattern, positions) for w in (net, str(n))]
     # tracks: {coordinate net} per track, lowest first
     return [f"{_num(c)} {pattern[i % len(pattern)]}" for i, c in enumerate(positions)]
+
+
+def _route_rule_attr(db, handle, attr):
+    layer = handle.partition(":")[2]
+    row = db.route_rule_row(layer)
+    if row is None:
+        raise _missing(handle)
+    if attr in ("name", "layer"):
+        return layer
+    if attr == "pitch":                   # centre to centre with a parallel wire of this rule
+        return round(row["width"] + row["spacing"], 6)
+    if attr in ("tech_min_width", "tech_spacing"):
+        from core.commands.create_route_rule import tech_min_width, tech_spacing
+        lrow = db.layer_row(layer) if db.has_tech() else None
+        if lrow is None:
+            return None
+        if attr == "tech_min_width":
+            return tech_min_width(lrow)
+        return tech_spacing(db, lrow, row["width"])[0]
+    return row[attr]                      # width, spacing, spacing_given
+
+
+def _built_spine_row(db, handle):
+    """(spine row, stub or net row or None) of a built spine object, or None."""
+    kind = obj_type(handle)
+    name, _, part = handle.partition(":")[2].partition("/")
+    spine = db.spine_row(name)
+    if spine is None or (kind == "spine") == bool(part):
+        return None
+    if kind == "spine":
+        return spine, None
+    rows = db.spine_stub_rows(spine["id"]) if kind == "spine_stub" else \
+        db.spine_net_rows(spine["id"])
+    row = next((r for r in rows if r["name"] == part), None)
+    return None if row is None else (spine, row)
+
+
+def _built_spine_attr(db, handle, kind, attr):
+    found = _built_spine_row(db, handle)
+    if found is None:
+        raise _missing(handle)
+    spine, row = found
+    if kind == "spine":
+        if attr == "name":
+            return spine["name"]
+        if attr == "spine_spec":
+            return f"spine_spec:{spine['spec']}"
+        if attr == "location":
+            return f"{_num(spine['x'])} {_num(spine['y'])}"
+        if attr == "max_drive_length":
+            return spine["max_drive"]
+        if attr == "insts":
+            return [f"inst:{m['inst']}" for m in db.spine_members(spine["id"])]
+        if attr == "spine_stubs":
+            return [f"spine_stub:{spine['name']}/{r['name']}"
+                    for r in db.spine_stub_rows(spine["id"])]
+        if attr == "spine_nets":
+            return [f"spine_net:{spine['name']}/{r['name']}"
+                    for r in db.spine_net_rows(spine["id"])]
+        return spine[attr]
+    if attr == "name":
+        return row["name"]
+    if attr == "spine":
+        return f"spine:{spine['name']}"
+    if attr == "driver":
+        return f"inst:{row['driver']}"
+    if kind == "spine_stub":
+        x1, y1, x2, y2 = (float(v) for v in row["points"].split())
+        if attr == "length":
+            return round(abs(x2 - x1) + abs(y2 - y1), 6)
+        if attr == "tap":
+            return f"{_num(round((x1 + x2) / 2, 6))} {_num(round((y1 + y2) / 2, 6))}"
+        return row["points"]
+    if attr == "loads":
+        return row["loads"].split()
+    if attr == "group":
+        return row["grp"]
+    if attr == "route":                   # one "x1 y1 x2 y2" per segment
+        return [seg for seg in row["route"].split(";") if seg]
+    return row[attr]                      # length, detour
 
 
 def format_value(value) -> str:

@@ -8,9 +8,15 @@ DESCRIPTION
     Prints the manual page for <command>. Pages are the files
     docs/man/<command>.md in the tool directory.
 
+    '<command> -help' prints the short form of the same page: NAME,
+    SYNOPSIS, the first paragraph of DESCRIPTION, OPTIONS and the first
+    example that runs the command.
+
 OPTIONS
     <command>
         Command name. Required.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None.

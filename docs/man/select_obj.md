@@ -23,6 +23,8 @@ DESCRIPTION
 OPTIONS
     <objects>
         Object handles, e.g. port:cf999/clk or [get_db ports -if {...}].
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     None.

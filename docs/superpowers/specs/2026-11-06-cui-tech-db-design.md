@@ -502,3 +502,96 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   cursor, to the larger shape on near misses (zoomed out: the instance);
   Shift+drag over a whole instance selects the instance only.
 
+
+## 21. `create_route_rule` (branch create_spine, user request, 2026-11-07)
+
+- User: `create_route_rule -layer <layer> -width <width> -spacing <space>`
+  (spacing optional), spacing kept on the left and right side of the net.
+- Claude's calls (user to check): one rule per layer, handle
+  `route_rule:<layer>` (like track_assignment; no -name option), a new
+  rule replaces the old one with a warning; default spacing is what the
+  tech asks of a wire of this width next to a minimum-width wire
+  (SPACINGTABLE TWOWIDTHS: row for the width, first column;
+  PARALLELRUNLENGTH: row for the width, longest run; plain SPACING as a
+  floor; PRL conditions not applied, the safe side); errors for a
+  non-routing layer, width outside WIDTH/MINWIDTH..MAXWIDTH, spacing
+  below the tech value, no tech spacing and no -spacing; warnings for
+  off-grid values. Attributes: width, spacing, spacing_given, pitch
+  (width + spacing), tech_min_width, tech_spacing. Table `route_rule`
+  (schema 9), saved by write_db. Not read: LEF58 spacing properties,
+  end-of-line, cut and voltage spacing.
+
+## 22. `-help` on every command (user request, 2026-11-07)
+
+- User: every command takes -help, showing the options, how to use it,
+  the command definition and a small example.
+- Claude's calls (user to check): handled once in the shell, before the
+  command runs (nothing is executed), so every command, present and
+  future, gets it; the text comes from the command's man page: NAME,
+  SYNOPSIS, first DESCRIPTION paragraph, OPTIONS and the first example
+  that runs the command (up to 6 output lines). Every man page lists
+  -help under OPTIONS (get_db gained an OPTIONS section with -if). A
+  test runs `<cmd> -help` for every command.
+
+## 23. `read_db -file` / `write_db -file` (user request, 2026-11-07)
+
+- User: after write_db saves the complete database, `read_db -file
+  <database>` reads it and the implementation continues from there.
+- Claude's calls (user to check): read_db and write_db take -file (the
+  bare file name still works, both at once is an error); read_db clears
+  the selection (handles of the replaced database), prints a summary of
+  what was loaded (tech, library, spine specs, design, track
+  assignments, route rules, instances), and an open GUI redraws.
+  Nothing outside the SQLite file is saved: selection, GUI view, Tcl
+  variables and procs. Checked on cf999: write, read in a new process,
+  create_inst continues as inst_2.
+
+## 24. `create_spine` (branch create_spine, user requests, 2026-11-07/08)
+
+- User's rules: each level is a column, level_pitch apart (x for a
+  vertical spine, y for horizontal; one key, `level_pitch`, axis from
+  `orientation`); `<spine>_L1_inv1` at -location, fixed; columns step
+  toward -build_direction (+x/-x, +y/-y); the stubs are pieces of metal
+  in one straight line with stubs.gap between them, the spine grows from
+  the location up (vertical) or right (horizontal); every L4 sits at the
+  middle of its stub (hard); other cells stay in their column and move
+  along the spine only; `placement.deviation` (10): a net may exceed
+  max_drive_length by up to deviation, and within a level (L1-L2, L2-L3,
+  L3-L4) the nets may differ by at most deviation; net length is the
+  whole net, 2.88 plus all branches with shared route counted once;
+  `-validate` reports warnings without changing the design, `-show` (only
+  with -validate) draws a schematic tab next to the layout tab (dots,
+  lines), `-build` builds ignoring warnings; exactly one of -validate and
+  -build. custom_spine_5000's span changed to 6000 (stubs 991.667).
+- User's rule (2026-11-08): -name is the spine's name and the instance
+  prefix (<name>_L1_inv1); -spec_name is the spine spec to place, so one
+  spec can be placed several times.
+- User's rule (2026-11-08): a cell key `location` (um) fixes the cell at
+  its driver's position + location along the spine: + up (vertical) or
+  right (horizontal), - down or left. Claude's calls: it is hard (an
+  equality in the LP, so the cell follows a movable driver); it may leave
+  the span; not allowed on the root or a leaf (HT4-151); a dummy with a
+  location goes there instead of at its driver; the same-column spacing
+  is not applied to it; stored in spine_cell.location (schema 11),
+  get_db .location.
+- Claude's calls (user to check): -ref_cell gives the inverter
+  (required with -build, optional with -validate for overlap checks);
+  stubs share the span equally; the tool picks which stub goes where,
+  keeping each cell's stubs adjacent (stubs.order unused); positions from
+  a linear program (SciPy HiGHS, added to requirements) minimizing
+  1000 x (um over a limit + um of level spread over deviation) + wire,
+  with a tie-break on the longest net; detour wire may pad short nets
+  (counted in the net); a dummy sits at its driver's position; a cell
+  driven from its own column is kept one cell length further along (soft,
+  weighted above everything else); same-column trunk with no column step
+  for same-column loads; groups are by driver level, plus L4-stubs.
+  Extra warnings beyond the user's: different inverter counts to stubs
+  (delay, polarity), overlapping cells (incl. neighbouring columns since
+  2.88 < 3.12 cell width), cells that drive nothing, cells or stubs
+  outside the design boundary. -build: instances centred (point: center),
+  orientation N, lower-left snapped to the manufacturing grid; stubs and
+  net centre lines stored as spine / spine_stub / spine_net objects
+  (schema 10) and drawn in the layout tab (Spine checkbox); no routing
+  layer yet. A horizontal spine is drawn lying down in the schematic.
+- Known consequence, reported to the user: with the root fixed at the
+  bottom of a 6000 um spine, custom_spine_5000's L2/inv1 net is ~3455 um.

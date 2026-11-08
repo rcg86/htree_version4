@@ -12,5 +12,6 @@ def run(session, argv):
     width = max(len(name) for name in session.commands)
     for name in sorted(session.commands):
         info(f"  {name:<{width}}  {session.commands[name].SUMMARY}", session.out)
-    info("Run 'man <command>' for details.", session.out)
+    info("Run '<command> -help' for usage and an example, 'man <command>' for details.",
+         session.out)
     return None

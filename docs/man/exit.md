@@ -12,12 +12,14 @@ DESCRIPTION
 OPTIONS
     <code>
         Process exit status. Default 0.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
     Does not return.
 
 EXAMPLES
-    htree> write_db design.db
+    htree> write_db -file design.db
     htree> exit
 
 ERRORS

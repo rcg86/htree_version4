@@ -48,6 +48,9 @@ ROOTS = {
                                     for l in db.track_assignment_layers()],
     "insts": lambda db: [f"inst:{n}" for n in db.inst_names()],
     "inst": lambda db: [f"inst:{n}" for n in db.inst_names()],
+    "route_rules": lambda db: [f"route_rule:{l}" for l in db.route_rule_layers()],
+    "spines": lambda db: [f"spine:{n}" for n in db.spine_names()],
+    "route_rule": lambda db: [f"route_rule:{l}" for l in db.route_rule_layers()],
 }
 
 
@@ -299,8 +302,8 @@ def _dump_spine_spec(db, handle, out):
     for level in levels:
         info(f"  {objects.name_of(level)}", out)
         for cell in objects.get_attr(db, level, "spine_cells"):
-            parts = [f"{a} {objects.get_attr(db, cell, a)}" for a in ("input", "output")
-                     if objects.get_attr(db, cell, a) is not None]
+            values = {a: objects.get_attr(db, cell, a) for a in ("input", "output", "location")}
+            parts = [f"{a} {objects.format_value(v)}" for a, v in values.items() if v is not None]
             parts += objects.get_attr(db, cell, "extra")
             info(f"    {objects.name_of(cell):<18}: {'  '.join(parts)}", out)
     for stmt in objects.get_attr(db, handle, "extra"):

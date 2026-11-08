@@ -35,6 +35,8 @@ OPTIONS
         Instance name. Default: inst_1, inst_2, ... (the first free one).
     -orient <orient>
         N (default), S, E, W, FN, FS, FE, FW, as in DEF.
+    -help
+        Print the definition, usage, options and an example of the command.
 
 OBJECTS AND ATTRIBUTES
     inst:<name>
