@@ -62,7 +62,7 @@ class SchematicView(QGraphicsView):
         tick = 0.0
         while tick <= p.span + 1e-6:
             a = at(-0.6, tick)
-            real = (p.y0 if vertical else p.x0) + tick
+            real = (p.y0 if vertical else p.x0) + p.sign * (p.origin + tick)
             self._text(f"{real:.0f}", a, color="#8a939b", anchor="right" if vertical else "top")
             tick += 1000.0
 

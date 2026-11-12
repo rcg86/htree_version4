@@ -50,6 +50,7 @@ class SpineSpec:
     max_drive_length: Optional[float] = None
     count_stub_in_drive: Optional[bool] = None
     origin_x: Optional[float] = None
+    origin: Optional[float] = None     # along the spine, -location to L1
     level_pitch: Optional[float] = None
     deviation: Optional[float] = None
     orientation: Optional[str] = None
@@ -79,6 +80,7 @@ FIELDS = {
     ("constraints", "max_drive_length"): ("max_drive_length", "num"),
     ("constraints", "count_stub_in_drive"): ("count_stub_in_drive", "bool"),
     ("placement", "origin_x"): ("origin_x", "num"),
+    ("placement", "origin"): ("origin", "num"),
     ("placement", "level_pitch"): ("level_pitch", "num"),
     ("placement", "deviation"): ("deviation", "num"),
     ("spine", "orientation"): ("orientation", "str"),

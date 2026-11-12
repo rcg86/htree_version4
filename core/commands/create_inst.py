@@ -12,6 +12,8 @@ from core.placement import ORIENT_NAMES, placed_bbox, rect_in_polygon, rects_ove
 
 NAME = "create_inst"
 SUMMARY = "Place an instance of a library cell at a location"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-ref_cell": "value", "-location": "value", "-name": "value", "-orient": "value"}
 
 USAGE = 1
 NO_CELL = 120
@@ -22,8 +24,7 @@ OFF_GRID = 124
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-ref_cell": "value", "-location": "value",
-                                         "-name": "value", "-orient": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     if "-ref_cell" not in opts or "-location" not in opts:
         raise HtreeError(USAGE, "create_inst: -ref_cell and -location are required. Usage: "
                          "create_inst -ref_cell <lib_cell> -location {x y} [-name <name>] "

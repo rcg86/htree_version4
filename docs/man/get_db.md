@@ -7,6 +7,8 @@ SYNOPSIS
     get_db spine_spec
     get_db design
     get_db selected
+    get_db <root_attr>
+    get_db root_attributes
     get_db <path> [<name_pattern>] [-if {<expr>}]
     get_db <objects> .<attr>[.<attr>...] [-if {<expr>}]
     get_db <objects> .*
@@ -27,6 +29,13 @@ DESCRIPTION
     strings, so they can be stored in Tcl variables and passed back to
     get_db.
 
+    get_db <root_attr>
+        Returns a root attribute's value: a setting of the commands, set
+        with set_db <root_attr> <value>, e.g.
+        get_db ignore_shield_less_than_routing_length -> 10
+    get_db root_attributes
+        Prints every root attribute with its value, its default when not
+        set, and what it does.
     get_db tech
         Prints all tech data (file, LEF version, DB units, manufacturing
         grid, and every layer with its attributes and any unmodeled
@@ -61,8 +70,12 @@ DESCRIPTION
         Roots: tech, head (same as tech), layers, layer, library_physical,
         lib_cells, lib_cell (both same as library_physical.lib_cells),
         spine_spec, spine_specs (all spine specs), design, designs, ports,
-        port (all ports of the design), track_patterns, track_pattern. A leading dot is
-        optional: get_db .tech.layer is the same as get_db tech.layer, and
+        port (all ports of the design), track_patterns, track_pattern,
+        track_assignments, insts, route_rules (route_rule:default first),
+        spines, nets (the nets of every built spine and their final stubs,
+        which are nets too), stubs (only the final stubs: stub:<spine>/<stub>),
+        straps, pin_wires, net_wires, selected. A leading
+        dot is optional: get_db .tech.layer is the same as get_db tech.layer, and
         get_db .tech is the same as get_db tech.
             get_db tech.layer      -> layer:H1 layer:H2 ... (LEF order)
             get_db layers          -> same

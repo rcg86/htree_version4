@@ -520,6 +520,17 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   (width + spacing), tech_min_width, tech_spacing. Table `route_rule`
   (schema 9), saved by write_db. Not read: LEF58 spacing properties,
   end-of-line, cut and voltage spacing.
+- Changed 2026-11-09 (user): rules are named, `-name <rule>` (required),
+  and `-append` adds a layer to an existing rule, e.g.
+  `-name rule1 -layer H2 -width 0.41` then
+  `-name rule1 -layer H1 -width 0.35 -append`. Claude's calls (user to
+  check): handles `route_rule:<rule>` (name, layers, route_rule_layers)
+  and `route_rule_layer:<rule>/<layer>` (the per-layer attributes
+  above, plus route_rule); without -append an existing rule is replaced
+  whole (HT4-133 warning); -append on the same layer replaces that
+  entry in place (HT4-133); -append on a missing rule is an error
+  (HT4-135) so a mistyped name is caught. Table `route_rule` keyed by
+  (name, layer), schema 12; schema 11 databases no longer load.
 
 ## 22. `-help` on every command (user request, 2026-11-07)
 
@@ -595,3 +606,23 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   layer yet. A horizontal spine is drawn lying down in the schematic.
 - Known consequence, reported to the user: with the root fixed at the
   bottom of a 6000 um spine, custom_spine_5000's L2/inv1 net is ~3455 um.
+
+## 25. Net route rules and `set_db` (branch create_spine, user request, 2026-11-09)
+
+- User: every net has a route rule; the default rule is the minimum
+  width of the layer. `set_db [get_db nets *pattern*] .route_rule <rule>`
+  makes routing use that rule's width and spacing.
+- Claude's calls (user to check): nets are the spine nets for now (the
+  only nets in the DB; DEF NETS are skipped), `get_db nets` lists those
+  of every built spine. Built-in `route_rule:default`, computed from
+  tech, not stored: every routing layer, width = max(WIDTH, MINWIDTH),
+  spacing = the tech spacing for that width (empty if the tech has
+  none); the name is reserved (HT4-136). spine_net gains `.route_rule`
+  (handle; default when unset). New generic `set_db <objects> <.attr>
+  <value>` with a table of settable attributes, today only
+  spine_net.route_rule; all objects and the value are checked before
+  anything is written (HT4-140 not settable, 141 bad value, 142 WARN
+  no objects); value `default` clears it. Table `net_route_rule` keyed
+  by net name (schema 12). Open: no router reads it yet; what routing
+  does when the net's rule has no entry for the layer it routes on
+  (error, or fall back to default) is undecided.

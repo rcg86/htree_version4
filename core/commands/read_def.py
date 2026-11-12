@@ -9,6 +9,8 @@ from core.options import parse_options
 
 NAME = "read_def"
 SUMMARY = "Read the boundary, tracks and pins of a DEF file"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value"}
 
 FILE_NOT_FOUND = 90
 PARSE_ERROR = 91
@@ -19,7 +21,7 @@ NO_BOUNDARY = 95
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-file": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     path = opts.get("-file")
     if not path:
         raise HtreeError(1, "read_def: -file is required. Usage: read_def -file <design.def>")
@@ -51,6 +53,9 @@ def run(session, argv):
         bbox = " ".join(_num(v) for v in (min(xs), min(ys), max(xs), max(ys)))
         info(f"  Boundary    : {kind}, bbox {bbox}", out)
     info(f"  Pins        : {len(design.ports)}, shapes {shapes}", out)
+    if design.rows:
+        sites = sorted({r.site for r in design.rows})
+        info(f"  Rows        : {len(design.rows)} ({' '.join(sites)})", out)
     track_layers = list(dict.fromkeys(l for t in design.tracks for l in t.layers))
     info(f"  Tracks      : {len(design.tracks)} patterns on {len(track_layers)} layers"
          + (f" ({' '.join(track_layers)})" if track_layers else ""), out)

@@ -2,7 +2,7 @@ NAME
     source - run the commands in a script file
 
 SYNOPSIS
-    source [-echo] <file>
+    source [-echo] [-encoding <encoding>] <file>
 
 DESCRIPTION
     Reads <file> and runs its commands one after another, as if they were
@@ -28,6 +28,9 @@ OPTIONS
     -echo
         Print each command, prefixed with "htree> ", before running it.
         Comment-only lines are not printed.
+    -encoding <encoding>
+        Text encoding of the file. Default utf-8. Accepted so that Tcl
+        packages calling 'source -encoding utf-8 <file>' work.
 
     <file>
         Script to run. Relative paths are relative to the current

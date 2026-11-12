@@ -1,6 +1,8 @@
 """Tab completion for the interactive shell (GNU readline).
 
     <tab> on a command name           command names
+    <command> -<tab>                  the command's options (route_net -n<tab>: -net);
+                                      options already given are left out
     get_db .<tab>                     path roots (tech, library_physical)
     get_db .tech.<tab>                what tech holds: layer, layers, file, ...
     get_db .tech.layer.<tab>          attributes of layer objects
@@ -30,10 +32,13 @@ ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer
               "track_assignments": "track_assignment", "track_assignment": "track_assignment",
               "insts": "inst", "inst": "inst",
               "route_rules": "route_rule", "route_rule": "route_rule",
-              "spines": "spine"}
+              "nets": None, "net": None, "stubs": "stub", "stub": "stub",
+              "spines": "spine", "spine": "spine", "straps": "strap", "strap": "strap",
+              "pin_wires": "pin_wire", "pin_wire": "pin_wire",
+              "net_wires": "net_wire", "net_wire": "net_wire"}
 SHOWN_ROOTS = ["tech", "library_physical", "spine_spec", "design"]
 DELIMS = " \t\n[]{}()\"';"
-GET_DB_OPTIONS = ["-if"]
+HELP = "-help"               # every command takes it (htree_builder)
 
 
 class Completer:
@@ -48,6 +53,8 @@ class Completer:
         words = _command_words(line[:begidx])
         if not words:
             return [c + " " for c in sorted(self.session.commands) if c.startswith(text)]
+        if text.startswith("-") and words[0] in self.session.commands:
+            return self._options(words[0], words[1:], text)
         if words[0] == "get_db":
             matches = self._get_db(words[1:], text)
             self.leaf_display = any(m.startswith(".") or "." in m for m in matches)
@@ -84,9 +91,14 @@ class Completer:
 
     # get_db -----------------------------------------------------------------
 
+    def _options(self, command, args, text):
+        """Options of command starting with text, in the order the command
+        lists them, then -help; those already in args are left out."""
+        module = self.session.commands[command]
+        names = list(getattr(module, "OPTIONS", {})) + [HELP]
+        return [o + " " for o in names if o.startswith(text) and o not in args]
+
     def _get_db(self, args, text):
-        if text.startswith("-"):
-            return [o + " " for o in GET_DB_OPTIONS if o.startswith(text)]
         if "-if" in args:
             if not text.startswith("."):
                 return []
@@ -130,7 +142,7 @@ class Completer:
         elif kind == "inst":
             names = db.inst_names()
         elif kind == "route_rule":
-            names = db.route_rule_layers()
+            names = ["default"] + db.route_rule_names()
         elif kind == "spine":
             names = db.spine_names()
         elif kind == "design" and db.has_design():

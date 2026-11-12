@@ -1,0 +1,65 @@
+# vertical spine: 6 stubs over 6000 um, every stub behind 7 inverters.
+# The root (L1/inv1) is at -location; repeaters climb the spine
+# (L2, L3, L4/inv2), and the tree splits so each L6 cell drives one pair of
+# stubs. Cells without a location are placed by create_spine.
+#   create_spine -name clk -spec_name custom_spine_v6 -location {x y} -validate -ref_cell <inverter>
+spine_spec:
+  name: custom_spine_v6
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020       # um of wire per driver
+    count_stub_in_drive: true    # an L7 cell's drive includes its full stub length
+
+  placement:
+    level_pitch: 2.88            # X step between levels, and from L7 to the stubs
+    deviation: 10                # a net may exceed max_drive_length by up to 10 um
+    origin: 10                   # root (L1) this far from -location along the spine;
+                                 # with -mirror, the mirrored root as far the other way
+
+  spine:
+    orientation: vertical
+    span: 6000                   # total Y covered by the stubs (6 x 991.667 + 5 x 10)
+
+  stubs:
+    gap: 10
+    tap: center                  # driven at the midpoint
+
+  levels:
+    # location: L4/inv1 and L5/inv2 are 2 um above their drivers. The INV12M3 cell
+    # is 3.12 um wide, more than level_pitch 2.88, so without this they sit
+    # beside their drivers in the next column and overlap (HT4-157).
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+    L3:
+      cells:
+        inv1: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, location: 2}   # toward stubs 1-2
+        inv2: {input: L3/inv1/Y}       # up toward stubs 3-6
+    L5:
+      cells:
+        inv1: {input: L4/inv1/Y}
+        inv2: {input: L4/inv2/Y, location: 2}
+        inv3: {input: L4/inv2/Y}
+    L6:
+      cells:
+        inv1: {input: L5/inv1/Y}       # drives stubs 1-2
+        inv2: {input: L5/inv2/Y}       # drives stubs 3-4
+        inv3: {input: L5/inv3/Y}       # drives stubs 5-6
+    L7:
+      cells:
+        inv1: {input: L6/inv1/Y, output: stub1}
+        inv2: {input: L6/inv1/Y, output: stub2}
+        inv3: {input: L6/inv2/Y, output: stub3}
+        inv4: {input: L6/inv2/Y, output: stub4}
+        inv5: {input: L6/inv3/Y, output: stub5}
+        inv6: {input: L6/inv3/Y, output: stub6}

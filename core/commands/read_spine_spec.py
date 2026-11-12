@@ -8,6 +8,8 @@ from core.spine_spec import SpineSpecError, parse_spine_spec
 
 NAME = "read_spine_spec"
 SUMMARY = "Read spine specs from a YAML file"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value"}
 
 FILE_NOT_FOUND = 80
 PARSE_ERROR = 81
@@ -16,7 +18,7 @@ IGNORED_KEY = 83
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-file": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     path = opts.get("-file")
     if not path:
         raise HtreeError(1, "read_spine_spec: -file is required. "

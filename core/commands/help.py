@@ -5,10 +5,12 @@ from core.options import parse_options
 
 NAME = "help"
 SUMMARY = "List all commands"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {}
 
 
 def run(session, argv):
-    parse_options(NAME, argv, {})
+    parse_options(NAME, argv, OPTIONS)
     width = max(len(name) for name in session.commands)
     for name in sorted(session.commands):
         info(f"  {name:<{width}}  {session.commands[name].SUMMARY}", session.out)

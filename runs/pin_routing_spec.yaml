@@ -1,0 +1,36 @@
+# Pin routing spec for route_pin (from runs/pin_connect.rpt).
+#   route_pin -inst <inst> -spec pin_routing_spec.yaml
+# Every key is optional; a missing key keeps the built-in value shown here.
+# Options given on the route_pin command line override this file.
+# Units: microns.
+
+pin_routing:
+  width: 0.36            # strap width, every net
+  spacing: 0.36          # edge-to-edge gap between straps (pitch = width + spacing)
+  max_strap_extension: 3   # route_net may extend a strap this far past
+                         # each instance edge to reach the net's route
+
+  # One horizontal strap per entry, top to bottom. A net may repeat.
+  # Straps run the instance width and the stack is centred on the instance.
+  nets:
+    - VSS                # added extra
+    - VDD_SOC
+    - SIGNAL
+    - VSS
+    - SIGNAL
+    - VDD_SOC
+
+  # Cell pins to connect: pin -> strap net. Pins not listed (VNW, VPW) are
+  # not connected. Only the pin shapes on 'layer' are used.
+  # Straps run on horizontal_layer. Each pin reaches a strap of its net by a
+  # wire on vertical_layer, as wide as the pin (the widest of its shapes).
+  # Signal pins (SIGNAL) each get their own strap; power pins share.
+  pins:
+    layer: D12
+    horizontal_layer: IA
+    vertical_layer: H2
+    nets:
+      VDD: VDD_SOC
+      VSS: VSS
+      A: SIGNAL
+      Y: SIGNAL

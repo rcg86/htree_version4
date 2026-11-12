@@ -8,13 +8,15 @@ from core.options import parse_options
 
 NAME = "write_db"
 SUMMARY = "Write the design database to a SQLite file"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value", "-overwrite": "flag"}
 
 EXISTS = 30
 WRITE_FAILED = 31
 
 
 def run(session, argv):
-    opts, pos = parse_options(NAME, argv, {"-file": "value", "-overwrite": "flag"},
+    opts, pos = parse_options(NAME, argv, OPTIONS,
                               max_positionals=1)
     if "-file" in opts and pos:
         raise HtreeError(1, "write_db: give the file once, with -file")

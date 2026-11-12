@@ -40,7 +40,11 @@ DESCRIPTION
         type, units, point, root_net  same names
         constraints.max_drive_length  max_drive_length (number)
         constraints.count_stub_in_drive  count_stub_in_drive (true/false)
-        placement.origin_x            origin_x (number)
+        placement.origin_x            origin_x (number; not used)
+        placement.origin              origin (number); um along the spine
+                                      from create_spine -location to the
+                                      root cell (and, with -mirror, to the
+                                      mirrored root the other way)
         placement.level_pitch         level_pitch (number); the column step,
                                       along x for a vertical spine and y
                                       for a horizontal one. level_pitch_x
@@ -79,7 +83,7 @@ OPTIONS
 OBJECTS AND ATTRIBUTES
     spine_spec:<spec>
         obj_type, name, type, units, point, root_net, max_drive_length,
-        count_stub_in_drive, origin_x, level_pitch, deviation, orientation, span,
+        count_stub_in_drive, origin_x, origin, level_pitch, deviation, orientation, span,
         stub_count, stub_gap, stub_tap, stub_order, spine_levels (handles),
         file, extra, yaml_text
     spine_level:<spec>/<level>

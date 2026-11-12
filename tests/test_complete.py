@@ -64,7 +64,7 @@ def test_if_expression(tech_session):
     assert comp(tech_session, "get_db layers -if {.dir") == [".direction "]
     assert comp(tech_session, "get_db layers -if {.name == IA && .pit") == \
         [".pitch_x ", ".pitch_y "]
-    assert comp(tech_session, "get_db layers -") == ["-if "]
+    assert comp(tech_session, "get_db layers -") == ["-if ", "-help "]
 
 
 def test_other_commands_complete_files(tmp_path, session):
@@ -89,3 +89,29 @@ def test_get_db_accepts_leading_dot(tech_session, path):
 def test_get_db_dot_tech_dumps_like_tech(tech_session):
     assert tech_session.eval("get_db .tech") == "tech"
     assert "db_units" in tech_session.out.getvalue()
+
+
+def test_command_options(session):
+    assert comp(session, "route_net -") == ["-net ", "-rule ", "-via_weight ", "-shield ",
+                                            "-shield_nets ", "-help "]
+    assert comp(session, "route_net -n") == ["-net "]
+    assert comp(session, "route_pin -s") == ["-spec ", "-spacing "]
+    assert comp(session, "route_net -net a -rule r -") == ["-via_weight ", "-shield ",
+                                                           "-shield_nets ", "-help "]
+    assert comp(session, "puts [route_net -r") == ["-rule "]
+    assert comp(session, "get_db -") == ["-if ", "-help "]
+    assert comp(session, "select_obj -") == ["-help "]
+    assert comp(session, "route_net -x") == []
+
+
+def test_options_match_the_man_pages(session):
+    """Every command's OPTIONS (what <tab> offers and parse_options accepts) is
+    what its man page lists under OPTIONS, apart from -help."""
+    import re
+    from conftest import ROOT
+    for name, module in session.commands.items():
+        text = (ROOT / "docs" / "man" / f"{name}.md").read_text()
+        section = re.split(r"\n[A-Z][A-Z ]+\n", "\n" + text.split("\nOPTIONS\n", 1)[1])[0] \
+            if "\nOPTIONS\n" in text else ""
+        documented = set(re.findall(r"^    (-\w+)", section, re.M)) - {"-help"}
+        assert documented == set(getattr(module, "OPTIONS", {})), name

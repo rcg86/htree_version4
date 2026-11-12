@@ -5,6 +5,8 @@ from core.messages import HtreeError
 
 NAME = "deselect_obj"
 SUMMARY = "Remove objects from the selection (-all clears it)"
+# Options and their kind, for <tab> completion (run reads -all itself).
+OPTIONS = {"-all": "flag"}
 
 
 def run(session, argv):

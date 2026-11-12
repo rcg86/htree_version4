@@ -5,13 +5,15 @@ from core.options import parse_options
 
 NAME = "gui_show"
 SUMMARY = "Open the layout GUI (the terminal prompt stays usable)"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {}
 
 NO_QT = 100
 NO_DISPLAY = 101
 
 
 def run(session, argv):
-    parse_options(NAME, argv, {})
+    parse_options(NAME, argv, OPTIONS)
     try:
         from core.gui import app
     except ImportError as exc:

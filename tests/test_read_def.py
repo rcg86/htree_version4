@@ -38,7 +38,11 @@ def test_header_and_boundary():
     # '*' repeats the previous coordinate
     assert d.boundary == [0, 0, 100, 0, 100, 50, 40, 50, 40, 80, 0, 80]
     assert polygon_area(d.boundary) == 100 * 50 + 40 * 30
-    assert dict(d.skipped) == {"PROPERTYDEFINITIONS": 1, "ROW": 2, "COMPONENTS": 1, "NETS": 1}
+    assert dict(d.skipped) == {"PROPERTYDEFINITIONS": 1, "COMPONENTS": 1, "NETS": 1}
+    # ROW: the placement sites, in microns
+    assert [(r.name, r.site, r.x, r.y, r.orient, r.num_x, r.num_y, r.step_x, r.step_y)
+            for r in d.rows] == [("r1", "core", 0, 0, "N", 10, 1, 0.1, 0),
+                                 ("r2", "core", 0, 0.2, "FS", 10, 1, 0.1, 0)]
 
 
 def test_rect_diearea(write_lef):
@@ -118,7 +122,8 @@ def test_read_def_summary(tech_session):
     assert "Pins        : 6, shapes 6" in out
     assert "Tracks      : 3 patterns on 3 layers (H1 H2 M1)" in out
     assert "Tracks tech : H1 H2, tech layers without tracks: G1 G2 IA IB" in out
-    assert "Skipped     : PROPERTYDEFINITIONS ROW(2) COMPONENTS NETS" in out
+    assert "Rows        : 2 (core)" in out
+    assert "Skipped     : PROPERTYDEFINITIONS COMPONENTS NETS" in out
     assert "In tech     : H1 H2" in out
     assert "WARN: (HT4-093): 1 pin shape(s) on layers not in tech: M1." in out
 

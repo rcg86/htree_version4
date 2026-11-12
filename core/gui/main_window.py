@@ -9,14 +9,25 @@ from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, Q
                                QMainWindow, QMenu, QPushButton, QScrollArea, QTabWidget,
                                QToolBar, QToolButton, QVBoxLayout, QWidget)
 
+import io
+import tkinter
+
+from core.gui import shortcuts
 from core.gui.canvas import LayoutCanvas
 from core.gui.layout_data import load_layout
 
 # Object categories: (key, label). Categories with no data yet are disabled.
 OBJECTS = [("boundary", "Boundary"), ("ports", "Ports"), ("tracks", "Tracks"),
+           ("rows", "Rows (sites)"),
            ("nets", "Nets"), ("cells", "Cells (instances)"), ("pins", "Pins"),
-           ("spine", "Spine")]
+           ("spine", "Spine"), ("routes", "Routes (route_pin, route_net)")]
 NOT_YET = {"nets": "No nets in the database yet"}
+BUTTON_ZOOM = 1.5            # Zoom In / Zoom Out step
+NAMES_SHOWN = 3              # status bar centre: names of a multiple selection shown
+# The small boxes beside each layer: (net class, text, tooltip). All start on.
+CLASS_BOXES = [("signal", "S", "Signal nets on this layer"),
+               ("power", "P", "Power nets on this layer (VDD_SOC, USE POWER)"),
+               ("ground", "G", "Ground nets on this layer (VSS, USE GROUND)")]
 
 
 class MainWindow(QMainWindow):
@@ -32,13 +43,24 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.object_boxes = {}
         self.layer_boxes = {}
+        self.class_boxes = {}                # (layer, signal|power|ground) -> QCheckBox
+        self.all_class_boxes = {}            # signal|power|ground -> the All layers box
         self.assign_boxes = {}               # (layer, net) -> QCheckBox
+        self.site_boxes = {}                 # site -> QCheckBox (Rows dropdown)
         self.layout = None
+        self.undo_edits = []                 # Tools > Undo Edit: commands that undo, last last
+        self._edited = None                  # wires an edit here is changing: redraw just them
         self._build_panel()
         self._build_actions()
         self.pos_label = QLabel("")
         self.sel_label = QLabel("")
+        # Centre: the selected object's name (a wire's net, inst/pin for a pin).
+        self.name_label = QLabel("")
+        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setStyleSheet("font-weight: bold;")
+        self.name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.statusBar().addWidget(self.pos_label)
+        self.statusBar().addWidget(self.name_label, 1)
         self.statusBar().addPermanentWidget(self.sel_label)
         self.canvas.mouseMoved.connect(lambda x, y: self.pos_label.setText(f"x {x:.3f}  y {y:.3f} um"))
         self.canvas.selectRequested.connect(self.on_select)
@@ -66,6 +88,24 @@ class MainWindow(QMainWindow):
                 ovbox.addLayout(row)
                 self.object_boxes["labels"] = label
                 continue
+            if key == "rows":                     # Rows: a dropdown arrow opens the sites
+                row = QHBoxLayout()
+                row.addWidget(box)
+                self.rows_toggle = QToolButton()
+                self.rows_toggle.setArrowType(Qt.RightArrow)
+                self.rows_toggle.setCheckable(True)
+                self.rows_toggle.setAutoRaise(True)
+                self.rows_toggle.setToolTip("Placement rows per site (DEF ROW)")
+                self.rows_toggle.toggled.connect(self._toggle_rows)
+                row.addWidget(self.rows_toggle)
+                row.addStretch(1)
+                ovbox.addLayout(row)
+                self.rows_panel = QWidget()
+                self.rows_vbox = QVBoxLayout(self.rows_panel)
+                self.rows_vbox.setContentsMargins(18, 0, 0, 4)
+                self.rows_panel.setVisible(False)
+                ovbox.addWidget(self.rows_panel)
+                continue
             if key != "tracks":
                 ovbox.addWidget(box)
                 continue
@@ -88,24 +128,58 @@ class MainWindow(QMainWindow):
             ovbox.addWidget(self.assign_panel)
         vbox.addWidget(objects)
 
-        self.layer_group = QGroupBox("Layers")
-        self.layer_vbox = QVBoxLayout(self.layer_group)
+        # Layers: a dropdown arrow opens and closes the layer list.
+        self.layer_group = QGroupBox()
+        group_vbox = QVBoxLayout(self.layer_group)
+        self.layer_toggle = QToolButton()
+        self.layer_toggle.setText("Layers")
+        self.layer_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.layer_toggle.setArrowType(Qt.DownArrow)
+        self.layer_toggle.setCheckable(True)
+        self.layer_toggle.setChecked(True)
+        self.layer_toggle.setAutoRaise(True)
+        self.layer_toggle.setToolTip("Show or hide the layer list")
+        self.layer_toggle.toggled.connect(self._toggle_layers)
+        group_vbox.addWidget(self.layer_toggle)
+        self.layer_body = QWidget()
+        self.layer_vbox = QVBoxLayout(self.layer_body)
+        self.layer_vbox.setContentsMargins(0, 0, 0, 0)
+        group_vbox.addWidget(self.layer_body)
         buttons = QHBoxLayout()
         for text, on in (("All", True), ("None", False), ("Tech only", None)):
             b = QPushButton(text)
             b.clicked.connect(lambda _=False, v=on: self.set_all_layers(v))
             buttons.addWidget(b)
         self.layer_vbox.addLayout(buttons)
+        # All layers: S P G boxes over the layer rows' boxes, for every layer at once.
+        head = QHBoxLayout()
+        head.setContentsMargins(0, 0, 0, 0)
+        head.setSpacing(4)
+        head.addWidget(QLabel("All layers"), 1)
+        for cls, text, tip in CLASS_BOXES:
+            small = QCheckBox(text)
+            small.setStyleSheet("QCheckBox { font-size: 8pt; }")
+            small.setToolTip(tip.replace("on this layer", "on every layer"))
+            small.setChecked(True)
+            small.toggled.connect(lambda on, c=cls: self.set_all_classes(c, on))
+            head.addWidget(small)
+            self.all_class_boxes[cls] = small
+        self.layer_vbox.addLayout(head)
         self.layer_list = QVBoxLayout()
         self.layer_vbox.addLayout(self.layer_list)
         vbox.addWidget(self.layer_group)
         hint = QLabel("Drag: zoom to box   Wheel: zoom   F: fit\n"
+                      "Edit > Shortcuts: list and create shortcuts\n"
                       "Middle drag / arrows: pan\n"
                       "Click: select   Ctrl+click: add/remove\n"
                       "Shift+drag: select in box   get_db selected\n"
-                      "Tracks show when zoomed in enough.\n"
+                      "Right drag: select all touching box\n"
+                      "Tracks and rows show when zoomed in enough;\n"
+                      "sites when zoomed in further.\n"
                       "(n) = pin shapes on the layer.\n"
-                      "* = not in tech (starts hidden).")
+                      "* = not in tech (starts hidden).\n"
+                      "S P G = the layer's signal, power (VDD_SOC)\n"
+                      "and ground (VSS) shapes.")
         hint.setStyleSheet("color: #888;")
         vbox.addWidget(hint)
         vbox.addStretch(1)
@@ -115,7 +189,7 @@ class MainWindow(QMainWindow):
         dock = QDockWidget("View", self)
         dock.setObjectName("view_panel")
         dock.setWidget(scroll)
-        dock.setMinimumWidth(240)
+        dock.setMinimumWidth(300)
         dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
@@ -156,12 +230,81 @@ class MainWindow(QMainWindow):
                                        "Remove all rulers")
         self.act_close = action("Close Window", self.close, "Ctrl+W",
                                 "Close the window; the terminal session continues")
+        self.act_zoom_in = action("Zoom In", lambda: self.canvas.zoom(BUTTON_ZOOM), None,
+                                  "Zoom in (about the cursor when it is over the layout)")
+        self.act_zoom_out = action("Zoom Out", lambda: self.canvas.zoom(1 / BUTTON_ZOOM), None,
+                                   "Zoom out (about the cursor when it is over the layout)")
+        # Tools: edit route shapes by hand (move_wire, stretch_wire), one mode at a time.
+        self.act_tool_select = QAction("Select", self, checkable=True, checked=True)
+        self.act_tool_select.setToolTip("Click and drag select and zoom as usual")
+        self.act_tool_stretch = QAction("Stretch", self, checkable=True)
+        self.act_tool_stretch.setToolTip("Drag an edge of a wire, strap or pin wire to "
+                                         "lengthen or shorten it (stretch_wire)")
+        self.act_tool_move = QAction("Move", self, checkable=True)
+        self.act_tool_move.setToolTip("Drag a wire, strap or pin wire (all selected ones when "
+                                      "it is selected) to move it (move_wire)")
+        self.tool_group = QActionGroup(self)
+        # Optional: the key of the mode in use (S again in Stretch) turns it off,
+        # which goes back to Select.
+        self.tool_group.setExclusionPolicy(QActionGroup.ExclusionPolicy.ExclusiveOptional)
+        for a, mode in ((self.act_tool_select, None), (self.act_tool_stretch, "stretch"),
+                        (self.act_tool_move, "move")):
+            self.tool_group.addAction(a)
+            a.toggled.connect(lambda on, m=mode: on and self.set_tool(m))
+        self.tool_group.triggered.connect(
+            lambda a: None if self.tool_group.checkedAction() else
+            self.act_tool_select.setChecked(True))
+        self.act_edit_snap = QAction("Snap (tracks, edges, grid)", self, checkable=True,
+                                     checked=True)
+        self.act_edit_snap.setToolTip("Move: a wire's centre line onto a track of its layer; "
+                                      "Stretch: the edge onto a nearby edge or track; else "
+                                      "the manufacturing grid")
+        self.act_edit_snap.toggled.connect(lambda on: self.canvas.edit.update(snap=on))
+        self.act_undo_edit = action("Undo Edit", self.undo_edit, None,
+                                    "Undo the last Stretch or Move")
+        self.act_undo_edit.setEnabled(False)
+        self.canvas.wiresMoved.connect(self.on_wires_moved)
+        self.canvas.wireStretched.connect(self.on_wire_stretched)
+        self.act_ruler.toggled.connect(lambda on: on and self.act_tool_select.setChecked(True))
+        self.act_shortcuts = action("Shortcuts...", self.show_shortcuts, None,
+                                    "List the keyboard shortcuts and create new ones")
+        # Actions Edit > Shortcuts can give a shortcut to, by the key it is saved
+        # under, and their built in shortcuts (a user one replaces it; removing
+        # the user one brings it back).
+        self.creatable = {
+            "fit": self.act_fit, "zoom_in": self.act_zoom_in, "zoom_out": self.act_zoom_out,
+            "zoom_selected": self.act_zoom_sel, "blink_selected": self.act_blink_sel,
+            "ruler": self.act_ruler, "clear_rulers": self.act_clear_rulers,
+            "tool_select": self.act_tool_select, "tool_stretch": self.act_tool_stretch,
+            "tool_move": self.act_tool_move, "edit_snap": self.act_edit_snap,
+            "undo_edit": self.act_undo_edit, "clear_selection": self.act_clear_sel,
+            "shortcuts": self.act_shortcuts}
+        self.default_shortcuts = {"fit": "F", "ruler": "K", "clear_rulers": "Shift+K",
+                                  "tool_stretch": "S", "tool_move": "M",
+                                  "clear_selection": "Esc"}
+        for key, seq in self.default_shortcuts.items():
+            self.creatable[key].setShortcut(QKeySequence(seq))
+        self.user_shortcuts = {}
+        for key, seq in shortcuts.load().items():
+            if key in self.creatable and not shortcuts.owner_of(
+                    self, seq, skip=self.creatable[key]):
+                self.creatable[key].setShortcut(QKeySequence(seq))
+                self.user_shortcuts[key] = seq
 
         bar = self.menuBar()
         file_menu = bar.addMenu("&File")
         file_menu.addAction(self.act_close)
+        edit_menu = bar.addMenu("&Edit")
+        for a in (self.act_tool_select, self.act_tool_stretch, self.act_tool_move):
+            edit_menu.addAction(a)            # also makes their shortcuts work
+        edit_menu.addAction(self.act_edit_snap)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act_undo_edit)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act_shortcuts)
         view_menu = bar.addMenu("&View")
-        for a in (self.act_fit, self.act_zoom_sel, self.act_blink_sel):
+        for a in (self.act_fit, self.act_zoom_in, self.act_zoom_out, self.act_zoom_sel,
+                  self.act_blink_sel):
             view_menu.addAction(a)
         view_menu.addSeparator()
         view_menu.addAction(self.act_ruler)
@@ -195,12 +338,112 @@ class MainWindow(QMainWindow):
         self.ruler_button.setPopupMode(QToolButton.MenuButtonPopup)
         self.ruler_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tools.addWidget(self.ruler_button)
+        tools.addAction(self.act_zoom_in)
+        tools.addAction(self.act_zoom_out)
+        # Tools: the route editing toolbox, a dropdown of modes and options.
+        self.tools_menu = QMenu(self)
+        for a in (self.act_tool_select, self.act_tool_stretch, self.act_tool_move):
+            self.tools_menu.addAction(a)
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.act_edit_snap)
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.act_undo_edit)
+        self.tools_button = QToolButton()
+        self.tools_button.setText("Tools")
+        self.tools_button.setToolTip("Fix routes by hand: Stretch an edge, Move a wire")
+        self.tools_button.setMenu(self.tools_menu)
+        self.tools_button.setPopupMode(QToolButton.InstantPopup)
+        self.tools_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        tools.addWidget(self.tools_button)
         self.addToolBar(Qt.TopToolBarArea, tools)
         self.toolbar = tools
         self.canvas.rulerPlaced.connect(self.on_ruler)
 
+    # -- shortcuts ------------------------------------------------------------------
+    def all_actions(self):
+        """The window's actions, in menu order, for the shortcut list."""
+        return [self.act_close, self.act_tool_select, self.act_tool_stretch, self.act_tool_move,
+                self.act_edit_snap, self.act_undo_edit, self.act_shortcuts, self.act_fit,
+                self.act_zoom_in, self.act_zoom_out, self.act_zoom_sel, self.act_blink_sel,
+                self.act_ruler, self.act_clear_rulers, self.act_clear_sel]
+
+    def creatable_key(self, act):
+        return next((k for k, a in self.creatable.items() if a is act), None)
+
+    def set_user_shortcut(self, key, seq):
+        """Give creatable action key the shortcut seq ('' or None removes it)
+        and save. Returns an error text, or None when done."""
+        act = self.creatable[key]
+        if seq:
+            owner = shortcuts.owner_of(self, seq, skip=act)
+            if owner:
+                return f"{shortcuts.text_of(seq)} is already the shortcut of {owner}."
+            act.setShortcut(QKeySequence(seq))
+            self.user_shortcuts[key] = QKeySequence(seq).toString()
+        else:                                 # back to the built in one, if any
+            act.setShortcut(QKeySequence(self.default_shortcuts.get(key, "")))
+            self.user_shortcuts.pop(key, None)
+        try:
+            shortcuts.save(self.user_shortcuts)
+        except OSError as exc:
+            return f"Set for this session, but not saved to {shortcuts.store_path()}: {exc}"
+        return None
+
+    def show_shortcuts(self):
+        shortcuts.ShortcutsDialog(self).exec()
+
+    # -- Tools: Stretch and Move run move_wire / stretch_wire ------------------------
+    def set_tool(self, mode):
+        """None (select), "stretch" or "move"."""
+        if mode and self.act_ruler.isChecked():
+            self.act_ruler.setChecked(False)
+        self.canvas.set_edit_mode(mode)
+        self.tools_button.setText("Tools" if mode is None else f"Tools: {mode.capitalize()}")
+
+    def on_wires_moved(self, handles, dx, dy):
+        wires = " ".join(handles)
+        self.run_edit(f"move_wire -wires {{{wires}}} -delta {{{_n(dx)} {_n(dy)}}}",
+                      f"move_wire -wires {{{wires}}} -delta {{{_n(-dx)} {_n(-dy)}}}")
+
+    def on_wire_stretched(self, handle, edge, to, old):
+        self.run_edit(f"stretch_wire -wire {handle} -edge {edge} -to {_n(to)}",
+                      f"stretch_wire -wire {handle} -edge {edge} -to {_n(old)}")
+
+    def undo_edit(self):
+        if self.undo_edits:
+            self.run_edit(self.undo_edits.pop(), None)
+
+    def run_edit(self, cmd, undo):
+        """Run an edit command as if typed: it is echoed with its output in
+        the terminal, only the wires it changes are redrawn (the view stays
+        where it is), and undo (the command that reverses it) is kept for
+        Undo Edit. Returns True when it ran."""
+        session = self.session
+        out, session.out = session.out, io.StringIO()
+        words = session.split_list(cmd)
+        self._edited = session.split_list(words[words.index("-wires" if "-wires" in words
+                                                            else "-wire") + 1])
+        ok = True
+        try:
+            session.eval(cmd)
+        except tkinter.TclError:
+            ok = False
+        finally:
+            text, session.out = session.out.getvalue(), out
+            self._edited = None
+        session.notify(f"{cmd}\n{text.rstrip()}" if text.strip() else cmd)
+        if ok and undo:
+            self.undo_edits.append(undo)
+        self.act_undo_edit.setEnabled(bool(self.undo_edits))
+        if not ok:
+            self.statusBar().showMessage(text.strip().splitlines()[-1] if text.strip()
+                                         else f"failed: {cmd}", 8000)
+        return ok
+
     def on_escape(self):
-        if self.canvas.ruler_in_progress():
+        if self.canvas.editing():
+            self.canvas.cancel_edit()
+        elif self.canvas.ruler_in_progress():
             self.canvas.cancel_ruler()
         else:
             self.on_select([], "replace")
@@ -237,7 +480,8 @@ class MainWindow(QMainWindow):
                 w.hide()
                 w.deleteLater()
         old = {name: box.isChecked() for name, box in self.layer_boxes.items()}
-        self.layer_boxes = {}
+        old_classes = {k: box.isChecked() for k, box in self.class_boxes.items()}
+        self.layer_boxes, self.class_boxes = {}, {}
         for info in self.layout.layers:
             label = info.name + ("" if info.in_tech else " *")
             counts = []
@@ -254,12 +498,86 @@ class MainWindow(QMainWindow):
             # Keep the user's choice across refreshes; new layers: tech on, others off.
             box.setChecked(old.get(info.name, info.in_tech))
             box.toggled.connect(lambda on, n=info.name: self.canvas.set_layer_visible(n, on))
-            self.layer_list.addWidget(box)
+            # The layer, then small Signal / Power / Ground boxes on the same row.
+            row = QWidget()
+            hbox = QHBoxLayout(row)
+            hbox.setContentsMargins(0, 0, 0, 0)
+            hbox.setSpacing(4)
+            hbox.addWidget(box, 1)
+            for cls, text, tip in CLASS_BOXES:
+                small = QCheckBox(text)
+                small.setStyleSheet("QCheckBox { font-size: 8pt; }")
+                small.setToolTip(tip)
+                small.setChecked(old_classes.get((info.name, cls), True))
+                small.toggled.connect(lambda on, n=info.name, c=cls:
+                                      self._class_toggled(n, c, on))
+                hbox.addWidget(small)
+                self.class_boxes[(info.name, cls)] = small
+            self.layer_list.addWidget(row)
             self.layer_boxes[info.name] = box
+        self.canvas.class_hidden = {k for k, b in self.class_boxes.items() if not b.isChecked()}
+        for cls in self.all_class_boxes:
+            self._sync_all_class(cls)
+
+    def set_all_classes(self, cls, on):
+        """The All layers box of cls: every layer's cls box follows it."""
+        for (layer, c), box in self.class_boxes.items():
+            if c == cls:
+                box.blockSignals(True)
+                box.setChecked(on)
+                box.blockSignals(False)
+                (self.canvas.class_hidden.discard if on else self.canvas.class_hidden.add)(
+                    (layer, cls))
+        self.canvas.apply_visibility()
+
+    def _class_toggled(self, layer, cls, on):
+        self.canvas.set_class_visible(layer, cls, on)
+        self._sync_all_class(cls)
+
+    def _sync_all_class(self, cls):
+        """The All layers box is checked while every layer's cls box is."""
+        box = self.all_class_boxes[cls]
+        box.blockSignals(True)
+        box.setChecked(all(b.isChecked() for (_, c), b in self.class_boxes.items() if c == cls))
+        box.blockSignals(False)
+
+    def _toggle_layers(self, open_):
+        self.layer_toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
+        self.layer_body.setVisible(open_)
 
     def _toggle_assignments(self, open_):
         self.assign_toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
         self.assign_panel.setVisible(open_)
+
+    def _toggle_rows(self, open_):
+        self.rows_toggle.setArrowType(Qt.DownArrow if open_ else Qt.RightArrow)
+        self.rows_panel.setVisible(open_)
+
+    def _rebuild_site_rows(self):
+        """One checkbox per site of the DEF rows, with its color and size."""
+        while self.rows_vbox.count():
+            w = self.rows_vbox.takeAt(0).widget()
+            if w is not None:
+                w.hide()
+                w.deleteLater()
+        old = {k: b.isChecked() for k, b in self.site_boxes.items()}
+        self.site_boxes = {}
+        if not self.layout.site_rows:
+            note = QLabel("No placement rows.\nUse read_def with ROW statements.")
+            note.setStyleSheet("color: #888;")
+            self.rows_vbox.addWidget(note)
+            return
+        for sr in self.layout.site_rows:
+            box = QCheckBox(f"{sr.site}  ({len(sr.rows)})")
+            box.setToolTip(f"{sr.site}: {len(sr.rows)} rows, site {sr.width:g} x {sr.height:g} um")
+            pix = QPixmap(12, 12)
+            pix.fill(QColor(sr.color))
+            box.setIcon(QIcon(pix))
+            box.setChecked(old.get(sr.site, True))
+            box.toggled.connect(lambda on, n=sr.site: self.canvas.set_site_rows_visible(n, on))
+            self.rows_vbox.addWidget(box)
+            self.site_boxes[sr.site] = box
+        self.canvas.rows_hidden = {k for k, b in self.site_boxes.items() if not b.isChecked()}
 
     def _rebuild_assignments(self):
         """One block per assigned layer: its pattern and a checkbox per net."""
@@ -303,10 +621,28 @@ class MainWindow(QMainWindow):
 
     # -- data ---------------------------------------------------------------------
     def refresh(self):
-        """Reload everything from the database (after a command changed it)."""
+        """Reload everything from the database (after a command changed it).
+        During an edit made here, only the edited wires are redrawn."""
+        if self._edited is not None:
+            from core import objects
+            rects = {}
+            for h in self._edited:
+                row = objects.wire_row(self.session.db, h)
+                if row is not None:
+                    rects[h] = tuple(float(c) for c in row["rect"].split())
+            self.canvas.update_rects(rects)
+            from core import auto_via
+            from core.gui.layout_data import net_wire_strap
+            for h in self._edited:                # its auto vias (stretch_wire)
+                self.canvas.replace_route_shapes(
+                    f"net_wire:{auto_via.owner(h)}/",
+                    [net_wire_strap(r) for r in self.session.db.net_wire_rows(auto_via.owner(h))])
+            self.show_selection()
+            return
         self.layout = load_layout(self.session.db)
         self._rebuild_layer_boxes()
         self._rebuild_assignments()
+        self._rebuild_site_rows()
         for key, reason in NOT_YET.items():
             box = self.object_boxes[key]
             box.setChecked(False)
@@ -315,7 +651,10 @@ class MainWindow(QMainWindow):
         inst_pins = any(i.pins for i in self.layout.insts)
         has = {"boundary": bool(self.layout.boundary), "ports": bool(self.layout.shapes),
                "tracks": bool(self.layout.tracks), "cells": bool(self.layout.insts),
+               "rows": bool(self.layout.site_rows),
                "spine": bool(self.layout.spines),
+               "routes": bool(self.layout.straps or self.layout.pin_wires
+                              or self.layout.net_wires),
                "pins": inst_pins, "labels": inst_pins or bool(self.layout.shapes)}
         for key, present in has.items():
             self.object_boxes[key].setEnabled(present)
@@ -366,6 +705,36 @@ class MainWindow(QMainWindow):
             self.sel_label.setText(self.describe(sel[0]))
         else:
             self.sel_label.setText(f"{len(sel)} objects selected")
+        names = list(dict.fromkeys(self.object_name(h) for h in sel))
+        more = f"  +{len(names) - NAMES_SHOWN} more" if len(names) > NAMES_SHOWN else ""
+        self.name_label.setText(", ".join(names[:NAMES_SHOWN]) + more)
+        self.name_label.setToolTip("\n".join(names) if more else "")
+
+    def object_name(self, handle):
+        """The name the status bar shows in its centre: a wire's net (a
+        shield's, a power extension's or a via's: its power net), an
+        instance's name, inst/pin for a pin, a port's pin name. A strap or pin
+        wire of an unrouted signal pin (net SIGNAL) shows its inst/pin."""
+        from core import objects
+        db = self.session.db
+        kind = objects.obj_type(handle)
+        rest = handle.partition(":")[2]
+        if kind in objects.WIRE_TABLES:
+            row = objects.wire_row(db, handle)
+            if row is None:
+                return rest
+            net = (row["shield_net"] or row["net"]) if kind == "net_wire" else row["net"]
+            if net != "SIGNAL":
+                return net
+            pin = row["pin"] if kind == "pin_wire" else next(
+                (w["pin"] for w in db.pin_wire_rows(row["inst"]) if w["strap"] == row["seq"]),
+                None)
+            return f"{row['inst']}/{pin}" if pin else f"{row['inst']} (unrouted)"
+        if kind in ("port", "port_shape"):                 # <design>/<pin>[/<k>]
+            return rest.split("/")[1] if "/" in rest else rest
+        if kind == "spine_net":                            # <spine>/<net>
+            return rest.partition("/")[2] or rest
+        return rest or handle                              # inst, pin (inst/pin), net, stub
 
     def describe(self, handle):
         """One line about a selected object for the terminal and status bar."""
@@ -387,4 +756,31 @@ class MainWindow(QMainWindow):
             g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
             return (f"{handle}  {g('ref_name')}  at {{{g('location')}}} {g('orient')}  "
                     f"bbox {{{g('bbox')}}}")
+        if kind == "spine_net":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  driver {g('driver')}  loads {{{g('loads')}}}  "
+                    f"group {g('group')}  length {g('length')}  route_rule {g('route_rule')}")
+        if kind == "strap":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  net {g('net')}  layer {g('layer')}  rect {{{g('rect')}}}  "
+                    f"width {g('width')}")
+        if kind == "pin_wire":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  net {g('net')}  layer {g('layer')}  rect {{{g('rect')}}}  "
+                    f"width {g('width')}  to {g('strap')}")
+        if kind == "net_wire":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            shield = f"  {g('shield_net')} shielding {g('net')}" if g("kind") == "shield" else ""
+            return (f"{handle}  {g('kind')}  layer {g('layer')}  rect {{{g('rect')}}}  "
+                    f"{g('width')} x {g('length')}{shield}")
+        if kind == "stub":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            return (f"{handle}  driver {g('driver')}  points {{{g('points')}}}  "
+                    f"length {g('length')}")
         return handle
+
+
+def _n(v):
+    """A coordinate for a command line: no float noise, no trailing zeros."""
+    text = f"{v:.6f}".rstrip("0").rstrip(".")
+    return "0" if text in ("", "-0") else text

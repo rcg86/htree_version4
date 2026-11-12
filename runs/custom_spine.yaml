@@ -12,11 +12,12 @@ spine_spec:
 
   placement:
     origin_x: 10                 # X of L1
-    level_pitch_x: 2.88          # X step between levels, and from L4 to the stubs
+    level_pitch: 2.88          # X step between levels, and from L4 to the stubs
+    deviation: 10                # a net may exceed its calculated length by up to 10 um
 
   spine:
     orientation: vertical
-    span: 5000                   # total Y covered by the stubs
+    span: 6000                   # total Y covered by the stubs
 
   stubs:
     gap: 10
@@ -27,11 +28,15 @@ spine_spec:
       cells:
         inv1: {input: net}
         inv2: {input: L1/inv1/Y}
+                location: 1000
         inv3: {input: L1/inv2/Y}
+                location: 1000
     L2:
       cells:
         inv1: {input: L1/inv1/Y}
+                location: 500
         inv2: {input: L1/inv3/Y}
+                location: -500
     L3:
       cells:
         inv1: {input: L1/inv3/Y}

@@ -10,13 +10,15 @@ from core.options import parse_options
 
 NAME = "read_db"
 SUMMARY = "Read a design database written by write_db and continue from it"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value"}
 
 NOT_FOUND = 40
 BAD_DB = 41
 
 
 def run(session, argv):
-    opts, pos = parse_options(NAME, argv, {"-file": "value"}, max_positionals=1)
+    opts, pos = parse_options(NAME, argv, OPTIONS, max_positionals=1)
     if "-file" in opts and pos:
         raise HtreeError(1, "read_db: give the file once, with -file")
     path = opts.get("-file") or (pos[0] if pos else None)
@@ -54,7 +56,7 @@ def summary(db):
         rows.append(("Design", f"{d['name']} ({len(db.port_names())} ports, "
                                f"{len(db.track_pattern_ids())} track patterns)"))
     for label, names in (("Track assignments", db.track_assignment_layers()),
-                         ("Route rules", db.route_rule_layers()),
+                         ("Route rules", db.route_rule_names()),
                          ("Spines", db.spine_names())):
         if names:
             rows.append((label, " ".join(names)))

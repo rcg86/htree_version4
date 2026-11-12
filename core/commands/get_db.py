@@ -14,12 +14,15 @@
 import os
 from fnmatch import fnmatchcase
 
-from core import objects
+from core import objects, root_attrs
+from core.db import _num
 from core.expr import Expr
 from core.messages import HtreeError, info
 
 NAME = "get_db"
 SUMMARY = "Query objects and attributes in the design database"
+# Options and their kind, for <tab> completion (get_db reads -if itself).
+OPTIONS = {"-if": "value"}
 
 USAGE = 20
 UNKNOWN_PATH = 21
@@ -48,9 +51,20 @@ ROOTS = {
                                     for l in db.track_assignment_layers()],
     "insts": lambda db: [f"inst:{n}" for n in db.inst_names()],
     "inst": lambda db: [f"inst:{n}" for n in db.inst_names()],
-    "route_rules": lambda db: [f"route_rule:{l}" for l in db.route_rule_layers()],
+    "route_rules": lambda db: _route_rules(db),
     "spines": lambda db: [f"spine:{n}" for n in db.spine_names()],
-    "route_rule": lambda db: [f"route_rule:{l}" for l in db.route_rule_layers()],
+    "spine": lambda db: [f"spine:{n}" for n in db.spine_names()],
+    "route_rule": lambda db: _route_rules(db),
+    "straps": lambda db: [f"strap:{r['inst']}/{r['seq']}" for r in db.strap_rows()],
+    "strap": lambda db: [f"strap:{r['inst']}/{r['seq']}" for r in db.strap_rows()],
+    "pin_wires": lambda db: [f"pin_wire:{r['inst']}/{r['pin']}" for r in db.pin_wire_rows()],
+    "pin_wire": lambda db: [f"pin_wire:{r['inst']}/{r['pin']}" for r in db.pin_wire_rows()],
+    "net_wires": lambda db: [f"net_wire:{r['net']}/{r['seq']}" for r in db.net_wire_rows()],
+    "net_wire": lambda db: [f"net_wire:{r['net']}/{r['seq']}" for r in db.net_wire_rows()],
+    "nets": lambda db: _nets(db) + _stubs(db),
+    "net": lambda db: _nets(db) + _stubs(db),
+    "stubs": lambda db: _stubs(db),
+    "stub": lambda db: _stubs(db),
 }
 
 
@@ -62,6 +76,20 @@ def _design(db):
 def _spine_specs(db):
     objects.require_spine_specs(db)
     return [f"spine_spec:{n}" for n in db.spine_spec_names()]
+
+
+def _route_rules(db):
+    return ["route_rule:default"] + [f"route_rule:{n}" for n in db.route_rule_names()]
+
+
+def _stubs(db):
+    """Every final stub of every built spine (stubs are nets too)."""
+    return [h for s in db.spine_names() for h in objects.get_attr(db, f"spine:{s}", "stubs")]
+
+
+def _nets(db):
+    """Every net of every built spine."""
+    return [h for s in db.spine_names() for h in objects.get_attr(db, f"spine:{s}", "spine_nets")]
 
 
 def _singleton(db, handle):
@@ -83,6 +111,16 @@ def run(session, argv):
         target = target[1:]                       # '.tech.layer' == 'tech.layer'
     second = words[1] if len(words) == 2 else None
 
+    if target in root_attrs.ATTRS and second is None and expr is None:
+        value = root_attrs.get(db, target)        # get_db <root_attr>
+        return _num(value) if isinstance(value, float) else value
+    if target == "root_attributes" and second is None and expr is None:
+        for name, attr in root_attrs.ATTRS.items():
+            value = root_attrs.get(db, name)
+            info(f"{name} = {_num(value) if isinstance(value, float) else value}"
+                 + ("" if root_attrs.is_set(db, name) else
+                    f"  (default: {attr.default_text})") + f"\n    {attr.help}", session.out)
+        return tuple(root_attrs.names())
     if target == "tech" and second is None and expr is None:
         objects.require_tech(db)
         _dump_tech(db, session.out)

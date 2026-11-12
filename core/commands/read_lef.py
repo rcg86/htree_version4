@@ -9,6 +9,8 @@ from core.options import parse_options
 
 NAME = "read_lef"
 SUMMARY = "Read a cell LEF file into the physical library"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value"}
 
 FILE_NOT_FOUND = 60
 PARSE_ERROR = 61
@@ -19,7 +21,7 @@ NO_TECH_TO_CHECK = 65
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-file": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     path = opts.get("-file")
     if not path:
         raise HtreeError(1, "read_lef: -file is required. Usage: read_lef -file <cells.lef>")

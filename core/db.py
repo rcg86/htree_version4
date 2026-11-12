@@ -5,9 +5,14 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 11  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+SCHEMA_VERSION = 20  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
                      # 7: track assignments; 8: instances; 9: route rules;
-                     # 10: level_pitch, deviation, built spines; 11: spine cell location
+                     # 10: level_pitch, deviation, built spines; 11: spine cell location;
+                     # 12: named route rules with several layers, net route rules;
+                     # 13: route_pin straps; 14: route_pin pin wires;
+                     # 15: spine origin and -mirror; 16: route_net wires;
+                     # 17: strap max_extension; 18: route_net shields; 19: DEF rows;
+                     # 20: spine path and straight-spine coordinates (move_spine_to_boundary)
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -106,7 +111,7 @@ CREATE TABLE spine_spec (
     type TEXT, units TEXT, point TEXT, root_net TEXT,
     -- NUMERIC keeps numbers as written in the YAML: 1020 stays 1020, not 1020.0
     max_drive_length NUMERIC, count_stub_in_drive TEXT,
-    origin_x NUMERIC, level_pitch NUMERIC, deviation NUMERIC,
+    origin_x NUMERIC, origin NUMERIC, level_pitch NUMERIC, deviation NUMERIC,
     orientation TEXT, span NUMERIC,
     stub_count INTEGER, stub_gap NUMERIC, stub_tap TEXT,
     stub_order TEXT,                     -- Tcl list text
@@ -175,6 +180,15 @@ CREATE TABLE track_pattern (
     layers TEXT                          -- space separated
 );
 
+-- DEF ROW statements: the placement sites (microns).
+CREATE TABLE site_row (
+    id INTEGER PRIMARY KEY,
+    name TEXT, site TEXT,
+    x REAL, y REAL, orient TEXT,
+    num_x INTEGER, num_y INTEGER, step_x REAL, step_y REAL
+);
+CREATE INDEX site_row_y ON site_row (y);
+
 -- assign_track_for_route: a repeating net pattern over a layer's routing
 -- tracks. Kept as a rule; track positions come from track_pattern.
 CREATE TABLE track_assignment (
@@ -192,31 +206,48 @@ CREATE TABLE inst (
     ref_cell TEXT NOT NULL,
     x REAL, y REAL,
     orient TEXT,
-    status TEXT                          -- placed
+    status TEXT                          -- placed | fixed | cover (set_db .place_status)
 );
 
--- create_route_rule: wire width and the spacing kept on each side of a
--- route, one rule per layer (microns).
+-- create_route_rule: a named rule; per layer, the wire width and the
+-- spacing kept on each side of a route (microns). One row per (rule, layer).
 CREATE TABLE route_rule (
     id INTEGER PRIMARY KEY,
-    layer TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    layer TEXT NOT NULL,
     width REAL NOT NULL,
     spacing REAL NOT NULL,
-    spacing_given TEXT                   -- true: -spacing; false: from tech
+    spacing_given TEXT,                  -- true: -spacing; false: from tech
+    UNIQUE (name, layer)
+);
+
+-- set_db <nets> .route_rule: the rule a net is routed with. Keyed by net
+-- name, so a net rebuilt with the same name keeps it. No row: the default rule.
+CREATE TABLE net_route_rule (
+    net TEXT PRIMARY KEY,
+    rule TEXT NOT NULL
 );
 
 -- create_spine -build: a built spine. Its cells are inst rows; spine_member
 -- maps them back to the spec. Stubs and net routes are centre lines (microns).
+-- along / across: where each sits on the straight spine as built, in um from
+-- -location along the spine and across it (+ up / right); these never change.
+-- move_spine_to_boundary bends the spine along path and maps them onto it
+-- (core/spine_snake.py).
 CREATE TABLE spine (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
     spec TEXT,
     orientation TEXT,
     build_direction TEXT,
-    x REAL, y REAL,                      -- -location: centre of the root cell
+    x REAL, y REAL,                      -- -location: the root cell is origin from it
+    origin REAL,                         -- um along the spine from -location to the root
+    mirror INTEGER,                      -- 1: a mirrored copy on the other side (-mirror)
     ref_cell TEXT,
     level_pitch REAL, deviation REAL, max_drive REAL,
-    stub_length REAL
+    stub_length REAL,
+    path TEXT                            -- "x y x y ...": the stub line, bottom / left end
+                                         -- first, once bent; NULL: straight as built
 );
 
 CREATE TABLE spine_member (
@@ -224,7 +255,8 @@ CREATE TABLE spine_member (
     inst TEXT,
     level TEXT,
     cell TEXT,
-    driver TEXT                          -- inst name; empty for the root
+    driver TEXT,                         -- inst name; empty for the root
+    along REAL, across REAL              -- the cell centre on the straight spine
 );
 
 CREATE TABLE spine_stub (
@@ -232,7 +264,8 @@ CREATE TABLE spine_stub (
     spine_id INTEGER REFERENCES spine(id),
     name TEXT,
     driver TEXT,                         -- inst name of the leaf
-    points TEXT                          -- "x1 y1 x2 y2"
+    points TEXT,                         -- "x1 y1 x2 y2"; more points when bent
+    ref TEXT                             -- "<along lo> <along hi> <across>"
 );
 
 CREATE TABLE spine_net (
@@ -244,7 +277,44 @@ CREATE TABLE spine_net (
     grp TEXT,                            -- L1-L2, L2-L3, ..., L4-stubs
     length REAL,
     detour REAL,
-    route TEXT                           -- "x1 y1 x2 y2" per segment, ';' between
+    route TEXT,                          -- "x1 y1 x2 y2" per segment, ';' between
+    ref_route TEXT                       -- "along across along across" per segment
+);
+
+-- route_pin: horizontal straps over an instance, numbered from the top.
+CREATE TABLE strap (
+    id INTEGER PRIMARY KEY,
+    inst TEXT NOT NULL,
+    seq INTEGER,                         -- 1 = top strap
+    net TEXT,
+    layer TEXT,
+    rect TEXT,                           -- "x1 y1 x2 y2" (microns)
+    max_extension REAL                   -- route_net may lengthen it this far each side
+);
+
+-- route_pin: a vertical wire from a cell pin to the strap of its net.
+CREATE TABLE pin_wire (
+    id INTEGER PRIMARY KEY,
+    inst TEXT NOT NULL,
+    pin TEXT,
+    net TEXT,
+    layer TEXT,
+    rect TEXT,                           -- "x1 y1 x2 y2" (microns)
+    strap INTEGER                        -- strap seq it reaches
+);
+
+-- route_net: the wires of a routed net, and the boxes where two of them
+-- (or a wire and a route_pin strap) cross. Keyed by net name.
+CREATE TABLE net_wire (
+    id INTEGER PRIMARY KEY,
+    net TEXT NOT NULL,
+    seq INTEGER,                         -- 1, 2, ... per net
+    kind TEXT,                           -- wire | extension | cross | shield |
+                                         -- shield_ext | stub | stub_cross | stub_shield |
+                                         -- pg_ext | pg_cross (net pg:<inst>)
+    layer TEXT,                          -- a cross: "<layer>/<layer>"
+    rect TEXT,                           -- "x1 y1 x2 y2" (microns)
+    shield_net TEXT                      -- a shield: its power net (VDD_SOC, VSS)
 );
 
 CREATE TABLE port_extra (
@@ -451,8 +521,8 @@ class Database:
 
     # -- spine specs -----------------------------------------------------------
     SPINE_COLUMNS = ["type", "units", "point", "root_net", "max_drive_length",
-                     "count_stub_in_drive", "origin_x", "level_pitch", "deviation", "orientation",
-                     "span", "stub_count", "stub_gap", "stub_tap", "stub_order"]
+                     "count_stub_in_drive", "origin_x", "origin", "level_pitch", "deviation",
+                     "orientation", "span", "stub_count", "stub_gap", "stub_tap", "stub_order"]
 
     def has_spine_specs(self) -> bool:
         return self.conn.execute("SELECT 1 FROM spine_spec").fetchone() is not None
@@ -547,7 +617,8 @@ class Database:
     def load_def(self, d):
         """Replace the design with d (a DefDesign), atomically."""
         with self.conn:
-            for table in ("track_pattern", "port_extra", "port_shape", "port", "design"):
+            for table in ("track_pattern", "site_row", "port_extra", "port_shape", "port",
+                          "design"):
                 self.conn.execute(f"DELETE FROM {table}")
             self.conn.execute(
                 "INSERT INTO design (id, name, file, def_version, units, boundary) "
@@ -572,9 +643,45 @@ class Database:
                   "true" if t.same_mask else "false", " ".join(t.layers))
                  for i, t in enumerate(d.tracks, start=1)])
             self.conn.executemany(
+                "INSERT INTO site_row (name, site, x, y, orient, num_x, num_y, step_x, step_y) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(r.name, r.site, r.x, r.y, r.orient, r.num_x, r.num_y, r.step_x, r.step_y)
+                 for r in getattr(d, "rows", [])])
+            self.conn.executemany(
                 "INSERT INTO port_extra VALUES (?, ?, ?)",
                 [(i, k, e) for i, p in enumerate(d.ports, start=1)
                  for k, e in enumerate(p.extra, start=1)])
+
+    def site_rows_of(self, site) -> bool:
+        return bool(site) and self.conn.execute("SELECT 1 FROM site_row WHERE site = ?",
+                                                (site,)).fetchone() is not None
+
+    def has_site_rows(self) -> bool:
+        return self.conn.execute("SELECT 1 FROM site_row").fetchone() is not None
+
+    def legal_site(self, x: float, y: float, width: float, orient: str, site=None):
+        """(x, y, row name) of the placement site nearest lower-left (x, y)
+        for a cell width wide: in a row of the cell's site (when given) and
+        orientation (N in N rows, FS in FS rows), the cell inside the row;
+        None when no row fits."""
+        best = None
+        query = "SELECT * FROM site_row WHERE orient = ?" + (" AND site = ?" if site else "") + \
+            " ORDER BY ABS(y - ?) LIMIT 400"
+        for r in self.conn.execute(query, (orient, site, y) if site else (orient, y)):
+            step = r["step_x"] or 0.0
+            last = r["x"] + (r["num_x"] - 1) * step if step else r["x"]
+            if step:
+                k = round((x - r["x"]) / step)
+                k = max(0, min(k, int((last + step - width - r["x"]) / step + 1e-9)))
+                sx = r["x"] + k * step
+            else:
+                sx = r["x"]
+            if sx + width > last + step + 1e-6 or sx < r["x"] - 1e-6:
+                continue                 # the cell does not fit in the row
+            d = abs(sx - x) + abs(r["y"] - y)
+            if best is None or d < best[0]:
+                best = (d, round(sx, 6), round(r["y"], 6), r["name"])
+        return None if best is None else best[1:]
 
     def design_row(self):
         return self.conn.execute("SELECT * FROM design").fetchone()
@@ -639,36 +746,66 @@ class Database:
         return self.conn.execute("SELECT * FROM track_assignment WHERE layer = ?",
                                  (layer,)).fetchone()
 
-    def set_route_rule(self, layer, width, spacing, spacing_given):
-        """Store a layer's route rule; returns True if it replaced one."""
+    def set_route_rule(self, name, layer, width, spacing, spacing_given, append):
+        """Store one layer of a rule. append False: the rule is replaced by this
+        layer alone. Returns the layers of the old rule that were replaced (all
+        of them without append, the same layer with append)."""
+        given = "true" if spacing_given else "false"
         with self.conn:
-            old = self.conn.execute("DELETE FROM route_rule WHERE layer = ?", (layer,)).rowcount
-            self.conn.execute("INSERT INTO route_rule (layer, width, spacing, spacing_given) "
-                              "VALUES (?, ?, ?, ?)",
-                              (layer, width, spacing, "true" if spacing_given else "false"))
-        return old > 0
+            if append and self.route_rule_layer_row(name, layer):
+                self.conn.execute("UPDATE route_rule SET width = ?, spacing = ?, "
+                                  "spacing_given = ? WHERE name = ? AND layer = ?",
+                                  (width, spacing, given, name, layer))
+                return [layer]                 # keeps its place in the rule
+            old = [] if append else self.route_rule_layers(name)
+            if old:
+                self.conn.execute("DELETE FROM route_rule WHERE name = ?", (name,))
+            self.conn.execute("INSERT INTO route_rule (name, layer, width, spacing, "
+                              "spacing_given) VALUES (?, ?, ?, ?, ?)",
+                              (name, layer, width, spacing, given))
+        return old
 
-    def route_rule_layers(self):
-        return [r[0] for r in self.conn.execute("SELECT layer FROM route_rule ORDER BY id")]
+    def route_rule_names(self):
+        return [r[0] for r in self.conn.execute(
+            "SELECT name FROM route_rule GROUP BY name ORDER BY MIN(id)")]
 
-    def route_rule_row(self, layer: str):
-        return self.conn.execute("SELECT * FROM route_rule WHERE layer = ?", (layer,)).fetchone()
+    def route_rule_layers(self, name: str):
+        return [r[0] for r in self.conn.execute(
+            "SELECT layer FROM route_rule WHERE name = ? ORDER BY id", (name,))]
+
+    def route_rule_layer_row(self, name: str, layer: str):
+        return self.conn.execute("SELECT * FROM route_rule WHERE name = ? AND layer = ?",
+                                 (name, layer)).fetchone()
+
+    def set_net_route_rule(self, net: str, rule):
+        """rule None: back to the default rule."""
+        with self.conn:
+            self.conn.execute("DELETE FROM net_route_rule WHERE net = ?", (net,))
+            if rule is not None:
+                self.conn.execute("INSERT INTO net_route_rule (net, rule) VALUES (?, ?)",
+                                  (net, rule))
+
+    def net_route_rule(self, net: str):
+        row = self.conn.execute("SELECT rule FROM net_route_rule WHERE net = ?",
+                                (net,)).fetchone()
+        return row[0] if row else None
 
     def add_spine(self, spine, insts, members, stubs, nets):
         """Store a built spine and its instances, atomically."""
         with self.conn:
             ex = self.conn.execute
-            sid = ex("INSERT INTO spine (name, spec, orientation, build_direction, x, y, ref_cell, "
-                     "level_pitch, deviation, max_drive, stub_length) "
-                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", spine).lastrowid
+            sid = ex("INSERT INTO spine (name, spec, orientation, build_direction, x, y, origin, "
+                     "mirror, ref_cell, level_pitch, deviation, max_drive, stub_length) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", spine).lastrowid
             self.conn.executemany("INSERT INTO inst (name, ref_cell, x, y, orient, status) "
                                   "VALUES (?, ?, ?, ?, ?, 'placed')", insts)
-            self.conn.executemany("INSERT INTO spine_member VALUES (?, ?, ?, ?, ?)",
+            self.conn.executemany("INSERT INTO spine_member VALUES (?, ?, ?, ?, ?, ?, ?)",
                                   [(sid,) + tuple(m) for m in members])
-            self.conn.executemany("INSERT INTO spine_stub (spine_id, name, driver, points) "
-                                  "VALUES (?, ?, ?, ?)", [(sid,) + tuple(s) for s in stubs])
+            self.conn.executemany("INSERT INTO spine_stub (spine_id, name, driver, points, ref) "
+                                  "VALUES (?, ?, ?, ?, ?)", [(sid,) + tuple(s) for s in stubs])
             self.conn.executemany("INSERT INTO spine_net (spine_id, name, driver, loads, grp, "
-                                  "length, detour, route) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                                  "length, detour, route, ref_route) "
+                                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                   [(sid,) + tuple(n) for n in nets])
 
     def spine_names(self):
@@ -689,6 +826,113 @@ class Database:
         return self.conn.execute("SELECT * FROM spine_net WHERE spine_id = ? ORDER BY id",
                                  (spine_id,)).fetchall()
 
+    def move_insts(self, names, dx: float, dy: float, pin_routes=False):
+        """Move instances by (dx, dy) microns; with pin_routes, their route_pin
+        straps and pin wires too."""
+        with self.conn:
+            self.conn.executemany("UPDATE inst SET x = ROUND(x + ?, 6), y = ROUND(y + ?, 6) "
+                                  "WHERE name = ?", [(dx, dy, n) for n in names])
+            if not pin_routes:
+                return
+            self._move_auto_vias(_via_prefixes(names), dx, dy)
+            for table, key in (("strap", "inst"), ("pin_wire", "inst"), ("net_wire", "net")):
+                for n in names:
+                    n = f"pg:{n}" if table == "net_wire" else n   # optimize_pg_connection's
+                    for r in self.conn.execute(f"SELECT id, rect FROM {table} WHERE {key} = ?",
+                                               (n,)).fetchall():
+                        v = [float(c) for c in r["rect"].split()]
+                        rect = " ".join(_num(round(c + (dy if k % 2 else dx), 6))
+                                        for k, c in enumerate(v))
+                        self.conn.execute(f"UPDATE {table} SET rect = ? WHERE id = ?",
+                                          (rect, r["id"]))
+
+    def move_spine(self, name: str, dx: float, dy: float):
+        """Move a built spine by (dx, dy) microns, with everything it owns: its
+        location, instances, their route_pin straps and pin wires, stubs, net
+        centre lines and the routed wires of its nets (stub wires and shields
+        included). Atomic."""
+        spine = self.spine_row(name)
+        insts = [m["inst"] for m in self.spine_members(spine["id"])]
+        nets = [r["name"] for r in self.spine_net_rows(spine["id"])]
+        ex = self.conn.execute
+
+        def moved(text):         # "x y x y ..." pairs, ';' between segments
+            return ";".join(" ".join(_num(round(float(v) + (dy if k % 2 else dx), 6))
+                                     for k, v in enumerate(part.split()))
+                            for part in text.split(";")) if text else text
+
+        with self.conn:
+            ex("UPDATE spine SET x = ?, y = ?, path = ? WHERE id = ?",
+               (round(spine["x"] + dx, 6), round(spine["y"] + dy, 6), moved(spine["path"]),
+                spine["id"]))
+            self.conn.executemany("UPDATE inst SET x = ROUND(x + ?, 6), y = ROUND(y + ?, 6) "
+                                  "WHERE name = ?", [(dx, dy, n) for n in insts])
+            owners = nets + [f"pg:{n}" for n in insts]    # optimize_pg_connection's too
+            self._move_auto_vias(_via_prefixes(insts) + [f"auto_via:net_wire:{n}/"
+                                                         for n in nets], dx, dy)
+            for table, key in (("strap", "inst"), ("pin_wire", "inst"), ("net_wire", "net")):
+                for value in (insts if key == "inst" else owners):
+                    for r in ex(f"SELECT id, rect FROM {table} WHERE {key} = ?",
+                                (value,)).fetchall():
+                        ex(f"UPDATE {table} SET rect = ? WHERE id = ?", (moved(r["rect"]), r["id"]))
+            for r in ex("SELECT id, points FROM spine_stub WHERE spine_id = ?",
+                        (spine["id"],)).fetchall():
+                ex("UPDATE spine_stub SET points = ? WHERE id = ?", (moved(r["points"]), r["id"]))
+            for r in ex("SELECT id, route FROM spine_net WHERE spine_id = ?",
+                        (spine["id"],)).fetchall():
+                ex("UPDATE spine_net SET route = ? WHERE id = ?", (moved(r["route"]), r["id"]))
+        return insts, nets
+
+    def set_spine_shape(self, name: str, location, path: str, insts, stubs, nets):
+        """A spine bent along path (move_spine_to_boundary): its new location
+        (x, y), instance corners [(inst, x, y)], stub points [(stub id, text)]
+        and net centre lines [(net id, text)]. Its routing no longer fits and
+        goes: the route_pin straps and pin wires of its instances, their
+        optimize_pg_connection wires, the route_net and route_final_stub
+        wires of its nets, and the auto vias on any of them. Atomic. Returns
+        (straps, pin wires, net wires) removed."""
+        spine = self.spine_row(name)
+        members = [m["inst"] for m in self.spine_members(spine["id"])]
+        owners = [r["name"] for r in self.spine_net_rows(spine["id"])] + \
+            [f"pg:{n}" for n in members]
+        ex = self.conn.execute
+        gone = [0, 0, 0]
+        with self.conn:
+            ex("UPDATE spine SET x = ?, y = ?, path = ? WHERE id = ?",
+               (location[0], location[1], path, spine["id"]))
+            self.conn.executemany("UPDATE inst SET x = ?, y = ? WHERE name = ?",
+                                  [(x, y, n) for n, x, y in insts])
+            self.conn.executemany("UPDATE spine_stub SET points = ? WHERE id = ?",
+                                  [(text, k) for k, text in stubs])
+            self.conn.executemany("UPDATE spine_net SET route = ? WHERE id = ?",
+                                  [(text, k) for k, text in nets])
+            self._drop_auto_vias(_via_prefixes(members) + [f"auto_via:net_wire:{n}/"
+                                                           for n in owners])
+            for n in members:
+                gone[0] += ex("DELETE FROM strap WHERE inst = ?", (n,)).rowcount
+                gone[1] += ex("DELETE FROM pin_wire WHERE inst = ?", (n,)).rowcount
+            for n in owners:
+                gone[2] += ex("DELETE FROM net_wire WHERE net = ?", (n,)).rowcount
+        return tuple(gone)
+
+    def _move_auto_vias(self, prefixes, dx, dy):
+        """Move the auto vias (stretch_wire) of the wires whose owner net
+        starts with one of prefixes."""
+        for p in prefixes:
+            for r in self.conn.execute("SELECT id, rect FROM net_wire WHERE substr(net, 1, ?) = ?",
+                                       (len(p), p)).fetchall():
+                rect = " ".join(_num(round(float(c) + (dy if k % 2 else dx), 6))
+                                for k, c in enumerate(r["rect"].split()))
+                self.conn.execute("UPDATE net_wire SET rect = ? WHERE id = ?", (rect, r["id"]))
+
+    def _drop_auto_vias(self, prefixes):
+        for p in prefixes:
+            self.conn.execute("DELETE FROM net_wire WHERE substr(net, 1, ?) = ?", (len(p), p))
+
+    def set_inst_status(self, name: str, status: str):
+        with self.conn:
+            self.conn.execute("UPDATE inst SET status = ? WHERE name = ?", (status, name))
+
     def add_inst(self, name, ref_cell, x, y, orient, status="placed"):
         with self.conn:
             self.conn.execute("INSERT INTO inst (name, ref_cell, x, y, orient, status) "
@@ -705,6 +949,98 @@ class Database:
 
     def inst_rows(self):
         return self.conn.execute("SELECT * FROM inst ORDER BY id").fetchall()
+
+    def set_straps(self, inst: str, straps, wires=(), max_extension=0.0):
+        """Replace an instance's straps with (net, layer, rect text), top first,
+        and its pin wires with (pin, net, layer, rect text, strap seq).
+        max_extension: how far route_net may lengthen each strap at each end.
+        Returns the number of straps replaced."""
+        with self.conn:
+            old = self.conn.execute("DELETE FROM strap WHERE inst = ?", (inst,)).rowcount
+            self.conn.execute("DELETE FROM pin_wire WHERE inst = ?", (inst,))
+            self.conn.execute("DELETE FROM net_wire WHERE net = ?", (f"pg:{inst}",))
+            self._drop_auto_vias(_via_prefixes([inst]))       # their wires are rebuilt
+            self.conn.executemany("INSERT INTO strap (inst, seq, net, layer, rect, "
+                                  "max_extension) VALUES (?, ?, ?, ?, ?, ?)",
+                                  [(inst, k, net, layer, rect, max_extension)
+                                   for k, (net, layer, rect) in enumerate(straps, start=1)])
+            self.conn.executemany("INSERT INTO pin_wire (inst, pin, net, layer, rect, strap) "
+                                  "VALUES (?, ?, ?, ?, ?, ?)",
+                                  [(inst,) + tuple(w) for w in wires])
+        return old
+
+    def set_net_wires(self, net: str, wires, stub=False):
+        """Replace a net's wires with (kind, layer, rect text[, shield net]):
+        its route_net wires, or with stub=True its route_final_stub ones
+        (kind stub, and their crossings); each keeps the other's. Returns how
+        many it replaced."""
+        part = "kind LIKE 'stub%'" if stub else "kind NOT LIKE 'stub%'"
+        with self.conn:
+            if not net.startswith("auto_via:"):     # the wires are rebuilt: their vias go
+                self._drop_auto_vias([f"auto_via:net_wire:{net}/"])
+            old = self.conn.execute(f"DELETE FROM net_wire WHERE net = ? AND {part}",
+                                    (net,)).rowcount
+            first = self.conn.execute("SELECT COALESCE(MAX(seq), 0) FROM net_wire "
+                                      "WHERE net = ?", (net,)).fetchone()[0]
+            self.conn.executemany("INSERT INTO net_wire (net, seq, kind, layer, rect, "
+                                  "shield_net) VALUES (?, ?, ?, ?, ?, ?)",
+                                  [(net, k) + tuple(w) + (None,) * (4 - len(w))
+                                   for k, w in enumerate(wires, start=first + 1)])
+        return old
+
+    def unname_pins(self, net: str, to: str = "SIGNAL"):
+        """Put the straps and pin wires route_net named after net back on to
+        (its routing is gone, so they connect to nothing). Returns how many."""
+        with self.conn:
+            n = self.conn.execute("UPDATE strap SET net = ? WHERE net = ?", (to, net)).rowcount
+            n += self.conn.execute("UPDATE pin_wire SET net = ? WHERE net = ?",
+                                   (to, net)).rowcount
+        return n
+
+    def set_pin_net(self, inst: str, pin: str, strap: int, net: str):
+        """Give a route_pin strap and the pin wire of pin the net they are now
+        part of (route_net connected them)."""
+        with self.conn:
+            self.conn.execute("UPDATE strap SET net = ? WHERE inst = ? AND seq = ?",
+                              (net, inst, strap))
+            self.conn.execute("UPDATE pin_wire SET net = ? WHERE inst = ? AND pin = ?",
+                              (net, inst, pin))
+
+    def net_wire_rows(self, net=None):
+        if net is None:
+            return self.conn.execute("SELECT * FROM net_wire ORDER BY id").fetchall()
+        return self.conn.execute("SELECT * FROM net_wire WHERE net = ? ORDER BY id",
+                                 (net,)).fetchall()
+
+    def set_wire_rect(self, table: str, row_id: int, rect: str):
+        """A new rect for one route shape (move_wire, stretch_wire)."""
+        assert table in ("net_wire", "strap", "pin_wire")
+        with self.conn:
+            self.conn.execute(f"UPDATE {table} SET rect = ? WHERE id = ?", (rect, row_id))
+
+    def net_wire_row(self, net: str, seq: int):
+        return self.conn.execute("SELECT * FROM net_wire WHERE net = ? AND seq = ?",
+                                 (net, seq)).fetchone()
+
+    def pin_wire_rows(self, inst=None):
+        if inst is None:
+            return self.conn.execute("SELECT * FROM pin_wire ORDER BY id").fetchall()
+        return self.conn.execute("SELECT * FROM pin_wire WHERE inst = ? ORDER BY id",
+                                 (inst,)).fetchall()
+
+    def pin_wire_row(self, inst: str, pin: str):
+        return self.conn.execute("SELECT * FROM pin_wire WHERE inst = ? AND pin = ?",
+                                 (inst, pin)).fetchone()
+
+    def strap_rows(self, inst=None):
+        if inst is None:
+            return self.conn.execute("SELECT * FROM strap ORDER BY id").fetchall()
+        return self.conn.execute("SELECT * FROM strap WHERE inst = ? ORDER BY seq",
+                                 (inst,)).fetchall()
+
+    def strap_row(self, inst: str, seq: int):
+        return self.conn.execute("SELECT * FROM strap WHERE inst = ? AND seq = ?",
+                                 (inst, seq)).fetchone()
 
     def lib_cell_shapes(self, cell: str):
         """(pin, layer, type, points text) for every pin shape of a lib cell."""
@@ -748,3 +1084,10 @@ class Database:
             src.close()
         self.conn.close()
         self.conn = conn
+
+
+def _via_prefixes(insts):
+    """Owner-net prefixes of the auto vias (stretch_wire) on the route_pin
+    and optimize_pg_connection shapes of instances."""
+    return [p for n in insts for p in (f"auto_via:strap:{n}/", f"auto_via:pin_wire:{n}/",
+                                       f"auto_via:net_wire:pg:{n}/")]

@@ -3,9 +3,12 @@
 Scene coordinates are microns with y negated (scene y = -model y), so the
 layout shows y up. model() and scene() are the only conversions.
 
-Mouse: left drag draws a box and zooms to it; Shift+drag selects every port
-with a shape inside the box (Ctrl+Shift+drag adds). Click selects the port
-under the cursor, Ctrl+click adds or removes it, click on empty space clears.
+Mouse: left drag draws a box and zooms to it; Shift+drag selects every object
+with a shape inside the box (Ctrl+Shift+drag adds); right drag selects every
+object with a shape touching the box (Ctrl+right drag adds). Click selects the
+object under the cursor, Ctrl+click adds or removes it, click on empty space
+clears. Selectable: ports, instances, instance pins, spine nets and stubs,
+route_pin straps and pin wires.
 Middle drag and the arrow keys pan (past any edge), the wheel zooms about the
 cursor, F fits the design in the window. In ruler mode, left clicks set the
 start and end of a ruler (snapped to drawn edges when snapping is on), right
@@ -15,28 +18,39 @@ least MIN_TRACK_PIXELS apart on screen. Tech layers show only the tracks of
 their preferred direction (a horizontal layer: DEF TRACKS Y).
 """
 
-from PySide6.QtCore import QLineF, QPointF, QRect, QRectF, Qt, QTimer, Signal
+import bisect
+import math
+
+from PySide6.QtCore import QLineF, QPointF, QRect, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF, QTransform
 from PySide6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem, QGraphicsLineItem,
                                QGraphicsPolygonItem, QGraphicsRectItem, QGraphicsScene,
-                               QGraphicsSimpleTextItem, QGraphicsView)
+                               QGraphicsSimpleTextItem, QGraphicsView, QRubberBand)
 
 from core.gui.layout_data import (BLANK, SIGNAL, clip_line_to_polygon, constrain_orthogonal,
-                                  drawn_layers, nearest_on_segments, polygon_edges,
-                                  ruler_text, visible_assigned_tracks,
-                                  visible_track_positions)
+                                  drawn_layers, track_coords, nearest_on_segments, polygon_edges,
+                                  ruler_text, segment_touches_rect, visible_assigned_tracks,
+                                  visible_rows, visible_track_positions)
 
 ZOOM_STEP = 1.15
 MIN_TRACK_PIXELS = 4      # draw a track pattern only when its lines are this far apart
 PICK_PIXELS = 3           # click tolerance around the cursor
+MIN_ROW_PIXELS = 3        # draw a site's rows only when a row is this tall on screen
+MIN_SITE_PIXELS = 4       # ... and its site boundaries when a site is this wide
+MAX_SITE_LINES = 6000     # site boundaries drawn at most, per paint
 # The view can only pan inside its scene rect, so the scene rect is the design
 # padded by PAN_MARGIN design sizes on every side, and zoom-out stops before
 # that padded area fits in the window (where panning would lock up again).
 PAN_MARGIN = 10
 MIN_CONTENT_PIXELS = 20   # zoom-out stops when the design is this small
 HANDLE_KEY = 0            # QGraphicsItem.data key holding the shape's handle
-OWNER_KEY = 1             # ... and the selectable object it belongs to (its port)
+OWNER_KEY = 1             # ... and the selectable object it belongs to (port, net, ...)
 LABEL_KEY = 2             # ... and the pin name written on it when labels are on
+CLASS_KEY = 3             # ... and its net class: signal, power or ground
+LAYER_KEY = 4             # ... and, for a route shape, its layer
+# Route shapes the Tools > Stretch and Move edit modes change (move_wire, stretch_wire).
+EDITABLE = ("net_wire:", "strap:", "pin_wire:")
+EDGE_PIXELS = 5           # Stretch: an edge this close to the cursor is picked
 MAX_LABELS = 2000         # more pins than this in view: no labels until zoomed in
 SELECT_COLOR = "#ffff00"
 INST_COLOR = "#26c6da"        # instance outline
@@ -61,7 +75,34 @@ def _geometry_rect(item):
         return item.rect()
     if isinstance(item, QGraphicsPolygonItem):
         return item.polygon().boundingRect()
+    if isinstance(item, QGraphicsLineItem):
+        line = item.line()
+        return QRectF(line.p1(), line.p2()).normalized()
     return item.sceneBoundingRect()
+
+
+def _enclosed(item, rect):
+    """True if the item's geometry lies wholly in scene rect. Compared by
+    coordinates: a straight net has a zero-width box, which QRectF treats
+    as empty."""
+    g = _geometry_rect(item)
+    return (rect.left() <= g.left() and g.right() <= rect.right()
+            and rect.top() <= g.top() and g.bottom() <= rect.bottom())
+
+
+def _touches(item, rect):
+    """True if any part of the item's geometry (not its outline pen) is in
+    scene rect."""
+    if isinstance(item, QGraphicsLineItem):
+        line = item.line()
+        return segment_touches_rect((line.x1(), line.y1()), (line.x2(), line.y2()),
+                                    (rect.left(), rect.top(), rect.right(), rect.bottom()))
+    if isinstance(item, QGraphicsPolygonItem):
+        return item.polygon().intersects(QPolygonF(rect)) or \
+            rect.contains(item.polygon().boundingRect())
+    g = _geometry_rect(item)
+    return (g.left() <= rect.right() and rect.left() <= g.right()
+            and g.top() <= rect.bottom() and rect.top() <= g.bottom())
 
 
 def _inside(item, p):
@@ -85,6 +126,10 @@ class LayoutCanvas(QGraphicsView):
     # "add". An empty list with "replace" clears the selection.
     selectRequested = Signal(list, str)
     rulerPlaced = Signal(str, tuple, tuple)  # label, start, end (model coordinates)
+    # Tools > Move: wires dragged by (dx, dy); Tools > Stretch: an edge of a wire
+    # dragged from one coordinate to another (handle, edge, to, from).
+    wiresMoved = Signal(list, float, float)
+    wireStretched = Signal(str, str, float, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -103,14 +148,19 @@ class LayoutCanvas(QGraphicsView):
         self.shape_items = {}                # layer -> [items]
         self.visible_layers = set()
         self.show = {"boundary": True, "ports": True, "tracks": False, "cells": True,
-                     "pins": True, "labels": False, "spine": True}
+                     "pins": True, "labels": False, "spine": True, "routes": True,
+                     "rows": False}
+        self.rows_hidden = set()             # sites whose rows are not drawn
         self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
+        self.class_hidden = set()            # (layer, signal|power|ground) not drawn
         self.highlighted = {}                # item -> (pen, z) before highlighting
         self.owner_items = {}                # owner handle (port) -> [items]
         self._press = None
         self._band_mode = None               # "zoom" or "select" while a box is drawn
         self._pan_from = None                # last point of a middle-button pan
         self._band = QRectF()                # last rubber band, scene coordinates
+        self._rband = QRubberBand(QRubberBand.Rectangle, self.viewport())
+        self._rband_from = None              # press point of a right-button box
         self.rubberBandChanged.connect(self._on_band)
         self._blink = None                   # (timer, marker item, steps left)
         # Ruler: mode and options, the first point of a ruler in progress, its
@@ -120,9 +170,15 @@ class LayoutCanvas(QGraphicsView):
         self._ruler_preview = []
         self._snap_marker = None
         self.rulers = []
+        # Edit tools: mode None (select), "move" or "stretch"; snap to tracks and
+        # edges; the drag in progress.
+        self.edit = {"mode": None, "snap": True}
+        self._edit_drag = None
+        self.selected = set()                # handles shown as selected
 
     # -- content ----------------------------------------------------------------
     def set_layout(self, layout, visible_layers):
+        self._edit_drag = None
         self.stop_blink()                     # before clear(), which deletes its marker
         sc = self.scene()
         sc.clear()                            # also deletes rulers and their previews
@@ -132,6 +188,7 @@ class LayoutCanvas(QGraphicsView):
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
         self.inst_items, self.inst_pin_items = [], {}       # outlines; layer -> pin items
         self.spine_items = []
+        self.strap_items = {}                # layer -> route_pin strap items
         self.visible_layers = set(visible_layers)
         if layout.boundary:
             poly = QPolygonF([scene(x, y) for x, y in
@@ -153,11 +210,13 @@ class LayoutCanvas(QGraphicsView):
             item.setData(HANDLE_KEY, s.handle)
             item.setData(OWNER_KEY, s.port)
             item.setData(LABEL_KEY, s.port.rpartition("/")[2])
+            item.setData(CLASS_KEY, s.cls)
             item.setFlag(QGraphicsItem.ItemIsSelectable, False)
             self.shape_items.setdefault(s.layer, []).append(item)
             self.owner_items.setdefault(s.port, []).append(item)
         self._add_insts(layout, colors)
         self._add_spines(layout)
+        self._add_straps(layout, colors)
         self.content = self._content_rect()
         if not self.content.isEmpty():
             pad = PAN_MARGIN * max(self.content.width(), self.content.height())
@@ -195,28 +254,61 @@ class LayoutCanvas(QGraphicsView):
                 item.setData(HANDLE_KEY, pin_handle)
                 item.setData(OWNER_KEY, pin_handle)
                 item.setData(LABEL_KEY, pin)
+                item.setData(CLASS_KEY, inst.pin_classes.get(pin, "signal"))
                 item.setZValue(2)
                 self.inst_pin_items.setdefault(layer, []).append(item)
                 self.owner_items[inst.handle].append(item)
                 self.owner_items.setdefault(pin_handle, []).append(item)
 
     def _add_spines(self, layout):
-        """Built spines: thick stub bars and thin net centre lines (not selectable;
-        their cells are instances)."""
+        """Built spines: thick stub bars and thin net centre lines. Each line
+        is owned by its stub (stub:<spine>/<stub>) or net
+        (spine_net:<spine>/<net>); a net's segments light up together. The
+        cells are instances."""
         sc = self.scene()
         stub_pen = QPen(QColor(SPINE_STUB_COLOR), 3)
         stub_pen.setCosmetic(True)
         net_pen = QPen(QColor(SPINE_NET_COLOR), 1)
         net_pen.setCosmetic(True)
         for sp in layout.spines:
-            for _, (x1, y1, x2, y2) in sp.stubs:
-                self.spine_items.append(sc.addLine(QLineF(scene(x1, y1), scene(x2, y2)),
-                                                   stub_pen))
-            for x1, y1, x2, y2 in sp.segments:
-                self.spine_items.append(sc.addLine(QLineF(scene(x1, y1), scene(x2, y2)),
-                                                   net_pen))
-        for item in self.spine_items:
-            item.setZValue(3)
+            spine = sp.handle.partition(":")[2]
+            lines = [(f"stub:{spine}/{n}", p, stub_pen) for n, p in sp.stubs] + \
+                [(f"spine_net:{spine}/{n}", p, net_pen) for n, p in sp.segments]
+            for owner, (x1, y1, x2, y2), pen in lines:
+                item = sc.addLine(QLineF(scene(x1, y1), scene(x2, y2)), pen)
+                item.setData(HANDLE_KEY, owner)
+                item.setData(OWNER_KEY, owner)
+                item.setZValue(3)
+                self.spine_items.append(item)
+                self.owner_items.setdefault(owner, []).append(item)
+
+    def _add_straps(self, layout, colors):
+        """route_pin straps and pin wires: the layer colour, see-through so the
+        cell and its pins show beneath. Straps are labelled with the net, pin
+        wires with the pin; pin wires are drawn over the straps."""
+        self.add_route_shapes(layout.straps + layout.pin_wires + layout.net_wires, colors)
+
+    def add_route_shapes(self, shapes, colors):
+        sc = self.scene()
+        for st in shapes:
+            color = QColor(colors.get(st.layer, "#ffffff"))
+            fill = QColor(color)
+            fill.setAlpha(110)
+            x1, y1, x2, y2 = st.rect
+            rect = QRectF(scene(x1, y2), scene(x2, y1))
+            if st.outline:                # route_net crossing box, over the wires
+                item = sc.addRect(rect, QPen(QColor("#ffffff"), 0), QBrush(Qt.NoBrush))
+            else:
+                item = sc.addRect(rect, QPen(color, 0), QBrush(fill))
+            item.setData(HANDLE_KEY, st.handle)
+            item.setData(OWNER_KEY, st.handle)
+            item.setData(LABEL_KEY, st.label or st.net)
+            item.setData(CLASS_KEY, st.cls)
+            item.setData(LAYER_KEY, st.layer)
+            item.setZValue(7 if st.outline else 6 if st.handle.startswith("net_wire:")
+                           else 5 if st.label else 4)
+            self.strap_items.setdefault(st.layer, []).append(item)
+            self.owner_items.setdefault(st.handle, []).append(item)
 
     def _content_rect(self):
         lay = self.layout
@@ -231,7 +323,7 @@ class LayoutCanvas(QGraphicsView):
         for layer, items in self.shape_items.items():
             on = self.show["ports"] and layer in self.visible_layers
             for item in items:
-                item.setVisible(on)
+                item.setVisible(on and self._class_shown(layer, item))
         for item in self.inst_items:
             item.setVisible(self.show["cells"])
         for item in self.spine_items:
@@ -239,8 +331,15 @@ class LayoutCanvas(QGraphicsView):
         for layer, items in self.inst_pin_items.items():
             on = self.show["pins"] and layer in self.visible_layers
             for item in items:
-                item.setVisible(on)
+                item.setVisible(on and self._class_shown(layer, item))
+        for layer, items in self.strap_items.items():
+            on = self.show["routes"] and layer in self.visible_layers
+            for item in items:
+                item.setVisible(on and self._class_shown(layer, item))
         self.viewport().update()
+
+    def _class_shown(self, layer, item):
+        return (layer, item.data(CLASS_KEY) or "signal") not in self.class_hidden
 
     def set_show(self, key, on):
         self.show[key] = on
@@ -248,6 +347,15 @@ class LayoutCanvas(QGraphicsView):
 
     def set_assigned_net_visible(self, layer, net, on):
         (self.assign_hidden.discard if on else self.assign_hidden.add)((layer, net))
+        self.viewport().update()
+
+    def set_class_visible(self, layer, cls, on):
+        """Show or hide the signal, power or ground shapes of one layer."""
+        (self.class_hidden.discard if on else self.class_hidden.add)((layer, cls))
+        self.apply_visibility()
+
+    def set_site_rows_visible(self, site, on):
+        (self.rows_hidden.discard if on else self.rows_hidden.add)(site)
         self.viewport().update()
 
     def set_layer_visible(self, layer, on):
@@ -270,6 +378,7 @@ class LayoutCanvas(QGraphicsView):
             item.setPen(pen)
             item.setZValue(z)
         self.highlighted = {}
+        self.selected = set(handles)
         by_shape = None
         for h in handles:
             items = self.owner_items.get(h)
@@ -281,7 +390,8 @@ class LayoutCanvas(QGraphicsView):
             for item in items or []:
                 if item not in self.highlighted:
                     self.highlighted[item] = (item.pen(), item.zValue())
-                    pen = QPen(QColor(SELECT_COLOR), 2)
+                    old = item.pen()                  # a 3 px stub stays 3 px
+                    pen = QPen(QColor(SELECT_COLOR), max(2, old.widthF() if old.isCosmetic() else 0))
                     pen.setCosmetic(True)
                     item.setPen(pen)
                     item.setZValue(10)
@@ -346,14 +456,15 @@ class LayoutCanvas(QGraphicsView):
         self._blink = None
         self.viewport().update()
 
-    def owners_in(self, scene_rect):
-        """Selectable objects with a visible shape inside scene_rect. A whole
-        instance inside the box is selected as the instance, not pin by pin."""
+    def owners_in(self, scene_rect, touching=False):
+        """Selectable objects with a visible shape inside scene_rect, or with
+        touching, any part of a visible shape in it. An instance selected
+        this way is selected as the instance, not pin by pin."""
+        hit = _touches if touching else _enclosed          # outline pen not counted
         owners = []
         for item in self.scene().items(scene_rect, Qt.IntersectsItemBoundingRect):
             owner = item.data(OWNER_KEY)
-            if owner and item.isVisible() and owner not in owners and \
-                    scene_rect.contains(_geometry_rect(item)):   # outline pen not counted
+            if owner and item.isVisible() and owner not in owners and hit(item, scene_rect):
                 owners.append(owner)
         insts = {o.partition(":")[2] for o in owners if o.startswith("inst:")}
         return [o for o in owners if not (o.startswith("pin:") and
@@ -371,6 +482,49 @@ class LayoutCanvas(QGraphicsView):
                 pens[key] = QPen(QColor(color), 0, styles[style])
             painter.setPen(pens[key])
             painter.drawLine(scene(*a), scene(*b))
+        self._draw_rows(painter, rect)
+
+    def _draw_rows(self, painter, rect):
+        """DEF rows in view: each row's outline in its site's color, a mark at
+        its left end for the orientation (bottom corner N, top corner FS),
+        and, zoomed in further, the site boundaries."""
+        lay = self.layout
+        if not (lay and self.show["rows"] and lay.site_rows):
+            return
+        x_lo, y_hi = model(rect.topLeft())
+        x_hi, y_lo = model(rect.bottomRight())
+        ppu = abs(self.transform().m11())
+        lines = 0
+        for sr in lay.site_rows:
+            if sr.site in self.rows_hidden or sr.height * ppu < MIN_ROW_PIXELS:
+                continue                          # too dense to tell apart: zoom in
+            rows = visible_rows(sr, x_lo, y_lo, x_hi, y_hi)
+            if not rows:
+                continue
+            color = QColor(sr.color)
+            painter.setPen(QPen(color, 0))
+            painter.setBrush(Qt.NoBrush)
+            site_pen = QPen(QColor(color.red(), color.green(), color.blue(), 110), 0, Qt.DotLine)
+            h = sr.height
+            for y, x, n, step, orient in rows:
+                w = n * step if step else (sr.width or h)
+                painter.drawRect(QRectF(scene(x, y + h), scene(x + w, y)))
+                m = min(h, w) / 3
+                if orient in ("FS", "S"):               # flipped in y: mark at the top
+                    painter.drawLine(scene(x, y + h - m), scene(x + m, y + h))
+                else:
+                    painter.drawLine(scene(x, y + m), scene(x + m, y))
+                if not step or step * ppu < MIN_SITE_PIXELS or lines > MAX_SITE_LINES:
+                    continue
+                k1 = max(1, math.ceil((x_lo - x) / step))
+                k2 = min(n - 1, math.floor((x_hi - x) / step))
+                if k2 - k1 + 1 > MAX_SITE_LINES - lines:
+                    continue
+                painter.setPen(site_pen)
+                for k in range(k1, k2 + 1):
+                    painter.drawLine(scene(x + k * step, y), scene(x + k * step, y + h))
+                lines += max(0, k2 - k1 + 1)
+                painter.setPen(QPen(color, 0))
 
     # -- pin labels: painted in screen pixels, only for shapes in view -------------
     def drawForeground(self, painter, rect):
@@ -594,14 +748,215 @@ class LayoutCanvas(QGraphicsView):
                 return
         self.scale(factor, factor)
 
+    # -- Tools > Move / Stretch: drag route shapes, then run move_wire / stretch_wire --
+    def set_edit_mode(self, mode):
+        """None (select), "move" or "stretch"."""
+        self.cancel_edit()
+        self.edit["mode"] = mode
+        if mode == "move":
+            self.viewport().setCursor(Qt.OpenHandCursor)
+        else:
+            self.viewport().unsetCursor()
+
+    def cancel_edit(self):
+        """Drop a drag in progress; the shapes go back to where they were."""
+        drag, self._edit_drag = self._edit_drag, None
+        if drag is None:
+            return
+        if drag["kind"] == "move":
+            for item in drag["items"]:
+                item.setPos(0, 0)
+        else:
+            drag["item"].setRect(drag["scene_rect"])
+
+    def update_rects(self, rects):
+        """Redraw route shapes at new rects {handle: (x1, y1, x2, y2)}, after
+        move_wire or stretch_wire, without reloading the whole layout."""
+        for handle, (x1, y1, x2, y2) in rects.items():
+            for item in self.owner_items.get(handle, []):
+                if isinstance(item, QGraphicsRectItem):
+                    item.setPos(0, 0)
+                    item.setRect(QRectF(scene(x1, y2), scene(x2, y1)))
+        self.viewport().update()
+
+    def replace_route_shapes(self, prefix, shapes):
+        """Remove the route shapes whose handle starts with prefix and draw
+        shapes (Strap) instead: an edit's auto vias, without a reload."""
+        for layer, items in self.strap_items.items():
+            keep = []
+            for item in items:
+                if (item.data(HANDLE_KEY) or "").startswith(prefix):
+                    self.highlighted.pop(item, None)
+                    self.owner_items.pop(item.data(HANDLE_KEY), None)
+                    self.scene().removeItem(item)
+                else:
+                    keep.append(item)
+            items[:] = keep
+        if shapes:
+            self.add_route_shapes(shapes, {l.name: l.color for l in self.layout.layers})
+        self.apply_visibility()
+
+    def editing(self):
+        return self._edit_drag is not None
+
+    @staticmethod
+    def _editable(item):
+        h = item.data(HANDLE_KEY) or ""
+        return h.startswith(EDITABLE) and isinstance(item, QGraphicsRectItem)
+
+    def _rect_of(self, item):
+        r = item.rect()
+        (x1, y2), (x2, y1) = model(r.topLeft()), model(r.bottomRight())
+        return x1, y1, x2, y2
+
+    def edge_at(self, view_point):
+        """(item, edge) of the editable shape whose edge is nearest the cursor,
+        within EDGE_PIXELS; None if there is none."""
+        tol = EDGE_PIXELS / (abs(self.transform().m11()) or 1.0)
+        px, py = model(self.mapToScene(view_point))
+        r = EDGE_PIXELS
+        box = QRect(view_point.x() - r, view_point.y() - r, 2 * r + 1, 2 * r + 1)
+        best = None
+        for item in self.items(box):
+            if not (item.isVisible() and self._editable(item)):
+                continue
+            x1, y1, x2, y2 = self._rect_of(item)
+            inside_y = y1 - tol <= py <= y2 + tol
+            inside_x = x1 - tol <= px <= x2 + tol
+            for edge, d, ok in (("left", abs(px - x1), inside_y), ("right", abs(px - x2), inside_y),
+                                ("bottom", abs(py - y1), inside_x), ("top", abs(py - y2), inside_x)):
+                if ok and d <= tol and (best is None or (d, -item.zValue()) < best[0]):
+                    best = ((d, -item.zValue()), item, edge)
+        return (best[1], best[2]) if best else None
+
+    def _edit_press(self, view_point):
+        """Start a Move or Stretch drag at view_point; False when nothing
+        editable is there (the click then selects as usual)."""
+        p = model(self.mapToScene(view_point))
+        if self.edit["mode"] == "stretch":
+            hit = self.edge_at(view_point)
+            if hit is None:
+                return False
+            item, edge = hit
+            r = self._rect_of(item)
+            self._edit_drag = {"kind": "stretch", "item": item, "edge": edge,
+                               "handle": item.data(HANDLE_KEY), "rect": r,
+                               "scene_rect": item.rect(), "to": r[EDGE_INDEX[edge]],
+                               "from": r[EDGE_INDEX[edge]]}
+            return True
+        item = self._item_at(view_point, accept=self._editable)
+        if item is None:
+            return False
+        handle = item.data(HANDLE_KEY)
+        handles = [h for h in self.selected if h.startswith(EDITABLE)] \
+            if handle in self.selected else [handle]
+        items = [i for h in handles for i in self.owner_items.get(h, [])]
+        r = self._rect_of(item)
+        horizontal = r[2] - r[0] >= r[3] - r[1]
+        layer = item.data(LAYER_KEY) or ""
+        self._edit_drag = {"kind": "move", "item": item, "handles": sorted(handles),
+                           "items": items, "start": p, "rect": r, "horizontal": horizontal,
+                           "tracks": track_coords(self.layout, layer, "y" if horizontal else "x")
+                           if "/" not in layer else [], "delta": (0.0, 0.0)}
+        self.viewport().setCursor(Qt.ClosedHandCursor)
+        return True
+
+    def _grid(self, v):
+        g = self.layout.grid or 0.001
+        return round(round(v / g) * g, 6)
+
+    def _edit_move(self, view_point):
+        drag = self._edit_drag
+        x, y = model(self.mapToScene(view_point))
+        dx, dy = x - drag["start"][0], y - drag["start"][1]
+        if self.edit["snap"]:
+            x1, y1, x2, y2 = drag["rect"]
+            tracks = drag["tracks"]
+            if drag["horizontal"]:           # the centre line onto a track, along on the grid
+                c = (y1 + y2) / 2
+                dy = (_nearest(tracks, c + dy) - c) if tracks else self._grid(dy)
+                dx = self._grid(dx)
+            else:
+                c = (x1 + x2) / 2
+                dx = (_nearest(tracks, c + dx) - c) if tracks else self._grid(dx)
+                dy = self._grid(dy)
+        drag["delta"] = (round(dx, 6), round(dy, 6))
+        for item in drag["items"]:
+            item.setPos(dx, -dy)              # scene y is model -y
+
+    def _edit_stretch(self, view_point):
+        drag = self._edit_drag
+        x, y = model(self.mapToScene(view_point))
+        edge = drag["edge"]
+        vertical_edge = edge in ("left", "right")
+        v = x if vertical_edge else y
+        if self.edit["snap"]:
+            v = self.snap_coord(vertical_edge, v, (x, y), drag["item"])
+        x1, y1, x2, y2 = drag["rect"]
+        g = self.layout.grid or 0.001        # never at or past the opposite edge
+        v = {"left": min(v, x2 - g), "right": max(v, x1 + g),
+             "bottom": min(v, y2 - g), "top": max(v, y1 + g)}[edge]
+        drag["to"] = round(v, 6)
+        r = [x1, y1, x2, y2]
+        r[EDGE_INDEX[edge]] = v
+        drag["item"].setRect(QRectF(scene(r[0], r[3]), scene(r[2], r[1])))
+
+    def snap_coord(self, vertical_edge, v, p, skip=None):
+        """v (an x for a vertical edge, else a y) moved onto the nearest
+        edge of a visible shape or drawn track line within SNAP_PIXELS of the
+        cursor p; otherwise onto the manufacturing grid."""
+        ppu = abs(self.transform().m11()) or 1.0
+        radius = SNAP_PIXELS / ppu
+        box = QRectF(scene(p[0] - radius, p[1] + radius), scene(p[0] + radius, p[1] - radius))
+        found = []
+        for item in self.scene().items(box):
+            if item is skip or not item.isVisible() or not item.data(HANDLE_KEY):
+                continue
+            if isinstance(item, QGraphicsRectItem):
+                x1, y1, x2, y2 = self._rect_of(item)
+                found += [x1, x2] if vertical_edge else [y1, y2]
+        for _, _, a, b in self.track_segments(box):
+            if vertical_edge and a[0] == b[0]:
+                found.append(a[0])
+            elif not vertical_edge and a[1] == b[1]:
+                found.append(a[1])
+        near = [c for c in found if abs(c - v) <= radius]
+        return min(near, key=lambda c: abs(c - v)) if near else self._grid(v)
+
+    def _edit_release(self):
+        drag = self._edit_drag
+        self.cancel_edit()                   # the command redraws it where it goes
+        if self.edit["mode"] == "move":
+            self.viewport().setCursor(Qt.OpenHandCursor)
+        else:
+            self.viewport().unsetCursor()
+        if drag["kind"] == "move":
+            if drag["delta"] != (0.0, 0.0):
+                self.wiresMoved.emit(drag["handles"], *drag["delta"])
+                return True
+        elif abs(drag["to"] - drag["from"]) > 1e-9:
+            self.wireStretched.emit(drag["handle"], drag["edge"], drag["to"], drag["from"])
+            return True
+        return False
+
     def mousePressEvent(self, ev):
         self._press = ev.position().toPoint()
+        if self.edit["mode"] and ev.button() == Qt.LeftButton and \
+                self._edit_press(self._press):
+            ev.accept()
+            return
         if self.ruler["on"] and ev.button() in (Qt.LeftButton, Qt.RightButton):
             if ev.button() == Qt.LeftButton:      # ruler: click start, click end
                 self._ruler_click(self.mapToScene(self._press))
             else:
                 self.cancel_ruler()               # right click cancels
             self._press = None
+            ev.accept()
+            return
+        if ev.button() == Qt.RightButton:                     # right drag: select touching
+            self._rband_from = self._press
+            self._rband.setGeometry(QRect(self._press, QSize()))
+            self._rband.show()
             ev.accept()
             return
         if ev.button() == Qt.MiddleButton:                    # middle drag: pan
@@ -616,12 +971,37 @@ class LayoutCanvas(QGraphicsView):
         super().mousePressEvent(ev)
 
     def mouseReleaseEvent(self, ev):
+        if self._edit_drag is not None and ev.button() == Qt.LeftButton:
+            press, self._press = self._press, None
+            dragged = (ev.position().toPoint() - press).manhattanLength() >= 4 \
+                if press is not None else True
+            drag = self._edit_drag
+            if dragged and self._edit_release():
+                ev.accept()
+                return
+            self.cancel_edit()               # a click on a wire: select it
+            owner = drag["item"].data(OWNER_KEY)
+            self.selectRequested.emit([owner], "toggle" if ev.modifiers() & Qt.ControlModifier
+                                      else "replace")
+            ev.accept()
+            return
         if ev.button() == Qt.MiddleButton and self._pan_from is not None:
             self._pan_from = None
             self.viewport().unsetCursor()
             ev.accept()
             return
         if self.ruler["on"] and ev.button() in (Qt.LeftButton, Qt.RightButton):
+            ev.accept()
+            return
+        if ev.button() == Qt.RightButton and self._rband_from is not None:
+            start, self._rband_from, self._press = self._rband_from, None, None
+            self._rband.hide()
+            end = ev.position().toPoint()
+            if (end - start).manhattanLength() >= 4:      # a right click alone does nothing
+                box = QRectF(self.mapToScene(start), self.mapToScene(end)).normalized()
+                self.selectRequested.emit(self.owners_in(box, touching=True),
+                                          "add" if ev.modifiers() & Qt.ControlModifier
+                                          else "replace")
             ev.accept()
             return
         super().mouseReleaseEvent(ev)
@@ -660,17 +1040,27 @@ class LayoutCanvas(QGraphicsView):
         item = self._item_at(view_point)
         return item.data(HANDLE_KEY) if item is not None else ""
 
-    def _item_at(self, view_point):
+    def _item_at(self, view_point, accept=None):
         """Visible shape item nearest a viewport point. Pins are often smaller
-        than a pixel, so shapes within PICK_PIXELS count."""
+        than a pixel, so shapes within PICK_PIXELS count. accept: only items
+        it passes."""
         r = PICK_PIXELS
         box = QRect(view_point.x() - r, view_point.y() - r, 2 * r + 1, 2 * r + 1)
         p = self.mapToScene(view_point)
         best, best_d = None, None
+        tol = r / (abs(self.transform().m11()) or 1.0)
         for item in self.items(box):
             if not item.data(HANDLE_KEY) or not item.isVisible():
                 continue
-            if _inside(item, p):
+            if accept is not None and not accept(item):
+                continue
+            if isinstance(item, QGraphicsLineItem):       # a net: within r pixels is on it
+                line = item.line()
+                if nearest_on_segments(model(p), [(model(line.p1()), model(line.p2()))],
+                                       tol) is None:
+                    continue
+                d = 0.0
+            elif _inside(item, p):
                 d = 0.0                               # inside the actual shape
             else:
                 b = item.sceneBoundingRect()
@@ -694,6 +1084,20 @@ class LayoutCanvas(QGraphicsView):
         if self._pan_from is not None:
             self.pan_by(point.x() - self._pan_from.x(), point.y() - self._pan_from.y())
             self._pan_from = point
+        elif self._rband_from is not None:
+            self._rband.setGeometry(QRect(self._rband_from, point).normalized())
+        elif self._edit_drag is not None:
+            if self._edit_drag["kind"] == "move":
+                self._edit_move(point)
+            else:
+                self._edit_stretch(point)
+        elif self.edit["mode"] == "stretch":       # the cursor shows the edge it would take
+            hit = self.edge_at(point)
+            if hit is None:
+                self.viewport().unsetCursor()
+            else:
+                self.viewport().setCursor(Qt.SizeHorCursor if hit[1] in ("left", "right")
+                                          else Qt.SizeVerCursor)
         elif self.ruler["on"]:
             self._ruler_move(self.mapToScene(point))
         else:
@@ -708,12 +1112,24 @@ class LayoutCanvas(QGraphicsView):
         v.setValue(v.value() - dy)
 
     def keyPressEvent(self, ev):
+        if ev.key() == Qt.Key_Escape and self._edit_drag is not None:
+            self.cancel_edit()                    # Esc drops the drag in progress
+            ev.accept()
+            return
         step_x, step_y = self.viewport().width() // 4, self.viewport().height() // 4
         moves = {Qt.Key_Left: (step_x, 0), Qt.Key_Right: (-step_x, 0),
                  Qt.Key_Up: (0, step_y), Qt.Key_Down: (0, -step_y)}
-        if ev.key() == Qt.Key_F:
-            self.fit()
-        elif ev.key() in moves:                   # the arrow shows where to look
+        if ev.key() in moves:                     # the arrow shows where to look
+            # (F is the window's Fit action, so a user shortcut can replace it)
             self.pan_by(*moves[ev.key()])
         else:
             super().keyPressEvent(ev)
+
+
+EDGE_INDEX = {"left": 0, "bottom": 1, "right": 2, "top": 3}
+
+
+def _nearest(values, v):
+    """The value in sorted values nearest v."""
+    i = bisect.bisect_left(values, v)
+    return min(values[max(0, i - 1):i + 1], key=lambda c: abs(c - v))

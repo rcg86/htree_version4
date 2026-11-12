@@ -9,6 +9,8 @@ from core.options import parse_options
 
 NAME = "read_tech"
 SUMMARY = "Read a tech LEF file into the database"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-file": "value"}
 
 FILE_NOT_FOUND = 10
 PARSE_ERROR = 11
@@ -17,7 +19,7 @@ NOT_MODELED = 13
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-file": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     path = opts.get("-file")
     if not path:
         raise HtreeError(1, "read_tech: -file is required. Usage: read_tech -file <tech.lef>")

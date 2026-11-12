@@ -20,8 +20,11 @@ DESCRIPTION
       PINS      every pin: NET, DIRECTION, USE, SPECIAL, and each PORT's
                 LAYER and POLYGON shapes with MASK and placement (FIXED,
                 PLACED or COVER, location, orientation)
+      ROW       every row: name, site, origin, orientation, DO / BY counts
+                and STEP: the placement sites (move_obj -legal snaps
+                instances to them)
 
-    Every other section and statement (ROW, GCELLGRID, VIAS,
+    Every other section and statement (GCELLGRID, VIAS,
     COMPONENTS, NETS, SPECIALNETS, BLOCKAGES, PINPROPERTIES, ...) is
     skipped without being stored, and listed with its count in the
     summary. The file is read line by line; '.def.gz' files are read
@@ -106,7 +109,8 @@ EXAMPLES
       Pins        : 110728, shapes 110725
       Tracks      : 56 patterns on 19 layers (IB IA G2 G1 H2 H1 D12 D11 ... M1)
       Tracks tech : IB IA G2 G1 H2 H1 D12
-      Skipped     : PROPERTYDEFINITIONS ROW(167043) GCELLGRID(6) VIAS PINPROPERTIES BLOCKAGES
+      Rows        : 167043 (ln04lpp_sc_s7p94t_c60)
+      Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) VIAS PINPROPERTIES BLOCKAGES
       Pin layers  : D6(2084) D8(16404) D12(17251) ...
       In tech     : D12 G1 H1 G2 H2
     **WARN: (HT4-093): 62522 pin shape(s) on layers not in tech: D6 D8 D9 D11 D7 D10. They are kept but ignored in calculations

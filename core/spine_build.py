@@ -1,8 +1,9 @@
 """Spine placement for create_spine. Pure: no database, no Tcl, no Qt.
 
 A spine grows from its location: up for a vertical spine, right for a
-horizontal one. Positions use two coordinates:
-    s    along the spine, 0 at the location (the root cell)
+horizontal one. The root cell sits placement.origin (default 0) from the
+location, along the spine. Positions use two coordinates:
+    s    along the spine, 0 at the root cell
     col  the column: level i of the spec is column i (L1 = 0); the stubs are
          one column beyond the last level. Columns are level_pitch apart, on
          the side given by the build direction.
@@ -63,6 +64,7 @@ class SpecData:
     stub_count: Optional[int]
     levels: List[str]
     cells: List[SpecCell]
+    origin: Optional[float] = None   # along the spine from the location to the root
 
 
 @dataclass
@@ -128,6 +130,8 @@ class Plan:
     warnings: List[Tuple[str, str]] = field(default_factory=list)   # (kind, text)
     groups: List[Tuple[str, List[str]]] = field(default_factory=list)  # (label, net names)
     spec: str = ""                   # the spine spec it was placed from
+    origin: float = 0.0              # along the spine from (x0, y0) to the root
+    sign: int = 1                    # -1: the mirrored copy, growing down (or left)
 
     @property
     def limit(self):
@@ -144,9 +148,10 @@ class Plan:
     def point(self, col, s):
         """Absolute (x, y) of a column and an along-spine position."""
         across = col * self.pitch * self.direction
+        along = self.sign * (self.origin + s)
         if self.orientation == "vertical":
-            return self.x0 + across, self.y0 + s
-        return self.x0 + s, self.y0 + across
+            return self.x0 + across, self.y0 + along
+        return self.x0 + along, self.y0 + across
 
     def net_of(self, key) -> Optional[Net]:
         return next((n for n in self.nets if n.driver == key), None)
@@ -175,8 +180,10 @@ def plan(spec: SpecData, prefix: str, location, build_direction: Optional[str] =
                              f"{'nothing' if value is None else value}")
     gap = spec.gap if spec.gap is not None else 0.0
     deviation = spec.deviation if spec.deviation is not None else 0.0
-    if gap < 0 or deviation < 0:
-        raise SpineError("stubs.gap and placement.deviation must not be negative")
+    origin = spec.origin if spec.origin is not None else 0.0
+    if gap < 0 or deviation < 0 or origin < 0:
+        raise SpineError("stubs.gap, placement.deviation and placement.origin must not be "
+                         "negative")
     if spec.tap not in (None, "center"):
         raise SpineError(f"stubs.tap '{spec.tap}' is not supported; leaves drive their "
                          f"stub at the center")
@@ -201,8 +208,58 @@ def plan(spec: SpecData, prefix: str, location, build_direction: Optional[str] =
         if best is None or key < best[0]:
             best = (key, candidate[0])
     result = best[1]
+    result.origin = origin
     _check(result)
     return result
+
+
+MIRROR = "_mirror"         # suffix of the mirrored copy's prefix and stub names
+
+
+def mirrored(p: Plan) -> Plan:
+    """The plan reflected across the location, through the axis across the
+    spine: below it for a vertical spine, left of it for a horizontal one.
+    The same cells, stubs and nets (same s, same lengths), renamed: instances
+    <spine>_mirror_<level>_<cell>, stubs <stub>_mirror. Warnings are not
+    copied (they are the same as the original's)."""
+    prefix = p.name + MIRROR
+
+    def inst(name):
+        return prefix + name[len(p.name):]
+
+    cells = {k: Cell(**{**vars(c), "loads": list(c.loads), "inst": inst(c.inst),
+                        "stub": None if c.stub is None else c.stub + MIRROR})
+             for k, c in p.cells.items()}
+    stubs = [Stub(s.name + MIRROR, s.lo, s.hi, s.driver) for s in p.stubs]
+    nets = [Net(inst(n.name), n.driver,
+                [l + MIRROR for l in n.loads] if n.loads[0] not in p.cells else list(n.loads),
+                n.group, n.length, n.detour, list(n.segments)) for n in p.nets]
+    return Plan(prefix, p.orientation, p.direction, p.x0, p.y0, p.pitch, p.deviation,
+                p.max_drive, p.span, p.gap, p.levels, cells, stubs, nets, p.cell_size, [],
+                [(label, [inst(n) for n in names]) for label, names in p.groups],
+                p.spec, p.origin, -p.sign)
+
+
+def mirror_overlaps(p: Plan, m: Plan, shown=10):
+    """Cell pairs of a plan and its mirror closer than the cell size (the
+    roots are 2 x origin apart); appends an overlap warning to p."""
+    along = p.cell_size[0] if p.cell_size else 0.0
+    across = p.cell_size[1] if p.cell_size else 0.0
+    pairs = []
+    for a in p.cells.values():
+        for b in m.cells.values():
+            dcol = abs(a.col - b.col)
+            if dcol > 1 or (dcol == 1 and p.pitch >= across - TOL):
+                continue
+            ds = abs((p.origin + a.s) + (m.origin + b.s))
+            if ds < along - TOL or (along == 0 and dcol == 0 and ds < TOL):
+                pairs.append(f"{a.inst}-{b.inst}")
+    if pairs:
+        more = f" and {len(pairs) - shown} more" if len(pairs) > shown else ""
+        p.warnings.append(("overlap", f"{len(pairs)} cell pair(s) of the spine and its mirror "
+                           f"closer than the cell size ({_n(round(along, 6))} along the "
+                           f"spine; placement.origin {_n(p.origin)} puts the roots "
+                           f"{_n(2 * p.origin)} apart): {' '.join(pairs[:shown])}{more}"))
 
 
 def _tree(spec, prefix):

@@ -12,6 +12,8 @@ from core.options import parse_options
 
 NAME = "source"
 SUMMARY = "Run the commands in a script file"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-echo": "flag", "-encoding": "value"}
 
 NOT_FOUND = 70
 IN_FILE = 71
@@ -28,7 +30,7 @@ proc ::__htree_eval {cmd} {
 
 def run(session, argv):
     # -encoding is accepted for Tcl packages that call 'source -encoding utf-8 f'.
-    opts, pos = parse_options(NAME, argv, {"-echo": "flag", "-encoding": "value"},
+    opts, pos = parse_options(NAME, argv, OPTIONS,
                               max_positionals=1)
     if not pos:
         raise HtreeError(1, "source: missing file name. Usage: source [-echo] <file>")

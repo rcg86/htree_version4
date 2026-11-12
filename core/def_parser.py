@@ -2,8 +2,8 @@
 dataclasses, never touches the db.
 
 Only the header (VERSION, DESIGN, UNITS, DIVIDERCHAR, BUSBITCHARS), DIEAREA,
-TRACKS and PINS are read. Every other section and statement (ROW,
-GCELLGRID, COMPONENTS, NETS, ...) is skipped and counted. The file is read line by line,
+ROW, TRACKS and PINS are read. Every other section and statement
+(GCELLGRID, COMPONENTS, NETS, ...) is skipped and counted. The file is read line by line,
 so a large floorplan DEF is never held as one token list. '.gz' files are
 read directly.
 
@@ -84,6 +84,20 @@ class TrackPattern:
 
 
 @dataclass
+class SiteRow:
+    """ROW name site x y orient [DO nx BY ny [STEP sx sy]] ; (microns)."""
+    name: str
+    site: str
+    x: float
+    y: float
+    orient: str
+    num_x: int = 1
+    num_y: int = 1
+    step_x: float = 0.0
+    step_y: float = 0.0
+
+
+@dataclass
 class DefDesign:
     file: str
     name: Optional[str] = None
@@ -94,6 +108,7 @@ class DefDesign:
     boundary: List[float] = field(default_factory=list)    # x y x y ... microns
     ports: List[Port] = field(default_factory=list)
     tracks: List[TrackPattern] = field(default_factory=list)
+    rows: List[SiteRow] = field(default_factory=list)
     skipped: Counter = field(default_factory=Counter)      # keyword -> count
 
 
@@ -130,6 +145,9 @@ class _Parser:
                 break
             if key == "PINS":
                 self.pins(it)
+            elif key == "ROW":
+                start = self.lineno
+                self.design.rows.append(self.row(_tokens(self.statement(raw, it)), start))
             elif key == "TRACKS":
                 start = self.lineno
                 self.design.tracks.append(self.track(_tokens(self.statement(raw, it)), start))
@@ -139,7 +157,7 @@ class _Parser:
             elif key in HEADER:
                 start = self.lineno
                 self.header(key, self.statement(raw, it), start)
-            else:                               # ROW, TRACKS, GCELLGRID, ...
+            else:                               # GCELLGRID, ...
                 d.skipped[key] += 1
                 self.statement(raw, it)
         if d.units is None:
@@ -257,6 +275,22 @@ class _Parser:
             layers = w[1:]
         u = self.design.units
         return TrackPattern(line, direction, start / u, count, step / u, layers, mask, same)
+
+    def row(self, words, line) -> SiteRow:
+        """ROW name site x y orient [DO nx BY ny [STEP sx sy]] [+ PROPERTY ...] ;"""
+        if self.design.units is None:
+            self.error("ROW before UNITS DISTANCE MICRONS", line)
+        w = [x for x in words[1:] if x != ";"]
+        if len(w) < 5:
+            self.error("expected 'ROW <name> <site> <x> <y> <orient> ...'", line)
+        u = self.design.units
+        row = SiteRow(w[0], w[1], self.int(w[2], line) / u, self.int(w[3], line) / u,
+                      w[4].upper())
+        if len(w) >= 9 and w[5].upper() == "DO" and w[7].upper() == "BY":
+            row.num_x, row.num_y = self.int(w[6], line), self.int(w[8], line)
+            if len(w) >= 12 and w[9].upper() == "STEP":
+                row.step_x, row.step_y = self.int(w[10], line) / u, self.int(w[11], line) / u
+        return row
 
     # -- PINS ------------------------------------------------------------------
     def pins(self, it):

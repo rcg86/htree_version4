@@ -9,12 +9,14 @@ from core.options import parse_options
 
 NAME = "man"
 SUMMARY = "Show the manual page for a command"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {}
 
 NO_PAGE = 50
 
 
 def run(session, argv):
-    _, pos = parse_options(NAME, argv, {}, max_positionals=1)
+    _, pos = parse_options(NAME, argv, OPTIONS, max_positionals=1)
     if not pos:
         raise HtreeError(1, "man: missing command name. Usage: man <command>")
     page = session.man_dir / f"{pos[0]}.md"

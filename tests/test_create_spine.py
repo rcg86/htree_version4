@@ -7,7 +7,7 @@ pytest.importorskip("scipy")
 
 from conftest import ROOT
 from core.htree_builder import Session
-from core.spine_build import SpecCell, SpecData, SpineError, plan
+from core.spine_build import SpecCell, SpecData, SpineError, mirror_overlaps, mirrored, plan
 
 CELLS_LEF = ROOT / "tests" / "data" / "cells.lef"
 SMALL_DEF = ROOT / "tests" / "data" / "small.def"
@@ -20,11 +20,11 @@ def err(session, script):
 
 
 def spec(cells, levels=None, span=200.0, pitch=2.88, max_drive=200.0, gap=10.0,
-         deviation=10.0, orientation="vertical", stub_count=None):
+         deviation=10.0, orientation="vertical", stub_count=None, origin=None):
     """cells: [(level, name, input, output[, location])]"""
     levels = levels or list(dict.fromkeys(c[0] for c in cells))
     return SpecData("sp", orientation, span, pitch, max_drive, gap, deviation, "net", "center",
-                    stub_count, levels, [SpecCell(*c) for c in cells])
+                    stub_count, levels, [SpecCell(*c) for c in cells], origin)
 
 
 # root L1/inv1 drives two leaves in L2
@@ -45,6 +45,46 @@ def test_two_leaf_spine_geometry():
     assert p.point(1, 0) == (102.88, 1000)                     # L2 one pitch to +x
     assert p.point(p.stub_col, 0) == (105.76, 1000)            # stubs one pitch beyond
     assert p.warnings == []
+
+
+def test_origin_and_mirror_vertical():
+    p = plan(spec(TWO, origin=10), "sp", (100, 1000), "+x")
+    assert p.point(0, 0) == (100, 1010)                       # root 10 above -location
+    assert p.point(p.stub_col, 0) == (105.76, 1010)           # the stubs start there too
+    m = mirrored(p)
+    assert m.point(0, 0) == (100, 990)                        # mirrored root 10 below: 20 apart
+    assert m.point(p.stub_col, 200) == (105.76, 790)          # stubs run down
+    assert m.cells["L1/inv1"].inst == "sp_mirror_L1_inv1"
+    assert [s.name for s in m.stubs] == ["stub1_mirror", "stub2_mirror"]
+    assert [(s.lo, s.hi) for s in m.stubs] == [(s.lo, s.hi) for s in p.stubs]
+    assert [n.name for n in m.nets] == [n.name.replace("sp_", "sp_mirror_", 1) for n in p.nets]
+    assert [n.length for n in m.nets] == [n.length for n in p.nets]
+    leaf = m.net_of("L2/inv1")
+    assert leaf.loads[0].endswith("_mirror")
+    assert m.groups[0][1][0].startswith("sp_mirror_")
+
+
+def test_origin_and_mirror_horizontal():
+    p = plan(spec(TWO, orientation="horizontal", origin=10), "sp", (100, 1000))
+    m = mirrored(p)
+    assert p.point(0, 0) == (110, 1000) and m.point(0, 0) == (90, 1000)
+    assert m.point(1, 50) == (40, 1002.88)                    # runs left, still steps up
+
+
+def test_mirror_overlap_warning():
+    # cells 1.0 along the spine: roots 2 x 0.25 apart overlap, 2 x 10 do not
+    for origin, warned in ((0.25, True), (10, False)):
+        p = plan(spec(TWO, origin=origin), "sp", (0, 0), "+x", (0.6, 1.0))
+        mirror_overlaps(p, mirrored(p))
+        texts = [t for k, t in p.warnings if k == "overlap"]
+        assert bool(texts) == warned
+        if warned:
+            assert "sp_L1_inv1-sp_mirror_L1_inv1" in texts[0]
+
+
+def test_negative_origin():
+    with pytest.raises(SpineError, match="placement.origin"):
+        plan(spec(TWO, origin=-1), "sp", (0, 0))
 
 
 def test_net_length_counts_shared_wire_once():
@@ -298,8 +338,8 @@ def test_build(lib, tmp_path):
     # centred on -location: INV_D1 is 0.6 x 0.254
     assert lib.eval("get_db inst:sp1_L1_inv1 .location") == "9.7 4.873"
     assert lib.eval("get_db spine:sp1 .stub_length") == "19.0"
-    stubs = lib.eval("get_db spine:sp1 .spine_stubs").split()
-    assert stubs == ["spine_stub:sp1/stub1", "spine_stub:sp1/stub2"]
+    stubs = lib.eval("get_db spine:sp1 .stubs").split()
+    assert stubs == ["stub:sp1/stub1", "stub:sp1/stub2"]
     assert {lib.eval(f"get_db {s} .points") for s in stubs} == \
         {"18.64 5 18.64 24", "18.64 26 18.64 45"}              # x = 10 + 3 x 2.88
     nets = lib.eval("get_db spine:sp1 .spine_nets").split()
@@ -314,6 +354,33 @@ def test_build(lib, tmp_path):
     fresh.eval(f"read_db -file {tmp_path}/s.db")
     assert fresh.eval("get_db spine:sp1 .ref_cell") == "INV_D1"
     assert fresh.eval(f"get_db {root} .route") == lib.eval(f"get_db {root} .route")
+
+
+def test_build_mirror(lib, write_lef):
+    lib.eval(f"read_spine_spec -file {{{write_lef(MIRROR_YAML, 'm.yaml')}}}")
+    lib.eval("create_spine -name m -spec_name sp1 -location {10 50} -mirror -validate")
+    out = lib.out.getvalue()
+    assert "root 10 up (placement.origin)" in out
+    assert "Spine m_mirror (spec sp1)" in out and "root 10 down (placement.origin), mirrored" in out
+    lib.eval("create_spine -name m -spec_name sp1 -location {10 50} -mirror -build "
+             "-ref_cell INV_D1")
+    assert "8 instances of INV_D1, 4 stubs of 19.000 um, 8 nets (with its mirror m_mirror_*)" \
+        in lib.out.getvalue()
+    g = lambda h, a: lib.eval(f"get_db {h} .{a}")
+    # INV_D1 is 0.6 x 0.254: roots centred at y 60 and 40, 20 apart
+    assert (g("inst:m_L1_inv1", "location"), g("inst:m_L1_inv1", "orient")) == ("9.7 59.873", "N")
+    assert (g("inst:m_mirror_L1_inv1", "location"), g("inst:m_mirror_L1_inv1", "orient")) == \
+        ("9.7 39.873", "FS")
+    assert g("stub:m/stub1", "points") == "18.64 60 18.64 79"
+    assert g("stub:m/stub1_mirror", "points") == "18.64 40 18.64 21"
+    assert g("spine_net:m/m_mirror_L1_inv1_Y", "driver") == "inst:m_mirror_L1_inv1"
+    assert (g("spine:m", "origin"), g("spine:m", "mirror"), g("spine:m", "location")) == \
+        ("10.0", "true", "10 50")
+    assert g("spine_spec:sp1", "origin") == "10"
+
+
+MIRROR_YAML = SPEC_YAML.split("---")[0].replace("    deviation: 1\n",
+                                                "    deviation: 1\n    origin: 10\n")
 
 
 def test_build_refuses_taken_instance_names(lib):
@@ -339,8 +406,8 @@ def test_name_is_the_spine_and_spec_name_the_spec(lib):
     assert lib.eval("get_db spine:clk_b .spine_spec") == "spine_spec:sp1"
     assert lib.eval("get_db spine:clk_a .insts") == \
         "inst:clk_a_L1_inv1 inst:clk_a_L2_inv1 inst:clk_a_L3_inv1 inst:clk_a_L3_inv2"
-    assert lib.eval("get_db spine:clk_b .spine_stubs") == \
-        "spine_stub:clk_b/stub1 spine_stub:clk_b/stub2"
+    assert lib.eval("get_db spine:clk_b .stubs") == \
+        "stub:clk_b/stub1 stub:clk_b/stub2"
     assert lib.eval("get_db spine_net:clk_b/clk_b_L1_inv1_Y .driver") == "inst:clk_b_L1_inv1"
     names = lib.eval("get_db insts .name").split()
     assert len(names) == 8 and all(n.startswith(("clk_a_", "clk_b_")) for n in names)

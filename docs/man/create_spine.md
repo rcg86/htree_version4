@@ -3,7 +3,7 @@ NAME
 
 SYNOPSIS
     create_spine -name <spine> -spec_name <spine_spec> -location {x y}
-                 [-build_direction +x|-x|+y|-y]
+                 [-build_direction +x|-x|+y|-y] [-mirror]
                  (-validate [-show] [-ref_cell <cell>] | -build -ref_cell <cell>)
 
 DESCRIPTION
@@ -14,16 +14,31 @@ DESCRIPTION
     changing the design; -build creates it, ignoring the warnings.
 
     Layout. The root cell (the one whose input is root_net, L1_inv1)
-    sits at -location (its centre). Each level of the spec is a column:
-    L1 at the location, L2 one level_pitch further toward
+    sits placement.origin (default 0) from -location along the spine:
+    above it for a vertical spine, right of it for a horizontal one
+    (its centre). Each level of the spec is a column:
+    L1 at the root, L2 one level_pitch further toward
     -build_direction, and so on; the stubs are one level_pitch beyond the
     last level. A vertical spine steps its columns along x (+x or -x,
-    default +x) and runs its stubs up from the location; a horizontal
+    default +x) and runs its stubs up from the root; a horizontal
     spine steps along y (+y or -y, default +y) and runs right. The stubs
     lie end to end in one line with stubs.gap between them and share
     spine.span equally:
         stub length = (span - (stubs - 1) x gap) / stubs
     (6000 um, 6 stubs, gap 10: 991.667 um).
+
+    Mirror. -mirror adds the same spine reflected across -location: a
+    vertical spine is mirrored below it (its root placement.origin below
+    -location, its stubs running down), a horizontal one left of it (root
+    placement.origin to the left, stubs running left). The columns stay
+    on the -build_direction side. With origin 10 the two roots are 20 um
+    apart. Both halves are fed by root_net and have the same placement
+    and net lengths. The mirror's instances are named
+    <spine>_mirror_<level>_<cell>, its nets <spine>_mirror_<level>_<cell>_Y
+    and its stubs <stub>_mirror; -build places them flipped (FS for a
+    vertical spine, FN for a horizontal one) and stores them in the same
+    spine. Cells of the two halves closer than the cell size (a small
+    origin) are reported as overlaps.
 
     Placement. Fixed: the root, every leaf (a cell with an output stub)
     at the middle of its stub, and every cell with a location key. A
@@ -66,6 +81,8 @@ DESCRIPTION
       without -ref_cell only cells at the same position);
       a cell that drives nothing;
       cells or stubs outside the design boundary (read_def).
+    With -mirror, -validate reports both halves, the spine first; -show
+    draws the spine only.
 
     -build creates one instance per cell, named <spine>_<level>_<cell>
     (clk_a_L1_inv1 for -name clk_a), of -ref_cell, orientation N, centred on
@@ -76,10 +93,11 @@ DESCRIPTION
 
     Spec keys used: spine.orientation, spine.span, placement.level_pitch
     (level_pitch_x / level_pitch_y are read as level_pitch),
-    placement.deviation (default 0), constraints.max_drive_length,
+    placement.deviation (default 0), placement.origin (default 0, not
+    negative), constraints.max_drive_length,
     stubs.gap, stubs.tap (center only), stubs.count (if given, must match
     the stubs named), root_net, levels. placement.origin_x is not used:
-    -location places the root.
+    -location and placement.origin place the root.
 
 OPTIONS
     -name <spine>
@@ -88,10 +106,16 @@ OPTIONS
     -spec_name <spine_spec>
         Spine spec to place (name or spine_spec: handle). Required.
     -location {x y}
-        Centre of the root cell (L1_inv1), microns. Required.
+        Where the spine starts, microns: the root cell (L1_inv1) is
+        centred placement.origin from it along the spine (on it when
+        origin is 0). With -mirror, the point the spine is mirrored
+        across. Required.
     -build_direction +x|-x|+y|-y
         Side the columns step to: +x or -x for a vertical spine (default
         +x), +y or -y for a horizontal one (default +y).
+    -mirror
+        Also place the spine mirrored across -location: below it for a
+        vertical spine, left of it for a horizontal one.
     -validate
         Compute and report only; the design is not changed. Give exactly
         one of -validate and -build.
@@ -109,17 +133,28 @@ OPTIONS
 
 OBJECTS AND ATTRIBUTES
     spine:<name>
-        obj_type, name, spine_spec, orientation, build_direction, location,
-        ref_cell, level_pitch, deviation, max_drive_length, stub_length,
-        insts, spine_stubs, spine_nets (handles)
-    spine_stub:<spine>/<stub>
-        obj_type, name, driver (inst), points (x1 y1 x2 y2), length, tap,
+        obj_type, name, spine_spec, orientation, build_direction, location
+        (-location), origin, mirror (true/false), ref_cell, level_pitch, deviation, max_drive_length, stub_length,
+        path (the line of its stubs, "x y x y ...", bottom or left end
+        first: two points as built, more once move_spine_to_boundary has
+        bent it), insts, stubs, spine_nets (handles)
+    stub:<spine>/<stub>
+        a final stub (the class is stub; get_db stubs lists them, get_db
+        nets lists them with the nets): obj_type, name, driver (inst),
+        points (x1 y1 x2 y2; more points when the stub lies over a bend
+        of its spine), length, tap (half way along it), orientation (the
+        spine's), net
+        (the leaf's spine_net, which drives it), route_rule (set_db; kept
+        per stub), net_wires (its route_final_stub wire and crossings),
         spine
     spine_net:<spine>/<net>
         obj_type, name (<driver inst>_Y), driver (inst), loads (inst names
         or the stub), group (L1-L2, ...), length, detour, route (one
-        "x1 y1 x2 y2" per centre-line segment), spine
-    get_db spines lists the built spines.
+        "x1 y1 x2 y2" per centre-line segment), route_rule (the rule
+        the net is routed with; route_rule:default until set_db sets
+        another), spine
+    get_db spines lists the built spines; get_db nets lists the nets of
+    all of them.
 
 RETURN VALUE
     -validate: the number of warnings. -build: spine:<name>.
@@ -133,6 +168,8 @@ EXAMPLES
     ...
     **WARN: (HT4-154): net clk_a_L2_inv1_Y (L2-L3) is 3454.585 um, over max_drive_length 1020 + deviation 10 = 1030 by 2424.585 um
     htree> create_spine -name clk_a -spec_name custom_spine_5000 -location {5622.772 10066.7} -validate -show
+    htree> create_spine -name clk_v -spec_name custom_spine_v6 -location {5622.772 10066.7} -mirror -build -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04
+    Built spine:clk_v: 34 instances of INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04, 12 stubs of 991.667 um, 34 nets (with its mirror clk_v_mirror_*)
     htree> create_spine -name clk_a -spec_name custom_spine_5000 -location {5622.772 10066.7} -build -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04
     Built spine:clk_a: 14 instances of INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04, 6 stubs of 991.667 um, 13 nets
       5 warning(s) ignored; run create_spine with -validate to see them
@@ -151,13 +188,15 @@ ERRORS
              stubs that do not fit, a missing or unknown input, more or
              fewer than one root, a loop, a stub driven twice, a leaf
              that also drives cells, stubs.count not matching, a
-             location on the root or on a leaf
+             location on the root or on a leaf, a negative
+             placement.origin
     HT4-152  -ref_cell not in the library, or it has no SIZE
     HT4-153  the spine is already built, or its instance names are taken
     HT4-154  WARN: a net over max_drive_length + deviation
     HT4-155  WARN: a level's nets differ by more than deviation
     HT4-156  WARN: stubs behind different numbers of inverters
-    HT4-157  WARN: overlapping cells
+    HT4-157  WARN: overlapping cells (also between a spine and its
+             mirror)
     HT4-158  WARN: a cell that drives nothing
     HT4-159  WARN: cells or stubs outside the design boundary
 

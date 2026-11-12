@@ -14,6 +14,8 @@ from core.options import parse_options
 
 NAME = "assign_track_for_route"
 SUMMARY = "Assign a repeating net pattern (e.g. VDD_SOC - VSS -) to a layer's tracks"
+# Options and their kind (value | flag), also used by <tab> completion.
+OPTIONS = {"-net": "value", "-layer": "value"}
 
 USAGE = 1
 NO_LAYER = 110
@@ -33,7 +35,7 @@ def parse_pattern(text):
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, {"-net": "value", "-layer": "value"})
+    opts, _ = parse_options(NAME, argv, OPTIONS)
     if "-net" not in opts or "-layer" not in opts:
         raise HtreeError(USAGE, "assign_track_for_route: -net and -layer are required. "
                          "Usage: assign_track_for_route -net {VDD_SOC - VSS -} -layer IA")

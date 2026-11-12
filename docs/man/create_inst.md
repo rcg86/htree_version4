@@ -41,8 +41,8 @@ OPTIONS
 OBJECTS AND ATTRIBUTES
     inst:<name>
         obj_type, name, ref_name (cell name), lib_cell (handle), location
-        ("x y", lower-left), orient, bbox ("x1 y1 x2 y2"), status (placed),
-        pins (handles)
+        ("x y", lower-left), orient, bbox ("x1 y1 x2 y2"), status and
+        place_status (placed; set_db .place_status fixed), pins (handles)
     pin:<inst>/<pin>
         a pin of an instance: obj_type, name, inst (handle), lib_pin
         (handle), direction, use, layers, rect (placed bounding box of the

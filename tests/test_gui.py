@@ -33,7 +33,8 @@ def loaded(tech_session):
 
 
 @pytest.fixture(autouse=True)
-def fresh_window():
+def fresh_window(tmp_path, monkeypatch):
+    monkeypatch.setenv("HTREE4_SHORTCUTS", str(tmp_path / "shortcuts.json"))  # not ~/.config
     yield
     app.close()
 
@@ -86,7 +87,7 @@ def test_gui_show_opens_window(loaded):
     w = app.window()
     assert w is not None and w.windowTitle() == "htree4 - top"
     assert {k for k, b in w.object_boxes.items() if b.isEnabled()} == \
-        {"boundary", "ports", "tracks", "labels"}                 # no instances: no Pins
+        {"boundary", "ports", "tracks", "rows", "labels"}         # no instances: no Pins
     assert not w.object_boxes["nets"].isChecked()
     assert not w.object_boxes["spine"].isEnabled()             # no spine built
     assert not w.object_boxes["cells"].isEnabled()             # no instances yet
@@ -278,13 +279,116 @@ def test_menu_and_toolbar(loaded):
     menus = {a.text().replace("&", ""): [x.text() for x in a.menu().actions() if x.text()]
              for a in w.menuBar().actions()}
     assert menus == {"File": ["Close Window"],
-                     "View": ["Fit", "Zoom Selected", "Blink Selected", "Ruler", "Clear Rulers",
-                              "Show View Panel"],
+                     "Edit": ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Undo Edit",
+                              "Shortcuts..."],
+                     "View": ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected",
+                              "Ruler", "Clear Rulers", "Show View Panel"],
                      "Select": ["Clear Selection"]}
     assert [a.text() for a in w.toolbar.actions() if a.text()] == \
-        ["Fit", "Zoom Selected", "Blink Selected"]
+        ["Fit", "Zoom Selected", "Blink Selected", "Zoom In", "Zoom Out"]
     assert w.ruler_button.text() == "Ruler"                   # next to Blink Selected
+    tools = w.toolbar.actions()                               # Zoom In, Zoom Out after Ruler
+    ruler = next(i for i, a in enumerate(tools) if w.toolbar.widgetForAction(a) is w.ruler_button)
+    assert [a.text() for a in tools[ruler + 1:ruler + 3]] == ["Zoom In", "Zoom Out"]
+    assert w.toolbar.widgetForAction(tools[ruler + 3]) is w.tools_button   # then Tools
+    assert w.tools_button.text() == "Tools"
+    assert [a.text() for a in w.tools_menu.actions() if a.text()] == \
+        ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Undo Edit"]
     assert w.toolBarArea(w.toolbar) == w.toolBarArea(w.toolbar).TopToolBarArea  # under the menu
+
+
+def test_zoom_in_out_buttons(loaded):
+    loaded.eval("gui_show")
+    w = app.window()
+    scale = w.canvas.transform().m11()
+    w.act_zoom_in.trigger()
+    assert w.canvas.transform().m11() == pytest.approx(scale * 1.5)
+    w.act_zoom_out.trigger()
+    assert w.canvas.transform().m11() == pytest.approx(scale)
+
+
+def test_shortcuts_list_and_create(loaded, tmp_path, monkeypatch):
+    import json
+    from core.gui import shortcuts
+    warned = []
+    monkeypatch.setattr(shortcuts.QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    from PySide6.QtGui import QKeySequence
+    from core.gui.shortcuts import NewShortcutDialog, ShortcutsDialog
+    loaded.eval("gui_show")
+    w = app.window()
+    rows = ShortcutsDialog(w).rows()
+    assert ("Fit", "F", "built in", "fit") in rows and ("Pan", "Arrow keys", "built in", None) in rows
+    assert not [r for r in rows if r[0] in ("Zoom In", "Zoom Out")]   # none until created
+    new = NewShortcutDialog(w)
+    assert [new.action_box.itemText(i) for i in range(new.action_box.count())] == \
+        ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected", "Ruler",
+         "Clear Rulers", "Select", "Stretch", "Move", "Snap (tracks, edges, grid)",
+         "Undo Edit", "Clear Selection", "Shortcuts..."]       # all but Close Window
+    assert w.set_user_shortcut("zoom_in", "Ctrl+Z") is None
+    assert w.set_user_shortcut("zoom_out", "Ctrl+Shift+Z") is None
+    assert w.act_zoom_in.shortcut() == QKeySequence("Ctrl+Z")
+    assert w.act_zoom_out.shortcut() == QKeySequence("Ctrl+Shift+Z")
+    rows = ShortcutsDialog(w).rows()
+    assert ("Zoom In", QKeySequence("Ctrl+Z").toString(QKeySequence.NativeText), "user",
+            "zoom_in") in rows
+    # taken keys are refused; the old shortcut stays
+    assert "already the shortcut of Close Window" in w.set_user_shortcut("zoom_in", "Ctrl+W")
+    assert "already the shortcut of Zoom Out" in w.set_user_shortcut("zoom_in", "Ctrl+Shift+Z")
+    assert w.act_zoom_in.shortcut() == QKeySequence("Ctrl+Z")
+    new.accept()                                              # no keys pressed: refused
+    assert warned == ["Press the keys for the shortcut first."]
+    assert w.act_zoom_in.shortcut() == QKeySequence("Ctrl+Z")
+    saved = json.loads((tmp_path / "shortcuts.json").read_text())
+    assert saved == {"zoom_in": "Ctrl+Z", "zoom_out": "Ctrl+Shift+Z"}
+    # a new window gets them back; removing one saves too
+    app.close()
+    loaded.eval("gui_show")
+    w = app.window()
+    assert w.act_zoom_out.shortcut() == QKeySequence("Ctrl+Shift+Z")
+    assert w.set_user_shortcut("zoom_out", None) is None
+    assert w.act_zoom_out.shortcut().isEmpty()
+    assert json.loads((tmp_path / "shortcuts.json").read_text()) == {"zoom_in": "Ctrl+Z"}
+
+
+def test_tool_and_ruler_shortcuts(loaded, tmp_path):
+    import json
+    from PySide6.QtGui import QKeySequence
+    from core.gui.shortcuts import ShortcutsDialog
+    loaded.eval("gui_show")
+    w = app.window()
+    assert w.act_ruler.shortcut() == QKeySequence("K")       # built in
+    assert w.act_clear_rulers.shortcut() == QKeySequence("Shift+K")
+    assert w.act_tool_stretch.shortcut() == QKeySequence("S")
+    assert w.act_tool_move.shortcut() == QKeySequence("M")
+    rows = ShortcutsDialog(w).rows()
+    assert ("Ruler", "K", "built in", "ruler") in rows and ("Move", "M", "built in", "tool_move") in rows
+    # S turns Stretch on; S again goes back to Select
+    w.act_tool_stretch.trigger()
+    assert w.canvas.edit["mode"] == "stretch" and w.tools_button.text() == "Tools: Stretch"
+    w.act_tool_stretch.trigger()
+    assert w.act_tool_select.isChecked() and w.canvas.edit["mode"] is None
+    w.act_tool_move.trigger()
+    w.act_tool_stretch.trigger()                              # M then S: Stretch
+    assert w.canvas.edit["mode"] == "stretch"
+    w.act_ruler.trigger()                                     # K: the ruler, edit mode off
+    assert w.canvas.ruler["on"] and w.canvas.edit["mode"] is None
+    # user shortcuts replace the built in one; removing them brings it back
+    assert w.set_user_shortcut("tool_stretch", "Ctrl+E") is None
+    assert w.act_tool_stretch.shortcut() == QKeySequence("Ctrl+E")
+    assert w.set_user_shortcut("ruler", "R") is None
+    assert w.set_user_shortcut("tool_select", "Q") is None    # no built in one
+    assert "already the shortcut of Move" in w.set_user_shortcut("ruler", "M")
+    assert json.loads((tmp_path / "shortcuts.json").read_text()) == \
+        {"tool_stretch": "Ctrl+E", "ruler": "R", "tool_select": "Q"}
+    app.close()                                               # kept for the next window
+    loaded.eval("gui_show")
+    w = app.window()
+    assert w.act_tool_stretch.shortcut() == QKeySequence("Ctrl+E")
+    assert w.act_tool_select.shortcut() == QKeySequence("Q")
+    assert w.set_user_shortcut("tool_stretch", None) is None
+    assert w.act_tool_stretch.shortcut() == QKeySequence("S")
+    assert w.set_user_shortcut("tool_select", None) is None
+    assert w.act_tool_select.shortcut().isEmpty()
 
 
 def test_zoom_selected(loaded):
@@ -418,6 +522,47 @@ def test_shift_drag_selects_all_ports_inside(loaded):
     _drag(w, w.canvas.mapFromScene(scene(-1, 31)), w.canvas.mapFromScene(scene(1, 29)),
           mods=Qt.ShiftModifier | Qt.ControlModifier)
     assert len(loaded.split_list(loaded.eval("get_db selected"))) == 3
+
+
+def test_segment_touches_rect():
+    from core.gui.layout_data import segment_touches_rect
+    box = (0, 0, 10, 10)
+    assert segment_touches_rect((5, -5), (5, 20), box)          # crosses
+    assert segment_touches_rect((2, 2), (3, 3), box)            # inside
+    assert segment_touches_rect((-5, 10), (20, 10), box)        # along an edge
+    assert not segment_touches_rect((11, -5), (11, 20), box)    # parallel, outside
+    assert not segment_touches_rect((-5, 12), (12, -5 + 22), box)
+    assert not segment_touches_rect((12, 0), (20, 5), box)
+    assert segment_touches_rect((5, 5), (5, 5), box)            # a point
+    assert not segment_touches_rect((15, 5), (15, 5), box)
+
+
+def test_right_drag_selects_touching(loaded):
+    from PySide6.QtCore import QRectF, Qt
+    from core.gui.canvas import scene
+    w = _view(loaded)
+    w.set_all_layers(True)
+    w.canvas.fitInView(QRectF(scene(9.5, 1), scene(10.5, -0.5)), Qt.KeepAspectRatio)
+    before = abs(w.canvas.transform().m11())
+    # pin a is x 9.95..10.05, y 0..0.4; the box covers only its right half
+    _drag(w, w.canvas.mapFromScene(scene(10.0, 0.5)), w.canvas.mapFromScene(scene(10.3, -0.2)),
+          button=Qt.RightButton)
+    assert loaded.eval("get_db selected") == "port:top/a"
+    assert abs(w.canvas.transform().m11()) == before            # no zoom
+    assert not w.canvas._rband.isVisible()
+    # a right click alone keeps the selection
+    p = w.canvas.mapFromScene(scene(10.4, -0.4))
+    _drag(w, p, p, button=Qt.RightButton)
+    assert loaded.eval("get_db selected") == "port:top/a"
+    # Ctrl+right drag adds; a box touching nothing with plain right drag clears
+    w.canvas.fit()
+    _drag(w, w.canvas.mapFromScene(scene(19.95, 0.1)), w.canvas.mapFromScene(scene(25, -1)),
+          button=Qt.RightButton, mods=Qt.ControlModifier)
+    assert sorted(loaded.split_list(loaded.eval("get_db selected"))) == \
+        ["port:top/a", "port:top/b"]
+    _drag(w, w.canvas.mapFromScene(scene(60, 10)), w.canvas.mapFromScene(scene(70, 20)),
+          button=Qt.RightButton)
+    assert loaded.eval("get_db selected") == ""
 
 
 def test_shift_drag_needs_shape_inside_box(loaded):
@@ -868,7 +1013,53 @@ def test_rebuilt_layer_list_has_no_stale_widgets(with_inst):
     w = app.window()
     with_inst.eval("create_inst -ref_cell INV_D2 -location {10 10}")   # refresh rebuilds
     shown = [b for b in w.layer_group.findChildren(QCheckBox) if b.isVisibleTo(w)]
-    assert len(shown) == len(w.layer_boxes)
+    assert len(shown) == 4 * len(w.layer_boxes) + 3       # the layer, then S P G; All layers
+    assert len(w.class_boxes) == 3 * len(w.layer_boxes)
+
+
+def test_layers_dropdown(loaded):
+    loaded.eval("gui_show")
+    w = app.window()
+    assert w.layer_toggle.isChecked() and w.layer_boxes["H1"].isVisibleTo(w)
+    w.layer_toggle.setChecked(False)                      # closed: the list is hidden
+    assert not w.layer_boxes["H1"].isVisibleTo(w)
+    assert not w.class_boxes[("H1", "power")].isVisibleTo(w)
+    assert w.layer_boxes["H1"].isChecked()                # still drawn
+    w.layer_toggle.setChecked(True)
+    assert w.layer_boxes["H1"].isVisibleTo(w)
+
+
+def test_all_layers_class_boxes(loaded):
+    loaded.eval("gui_show")
+    w = app.window()
+    power = {k: b for k, b in w.class_boxes.items() if k[1] == "power"}
+    assert w.all_class_boxes["power"].isChecked()
+    w.all_class_boxes["power"].setChecked(False)          # every layer's P goes off
+    assert not any(b.isChecked() for b in power.values())
+    assert {k for k in power} <= w.canvas.class_hidden
+    assert all(b.isChecked() for k, b in w.class_boxes.items() if k[1] != "power")
+    power[("H1", "power")].setChecked(True)               # one back on: All stays off
+    assert not w.all_class_boxes["power"].isChecked()
+    w.all_class_boxes["power"].setChecked(True)
+    assert all(b.isChecked() for b in power.values()) and not w.canvas.class_hidden
+    w.class_boxes[("H1", "ground")].setChecked(False)     # one off: All G unchecks
+    assert not w.all_class_boxes["ground"].isChecked()
+    w.class_boxes[("H1", "ground")].setChecked(True)      # all on again: All G checks
+    assert w.all_class_boxes["ground"].isChecked()
+
+
+def test_net_class():
+    from core.gui.layout_data import net_class
+    assert net_class("VDD_SOC") == net_class("VDD") == net_class("vcc1") == "power"
+    assert net_class("VSS") == net_class("GND") == "ground"
+    assert net_class("temp_L1_inv1_Y") == net_class("SIGNAL") == net_class(None) == "signal"
+    assert net_class("PWR", "POWER") == "power" and net_class("X", "ground") == "ground"
+    assert net_class("VDD_SOC", "signal") == "power"      # no power/ground USE: the name
+
+
+def test_port_classes_from_use(assigned):
+    lay = load_layout(assigned.db)
+    assert {s.cls for s in lay.shapes} <= {"power"} and all(s.cls == "power" for s in lay.shapes)
 
 
 
@@ -1088,3 +1279,115 @@ def test_built_spine_in_layout_tab(spine_loaded):
     w.object_boxes["spine"].setChecked(False)
     assert not any(i.isVisible() for i in items)
     assert len(w.layout.insts) == 3                             # the cells are instances
+
+
+def test_spine_nets_and_stubs_selectable(spine_loaded):
+    from PySide6.QtCore import QRectF, Qt
+    from core.gui.canvas import scene
+    spine_loaded.eval("create_spine -name sp1 -spec_name sp1 -location {10 5} -build "
+                      "-ref_cell INV_D1")
+    w = _view(spine_loaded)
+    nets = set(spine_loaded.split_list(spine_loaded.eval("get_db spine:sp1 .spine_nets")))
+    stubs = set(spine_loaded.split_list(spine_loaded.eval("get_db spine:sp1 .stubs")))
+    assert nets and stubs
+    everything = set(w.canvas.owners_in(w.canvas.content.adjusted(-5, -5, 5, 5),
+                                        touching=True))
+    assert nets | stubs <= everything
+    assert set(spine_loaded.split_list(spine_loaded.eval("get_db spine:sp1 .insts"))) \
+        <= everything
+    # right drag over the middle of one net segment selects that net only
+    net, (x1, y1, x2, y2) = w.layout.spines[0].segments[0]
+    mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+    w.canvas.zoom_to(QRectF(scene(mx - 0.5, my + 0.5), scene(mx + 0.5, my - 0.5)))
+    _drag(w, w.canvas.mapFromScene(scene(mx - 0.05, my + 0.05)),
+          w.canvas.mapFromScene(scene(mx + 0.05, my - 0.05)), button=Qt.RightButton)
+    assert spine_loaded.eval("get_db selected") == f"spine_net:sp1/{net}"
+    lit = [i for i in w.canvas.highlighted if i.data(1) == f"spine_net:sp1/{net}"]
+    assert len(lit) == sum(1 for n, _ in w.layout.spines[0].segments if n == net)
+    assert f"spine_net:sp1/{net}" in w.sel_label.text() and "driver" in w.sel_label.text()
+    # a click on the line selects it too; hiding the spine makes it unpickable
+    spine_loaded.eval("deselect_obj -all")
+    p = w.canvas.mapFromScene(scene(mx, my))
+    _drag(w, p, p)
+    assert spine_loaded.eval("get_db selected") == f"spine_net:sp1/{net}"
+    w.object_boxes["spine"].setChecked(False)
+    assert w.canvas.owners_in(w.canvas.content.adjusted(-5, -5, 5, 5), touching=True) and \
+        not (nets | stubs) & set(w.canvas.owners_in(w.canvas.content.adjusted(-5, -5, 5, 5),
+                                                    touching=True))
+
+
+# -- placement rows and sites ---------------------------------------------------------------
+
+def test_load_site_rows(loaded):
+    from core.gui.layout_data import load_site_rows, visible_rows
+    (sr,) = load_site_rows(loaded.db)                     # small.def: r1 N at 0, r2 FS at 0.2
+    assert (sr.site, sr.width, sr.height) == ("core", 0.1, 0.2)   # no cells: the row gap
+    assert sr.rows == [(0.0, 0.0, 10, 0.1, "N"), (0.2, 0.0, 10, 0.1, "FS")]
+    assert [r[0] for r in visible_rows(sr, 0, 0.05, 1, 0.1)] == [0.0]
+    assert [r[0] for r in visible_rows(sr, 0, 0.25, 1, 0.3)] == [0.2]
+    assert visible_rows(sr, 2, 0, 3, 1) == []             # right of the rows
+    assert visible_rows(sr, 0, 0, 1, 1, limit=1) is None  # too many: none drawn
+
+
+SITE_LEF = """MACRO INV
+  CLASS CORE ;
+  SIZE 0.24 BY 0.254 ;
+  SITE s60 ;
+END INV
+"""
+SITE_DEF = """DESIGN t ;
+UNITS DISTANCE MICRONS 1000 ;
+DIEAREA ( 0 0 ) ( 10000 10000 ) ;
+ROW r1 s60 0 0 N DO 100 BY 3 STEP 60 127 ;
+END DESIGN
+"""
+
+
+def test_site_height_from_cells(tech_session, write_lef):
+    from core.gui.layout_data import load_site_rows
+    tech_session.eval(f"read_lef -file {write_lef(SITE_LEF, 'c.lef')}")
+    tech_session.eval(f"read_def -file {write_lef(SITE_DEF, 'd.def')}")
+    (sr,) = load_site_rows(tech_session.db)
+    assert (sr.width, sr.height, len(sr.rows)) == (0.06, 0.127, 3)   # BY 3: three rows
+    assert [r[0] for r in sr.rows] == [0.0, 0.127, 0.254]             # the pitch, not the cell
+    tech_session.eval(f"read_def -file {write_lef(SITE_DEF.replace('BY 3', 'BY 1'), 'e.def')}")
+    (sr,) = load_site_rows(tech_session.db)
+    assert (sr.height, len(sr.rows)) == (0.254, 1)        # one row: the cell height
+
+
+def test_rows_drawn_and_site_dropdown(loaded):
+    from PySide6.QtCore import QRectF, Qt
+    from PySide6.QtGui import QColor
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    loaded.eval("gui_show")
+    w = app.window()
+    w.resize(900, 700)
+    box = w.object_boxes["rows"]
+    assert box.isEnabled() and not box.isChecked()        # off at start
+    assert set(w.site_boxes) == {"core"} and w.site_boxes["core"].isChecked()
+    w.rows_toggle.setChecked(True)
+    assert w.site_boxes["core"].isVisibleTo(w)
+    for key in ("boundary", "ports"):
+        w.object_boxes[key].setChecked(False)
+    w.canvas.fitInView(QRectF(scene(-0.1, 0.5), scene(1.1, -0.1)), Qt.KeepAspectRatio)
+    color = QColor(w.layout.site_rows[0].color).name()
+
+    def drawn():
+        QApplication.processEvents()
+        img = w.canvas.viewport().grab().toImage()
+        p = w.canvas.mapFromScene(scene(0.55, 0.0))       # the bottom edge of r1
+        return color in {img.pixelColor(p.x(), p.y() + d).name() for d in (-1, 0, 1)}
+
+    assert not drawn()
+    box.setChecked(True)
+    assert drawn()
+    w.site_boxes["core"].setChecked(False)                # that site hidden
+    assert not drawn()
+    w.site_boxes["core"].setChecked(True)
+    assert drawn()
+    w.canvas.fitInView(QRectF(scene(-5000, 5000), scene(5000, -5000)), Qt.KeepAspectRatio)
+    QApplication.processEvents()                          # far out: too dense, none drawn
+    img = w.canvas.viewport().grab().toImage()
+    p = w.canvas.mapFromScene(scene(0.55, 0.0))
+    assert img.pixelColor(p.x(), p.y()).name() != color

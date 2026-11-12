@@ -21,6 +21,11 @@ SIGNAL = "-"
 SIGNAL_COLOR = "#9e9e9e"
 BLANK = "NA"                 # track left blank (assign_track_for_route)
 BLANK_COLOR = "#5f5f5f"
+# Placement rows (DEF ROW): one color per site, in first-row order.
+ROW_PALETTE = ["#a1887f", "#90a4ae", "#aed581", "#ffb74d", "#f48fb1", "#80deea"]
+MAX_ROWS = 3000              # per site; more rows in view are not drawn until zoomed in
+# Net classes of the per-layer Signal / Power / Ground view filters.
+NET_CLASSES = ("signal", "power", "ground")
 # Tech DIRECTION -> the DEF TRACKS that run that way (TRACKS Y are horizontal lines).
 PREFERRED_TRACKS = {"horizontal": "y", "vertical": "x"}
 
@@ -41,6 +46,7 @@ class PortShape:
     layer: str
     type: str                    # rect | polygon
     points: List[float]          # x y x y ... (rect: x1 y1 x2 y2)
+    cls: str = "signal"          # signal | power | ground (net_class)
 
 
 @dataclass
@@ -60,6 +66,7 @@ class Inst:
     bbox: Tuple[float, float, float, float]
     pins: List[Tuple[str, str, str, List[float]]] = field(default_factory=list)
     # (pin, layer, type, placed points)
+    pin_classes: Dict[str, str] = field(default_factory=dict)   # pin -> net_class
 
 
 @dataclass
@@ -67,7 +74,20 @@ class SpineDraw:
     """A built spine (create_spine -build): stubs and net centre lines."""
     handle: str                  # spine:<name>
     stubs: List[Tuple[str, List[float]]] = field(default_factory=list)   # (name, x1 y1 x2 y2)
-    segments: List[List[float]] = field(default_factory=list)            # x1 y1 x2 y2
+    #                              a stub over a bend of its spine: one entry per stretch
+    segments: List[Tuple[str, List[float]]] = field(default_factory=list)  # (net, x1 y1 x2 y2)
+
+
+@dataclass
+class Strap:
+    """A route_pin wire: a horizontal strap, or a vertical pin wire."""
+    handle: str                  # strap:<inst>/<n> or pin_wire:<inst>/<pin>
+    net: str
+    layer: str
+    rect: Tuple[float, float, float, float]
+    label: str = ""              # written on it when labels are on; default the net
+    outline: bool = False        # a route_net crossing box: drawn as an outline
+    cls: str = "signal"          # signal | power | ground (net_class)
 
 
 @dataclass
@@ -84,6 +104,18 @@ class TrackAssignment:
 
 
 @dataclass
+class SiteRows:
+    """The DEF rows of one site (read_def), lowest first."""
+    site: str
+    color: str
+    width: float                 # site width: the rows' STEP
+    height: float                # site height: the row pitch, else its cells' height
+    rows: List[Tuple[float, float, int, float, str]] = field(default_factory=list)
+    # (y, x, sites, step, orient)
+    ys: List[float] = field(default_factory=list)              # the rows' y, for bisect
+
+
+@dataclass
 class Layout:
     design: Optional[str] = None
     boundary: List[float] = field(default_factory=list)
@@ -95,6 +127,11 @@ class Layout:
     preferred: Dict[str, str] = field(default_factory=dict)   # tech layer -> x | y
     insts: List[Inst] = field(default_factory=list)
     spines: List[SpineDraw] = field(default_factory=list)
+    straps: List[Strap] = field(default_factory=list)
+    pin_wires: List[Strap] = field(default_factory=list)
+    net_wires: List[Strap] = field(default_factory=list)     # route_net wires and crossings
+    site_rows: List[SiteRows] = field(default_factory=list)  # per site
+    grid: float = 0.001                                       # manufacturing grid
 
     def layer(self, name) -> Optional[LayerInfo]:
         return next((l for l in self.layers if l.name == name), None)
@@ -118,12 +155,14 @@ def load_layout(db) -> Layout:
             xs, ys = lay.boundary[0::2], lay.boundary[1::2]
             lay.bbox = (min(xs), min(ys), max(xs), max(ys))
         for r in db.conn.execute(
-                "SELECT p.name AS pin, s.seq, s.layer, s.type, s.points FROM port_shape s "
+                "SELECT p.name AS pin, p.net, p.use, s.seq, s.layer, s.type, s.points "
+                "FROM port_shape s "
                 "JOIN port p ON p.id = s.port_id ORDER BY s.id"):
             port = f"port:{lay.design}/{r['pin']}"
             lay.shapes.append(PortShape(f"port_shape:{lay.design}/{r['pin']}/{r['seq']}",
                                         port, r["layer"], r["type"],
-                                        [float(v) for v in r["points"].split()]))
+                                        [float(v) for v in r["points"].split()],
+                                        net_class(r["net"] or r["pin"], r["use"])))
             counts.setdefault(r["layer"], [0, 0])[0] += 1
         for r in db.conn.execute("SELECT * FROM track_pattern ORDER BY id"):
             layers = r["layers"].split()
@@ -138,10 +177,54 @@ def load_layout(db) -> Layout:
         for _, layer, _, _ in inst.pins:
             counts.setdefault(layer, [0, 0])[0] += 1
     lay.spines = load_spines(db)
+    lay.site_rows = _cached_site_rows(db)
+    if db.has_tech() and db.tech_row()["manufacturing_grid"]:
+        lay.grid = db.tech_row()["manufacturing_grid"]
+    for r in db.strap_rows():
+        lay.straps.append(Strap(f"strap:{r['inst']}/{r['seq']}", r["net"], r["layer"],
+                                tuple(float(v) for v in r["rect"].split()),
+                                cls=net_class(r["net"])))
+        counts.setdefault(r["layer"], [0, 0])[0] += 1
+    for r in db.pin_wire_rows():
+        lay.pin_wires.append(Strap(f"pin_wire:{r['inst']}/{r['pin']}", r["net"], r["layer"],
+                                   tuple(float(v) for v in r["rect"].split()), r["pin"],
+                                   cls=net_class(r["net"])))
+        counts.setdefault(r["layer"], [0, 0])[0] += 1
+    for r in db.net_wire_rows():
+        st = net_wire_strap(r)
+        lay.net_wires.append(st)
+        if not st.outline:
+            counts.setdefault(st.layer, [0, 0])[0] += 1
     for i, (name, (shapes, tracks)) in enumerate(counts.items()):
         lay.layers.append(LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)],
                                     shapes, tracks))
     return lay
+
+
+def net_wire_strap(r) -> Strap:
+    """The drawing of a net_wire row: crossing boxes and vias as outlines
+    shown with their first layer; shields and power extensions labelled with
+    their power net."""
+    cross = r["kind"].endswith("cross") or r["kind"] == "via"
+    shield = r["shield_net"] if r["kind"] in ("shield", "shield_ext", "stub_shield", "pg_ext",
+                                              "via") else None
+    return Strap(f"net_wire:{r['net']}/{r['seq']}", shield or r["net"], r["layer"].split("/")[0],
+                 tuple(float(v) for v in r["rect"].split()), label=shield or "",
+                 outline=cross, cls=net_class(r["shield_net"] or r["net"]))
+
+
+def net_class(net, use=None) -> str:
+    """power, ground or signal: a LEF/DEF USE POWER or GROUND first, else the
+    net (or pin) name: VDD* and VCC* are power, VSS* and GND* ground."""
+    use = (use or "").lower()
+    if use in ("power", "ground"):
+        return use
+    name = (net or "").upper()
+    if name.startswith(("VDD", "VCC")):
+        return "power"
+    if name.startswith(("VSS", "GND")):
+        return "ground"
+    return "signal"
 
 
 def load_insts(db) -> List[Inst]:
@@ -149,7 +232,7 @@ def load_insts(db) -> List[Inst]:
     from core.objects import inst_bbox
     from core.placement import placed_points, placer
     out = []
-    shapes_of = {}
+    shapes_of, classes_of = {}, {}
     for row in db.inst_rows():
         cell = db.lib_cell_row(row["ref_cell"])
         box = inst_bbox(db, row)
@@ -160,7 +243,12 @@ def load_insts(db) -> List[Inst]:
             shapes_of[row["ref_cell"]] = db.lib_cell_shapes(row["ref_cell"])
         pins = [(pin, layer, kind, placed_points([float(v) for v in pts.split()], place))
                 for pin, layer, kind, pts in shapes_of[row["ref_cell"]]]
-        out.append(Inst(f"inst:{row['name']}", row["ref_cell"], box, pins))
+        if row["ref_cell"] not in classes_of:
+            classes_of[row["ref_cell"]] = {p: net_class(p, use) for p, use in db.conn.execute(
+                "SELECT p.name, p.use FROM lib_pin p JOIN lib_cell c ON c.id = p.cell_id "
+                "WHERE c.name = ?", (row["ref_cell"],))}
+        out.append(Inst(f"inst:{row['name']}", row["ref_cell"], box, pins,
+                        classes_of[row["ref_cell"]]))
     return out
 
 
@@ -170,12 +258,75 @@ def load_spines(db) -> List[SpineDraw]:
         row = db.spine_row(name)
         sp = SpineDraw(f"spine:{name}")
         for s in db.spine_stub_rows(row["id"]):
-            sp.stubs.append((s["name"], [float(v) for v in s["points"].split()]))
+            v = [float(c) for c in s["points"].split()]   # a line per stretch when bent
+            sp.stubs += [(s["name"], v[k:k + 4]) for k in range(0, len(v) - 2, 2)]
         for n in db.spine_net_rows(row["id"]):
-            sp.segments += [[float(v) for v in seg.split()]
+            sp.segments += [(n["name"], [float(v) for v in seg.split()])
                             for seg in (n["route"] or "").split(";") if seg]
         out.append(sp)
     return out
+
+
+_rows_cache = {}             # the last site rows loaded, and what they were loaded from
+
+
+def _cached_site_rows(db) -> List[SiteRows]:
+    """load_site_rows, reused while the rows and cells are unchanged: a
+    design has 100k+ rows and the view reloads after every command."""
+    key = (id(db.conn),) + tuple(db.conn.execute(
+        "SELECT COUNT(*), MAX(id) FROM site_row").fetchone()) + tuple(db.conn.execute(
+            "SELECT COUNT(*), MAX(id) FROM lib_cell").fetchone())
+    if _rows_cache.get("key") != key:
+        _rows_cache.update(key=key, rows=load_site_rows(db))
+    return _rows_cache["rows"]
+
+
+def track_coords(lay: "Layout", layer: str, direction: str) -> List[float]:
+    """Sorted positions of the DEF tracks of layer running as direction
+    (y: horizontal lines at y positions, x: vertical ones)."""
+    out = set()
+    for t in lay.tracks:
+        if t.direction == direction and layer in t.layers:
+            out.update(round(t.start + i * t.step, 6) for i in range(t.num))
+    return sorted(out)
+
+
+def load_site_rows(db) -> List[SiteRows]:
+    """DEF rows grouped by site, a ROW ... BY n with n > 1 as n rows. The
+    site height is the smallest gap between its rows (cells may span several
+    rows: a 7-track cell is 7 rows tall); for a single row, the smallest
+    height of the cells on that site (LEF SITE)."""
+    groups: Dict[str, List[Tuple[float, float, int, float, str]]] = {}
+    for r in db.conn.execute("SELECT site, x, y, orient, num_x, num_y, step_x, step_y "
+                             "FROM site_row ORDER BY id"):
+        rows = groups.setdefault(r["site"], [])
+        for k in range(max(1, r["num_y"] or 1)):
+            rows.append((r["y"] + k * (r["step_y"] or 0.0), r["x"], max(1, r["num_x"] or 1),
+                         r["step_x"] or 0.0, r["orient"] or "N"))
+    out = []
+    for i, (site, rows) in enumerate(groups.items()):
+        rows.sort()
+        ys = [r[0] for r in rows]
+        cell = db.conn.execute("SELECT MIN(size_y) FROM lib_cell WHERE site = ? AND size_y > 0",
+                               (site,)).fetchone()[0]
+        gaps = [b - a for a, b in zip(ys, ys[1:]) if b - a > 1e-9]
+        height = (min(gaps) if gaps else cell) or 1.0
+        width = min((r[3] for r in rows if r[3] > 0), default=0.0)
+        out.append(SiteRows(site, ROW_PALETTE[i % len(ROW_PALETTE)], width, round(height, 6),
+                            rows, ys))
+    return out
+
+
+def visible_rows(sr: SiteRows, x_lo: float, y_lo: float, x_hi: float, y_hi: float,
+                 limit: int = MAX_ROWS):
+    """The rows of sr touching the view box, as (y, x, sites, step, orient);
+    None when more than limit are in range (too dense to draw)."""
+    first = bisect.bisect_left(sr.ys, y_lo - sr.height - 1e-9)
+    last = bisect.bisect_right(sr.ys, y_hi + 1e-9)
+    if last - first > limit:
+        return None
+    return [r for r in sr.rows[first:last] if r[0] + sr.height >= y_lo
+            and r[1] <= x_hi and r[1] + r[2] * (r[3] or 0.0) >= x_lo]
 
 
 def drawn_layers(track: "Track", preferred: Dict[str, str]) -> List[str]:
@@ -265,6 +416,28 @@ def nearest_on_segments(point, segments, radius):
         if d <= best_d:
             best, best_d = (qx, qy), d
     return best
+
+
+def segment_touches_rect(a, b, rect):
+    """True if the segment a-b crosses or lies in rect (x1, y1, x2, y2, lowest
+    first). Liang-Barsky clipping; a zero-length segment is a point."""
+    (x0, y0), (x1, y1) = a, b
+    rx1, ry1, rx2, ry2 = rect
+    t0, t1 = 0.0, 1.0
+    dx, dy = x1 - x0, y1 - y0
+    for p, q in ((-dx, x0 - rx1), (dx, rx2 - x0), (-dy, y0 - ry1), (dy, ry2 - y0)):
+        if p == 0:
+            if q < 0:
+                return False                          # parallel and outside
+            continue
+        t = q / p
+        if p < 0:
+            t0 = max(t0, t)
+        else:
+            t1 = min(t1, t)
+        if t0 > t1:
+            return False
+    return True
 
 
 def polygon_edges(points):
