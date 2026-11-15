@@ -5,6 +5,7 @@ Model coordinates are microns with y up, as in the database.
 
 import bisect
 import math
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -35,8 +36,10 @@ class LayerInfo:
     name: str
     in_tech: bool
     color: str
-    port_shapes: int = 0
+    port_shapes: int = 0         # a via row: its vias
     track_patterns: int = 0
+    via: Optional[Tuple[str, str]] = None   # a via row (via_<bottom>_<top>): its two layers
+    cut: Optional[str] = None    # ... and the cut layer between them, when one is known
 
 
 @dataclass
@@ -91,6 +94,19 @@ class Strap:
 
 
 @dataclass
+class ViaShape:
+    """A shape of a via (core/vias.py): a cut, drawn with a cross, or a pad
+    of its definition, drawn as an outline."""
+    handle: str                  # via:<net>/<n>
+    layer: str                   # its row of the layer list: via_<bottom>_<top>
+    between: Tuple[str, str]     # the two layers it joins: bottom, top
+    type: str                    # rect | polygon
+    points: List[float]          # x y x y ... (rect: x1 y1 x2 y2)
+    cut: bool = True             # False: a pad on the via's bottom or top layer
+    cls: str = "signal"          # signal | power | ground (net_class)
+
+
+@dataclass
 class TrackAssignment:
     layer: str
     direction: str               # x | y: which tracks are numbered
@@ -130,6 +146,8 @@ class Layout:
     straps: List[Strap] = field(default_factory=list)
     pin_wires: List[Strap] = field(default_factory=list)
     net_wires: List[Strap] = field(default_factory=list)     # route_net wires and crossings
+    vias: List[ViaShape] = field(default_factory=list)       # the vias of the routes
+    via_colors: int = 0                                       # palette index of the first via row
     site_rows: List[SiteRows] = field(default_factory=list)  # per site
     grid: float = 0.001                                       # manufacturing grid
 
@@ -139,9 +157,18 @@ class Layout:
 
 def load_layout(db) -> Layout:
     """Read what the view draws. Tech layers come first in tech order, then
-    other layers that carry port shapes or tracks, in first-use order."""
+    other layers that carry port shapes or tracks, in first-use order. Tech
+    data read with a layer range (read_tech -min_layer, -max_layer): its
+    layers only, what is on another layer is not listed and so not drawn.
+
+    Vias have rows of their own in the list, via_<bottom>_<top>, each after
+    its bottom layer (before its top layer when the bottom one is not
+    listed): one for every two layers that a via definition joins or that
+    vias of the routes are between. A cut layer has no row unless it
+    carries shapes: the via row stands for it."""
     lay = Layout()
     tech = db.layer_names() if db.has_tech() else []
+    ranged = db.has_tech() and any(db.tech_layer_range())
     for name in tech:
         d = PREFERRED_TRACKS.get(db.layer_row(name)["direction"] or "")
         if d:
@@ -171,7 +198,8 @@ def load_layout(db) -> Layout:
             for name in drawn_layers(lay.tracks[-1], lay.preferred):
                 counts.setdefault(name, [0, 0])[1] += 1
         for name in db.track_assignment_layers():
-            lay.assignments.append(load_assignment(db, name))
+            if name in tech or not ranged:
+                lay.assignments.append(load_assignment(db, name))
     for inst in load_insts(db):
         lay.insts.append(inst)
         for _, layer, _, _ in inst.pins:
@@ -181,24 +209,126 @@ def load_layout(db) -> Layout:
     if db.has_tech() and db.tech_row()["manufacturing_grid"]:
         lay.grid = db.tech_row()["manufacturing_grid"]
     for r in db.strap_rows():
-        lay.straps.append(Strap(f"strap:{r['inst']}/{r['seq']}", r["net"], r["layer"],
-                                tuple(float(v) for v in r["rect"].split()),
-                                cls=net_class(r["net"])))
+        lay.straps.append(strap_shape(r))
         counts.setdefault(r["layer"], [0, 0])[0] += 1
     for r in db.pin_wire_rows():
-        lay.pin_wires.append(Strap(f"pin_wire:{r['inst']}/{r['pin']}", r["net"], r["layer"],
-                                   tuple(float(v) for v in r["rect"].split()), r["pin"],
-                                   cls=net_class(r["net"])))
+        lay.pin_wires.append(pin_wire_shape(r))
         counts.setdefault(r["layer"], [0, 0])[0] += 1
     for r in db.net_wire_rows():
         st = net_wire_strap(r)
         lay.net_wires.append(st)
         if not st.outline:
             counts.setdefault(st.layer, [0, 0])[0] += 1
-    for i, (name, (shapes, tracks)) in enumerate(counts.items()):
-        lay.layers.append(LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)],
-                                    shapes, tracks))
+    from core import vias
+    kinds = vias.tech_layers(db)
+    real = [LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)], shapes, tracks)
+            for i, (name, (shapes, tracks)) in enumerate(counts.items())
+            if (name in tech or not ranged)
+            and not (kinds.get(name, (0, ""))[1] == "cut" and not shapes and not tracks)]
+    lay.via_colors = len(counts)
+    lay.layers, lay.vias = with_via_rows(db, real, lay.via_colors)
     return lay
+
+
+def with_via_rows(db, real, first_color):
+    """(the layer list, the vias drawn): the layers real (LayerInfo) with
+    the via rows among them, each after its bottom layer, or before its top
+    layer when the bottom one is not listed; and the shapes of the vias that
+    have a row (load_vias). A via between two layers of which neither is
+    listed has none. first_color: the palette index of the first via row."""
+    from core import vias
+    listed = {l.name for l in real}
+    shapes = [v for v in load_vias(db) if set(v.between) & listed]
+    pairs = via_pairs(db)
+    number = Counter(between for _, between in {(v.handle, v.between) for v in shapes})
+    order = {name: k for k, name in enumerate(vias.tech_layers(db))}
+    for pair in pairs:                       # layers not in tech: after it, as they come
+        for name in pair:
+            order.setdefault(name, len(order))
+    rows = sorted((pair for pair in pairs if set(pair) & listed),
+                  key=lambda pair: (order[pair[1]], order[pair[0]]))
+    colors = via_row_colors(rows, real, first_color)
+    info = lambda pair: LayerInfo(via_layer(*pair), True, colors[pair], number[pair],
+                                  via=pair, cut=pairs[pair])
+    layers = []
+    for l in real:
+        layers += [info(pair) for pair in rows if pair[1] == l.name and pair[0] not in listed]
+        layers.append(l)
+        layers += [info(pair) for pair in rows if pair[0] == l.name]
+    return layers, shapes
+
+
+def via_row_colors(rows, real, first_color):
+    """{(bottom, top): colour} of the via rows: the palette colours from
+    first_color on, one a row, passing over the colours of the tech layers
+    listed (a via lies on the wires of its two layers). With more layers than
+    colours: any but those of its own two layers and of the row before."""
+    of_layer = {l.name: l.color for l in real}
+    used = {l.color for l in real if l.in_tech}
+    colors, k = {}, first_color
+    for pair in rows:
+        tries = [PALETTE[(k + j) % len(PALETTE)] for j in range(len(PALETTE))]
+        near = {of_layer.get(pair[0]), of_layer.get(pair[1])} | set(list(colors.values())[-1:])
+        free = [c for c in tries if c not in used and c not in colors.values()] or \
+            [c for c in tries if c not in near]
+        colors[pair] = free[0]
+        k += tries.index(free[0]) + 1
+    return colors
+
+
+def via_layer(bottom, top) -> str:
+    """The row of the layer list for the vias between two layers."""
+    return f"via_{bottom}_{top}"
+
+
+def via_pairs(db) -> Dict[Tuple[str, str], Optional[str]]:
+    """{(bottom, top): cut layer} of the layers that vias join: the ones of
+    the via definitions, and the ones the vias of the routes are between
+    (no cut layer when no definition joins the two)."""
+    from core import vias
+    pairs = {}
+    for bottom, cut, top in vias.definition_layers(db).values():
+        if cut is not None:
+            pairs.setdefault((bottom, top), cut)
+    for r in vias.rows(db):
+        pairs.setdefault((r["bottom"], r["top"]), r["cut"])
+    return pairs
+
+
+def load_vias(db) -> List[ViaShape]:
+    """The drawing of the vias of the routes (core/vias.py: one via a cut
+    layer at a layer change), each shape with the row of its via in the
+    layer list. A via with a definition (assign_via_for_route): the
+    definition's shapes at its point, the ones on its cut layer as cuts,
+    the others as pads. A via without one: the box it stands for, as a cut."""
+    from core import vias
+    shapes_of = {}
+    out = []
+    for r in vias.rows(db):
+        between = (r["bottom"], r["top"])
+        if r["via_def"] is None:
+            shapes = [(r["cut"], "rect", [float(c) for c in r["rect"].split()])]
+        else:
+            if r["via_def"] not in shapes_of:
+                shapes_of[r["via_def"]] = vias.definition_shapes(db, r["via_def"])
+            shapes = [(layer, kind, [round(c + (r["x"], r["y"])[k % 2], 6)
+                                     for k, c in enumerate(pts)])
+                      for layer, kind, pts in shapes_of[r["via_def"]]]
+        out += [ViaShape(vias.handle(r), via_layer(*between), between, kind, pts,
+                         layer == r["cut"], net_class(r["net"])) for layer, kind, pts in shapes]
+    return out
+
+
+def strap_shape(r) -> Strap:
+    """The drawing of a route_pin strap row."""
+    return Strap(f"strap:{r['inst']}/{r['seq']}", r["net"], r["layer"],
+                 tuple(float(v) for v in r["rect"].split()), cls=net_class(r["net"]))
+
+
+def pin_wire_shape(r) -> Strap:
+    """The drawing of a route_pin pin wire row, labelled with its pin."""
+    return Strap(f"pin_wire:{r['inst']}/{r['pin']}", r["net"], r["layer"],
+                 tuple(float(v) for v in r["rect"].split()), r["pin"], cls=net_class(r["net"]))
 
 
 def net_wire_strap(r) -> Strap:

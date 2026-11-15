@@ -18,6 +18,8 @@ REPLACING = 92
 LAYERS_NOT_IN_TECH = 93
 NO_TECH_TO_CHECK = 94
 NO_BOUNDARY = 95
+VIA_REPLACES_LEF = 96
+VIA_PATTERN = 97
 
 
 def run(session, argv):
@@ -41,7 +43,13 @@ def run(session, argv):
         warn(REPLACING, f"replacing design {db.design_row()['name']} with '{path}'", out)
     if not design.boundary:
         warn(NO_BOUNDARY, "no DIEAREA in the DEF; the design has no boundary", out)
-    db.load_def(design)
+    for name in db.load_def(design):
+        warn(VIA_REPLACES_LEF, f"via '{name}' of the DEF replaces the tech LEF via of that "
+             f"name", out)
+    if design.via_patterns:
+        warn(VIA_PATTERN, f"the cut PATTERN of {len(design.via_patterns)} generated via(s) "
+             f"is not applied, every cut of the array is made: "
+             f"{' '.join(design.via_patterns)}", out)
 
     shapes = sum(len(p.shapes) for p in design.ports)
     info(f"Reading DEF '{os.path.abspath(path)}'", out)
@@ -65,11 +73,21 @@ def run(session, argv):
              + (", tech layers without tracks: " + " ".join(missing)
                 if (missing := [l for l in db.layer_names() if l not in track_layers]) else ""),
              out)
+    if design.vias:
+        info(f"  Vias        : {len(design.vias)} ({_names(v.name for v in design.vias)})",
+             out)
     if design.skipped:
         info("  Skipped     : " + " ".join(f"{k}({n})" if n > 1 else k
                                           for k, n in design.skipped.items()), out)
     _report_layers(session, db.port_shape_layer_counts())
     return None
+
+
+def _names(names, limit=8):
+    """The first names of a list, for a report line."""
+    names = list(names)
+    return " ".join(names[:limit]) + (f" ... {len(names) - limit} more"
+                                      if len(names) > limit else "")
 
 
 def _report_layers(session, counts):

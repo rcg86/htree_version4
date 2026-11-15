@@ -21,7 +21,11 @@ DESCRIPTION
                    wide as the shape's short side, along its long side),
                    with the cell power pins they cover.
       NETS         every spine net: its connections (the driver's output
-                   pin, each load's input pin) and + USE CLOCK, then every
+                   pin, each load's input pin, the pins connect_pin put on
+                   the net), and every net of no spine with a pin on it (a
+                   port's, connect_pin's, add_buffer_on_net's): the pins
+                   on it, and its port as ( PIN <port> ). Each with
+                   + USE CLOCK, then every
                    shape shorted to it, each as ( x y ) RECT ( 0 0 w h ):
                    route_net wires and strap extensions, and the straps and
                    pin wires route_net connected (they carry the net's name

@@ -83,6 +83,15 @@ DESCRIPTION
     The command can be run again on a bent spine: the moves start from
     the path it has. move_obj moves a bent spine whole, as any other.
 
+    In the GUI (gui_show): Edit > Move Spine..., or Move Spine on the
+    toolbar, makes the moves by hand. Pick the spine, the head, the
+    clearances and a step, press Start, then Shift+arrow pulls the head one
+    step (a whole number of track pattern periods) and H swaps the head;
+    the spine is drawn where it would be, with an arrow at the head. Done
+    runs this command with the moves made and writes it to spine_move.tcl
+    in the present working directory (replacing the file); Cancel drops
+    them. See gui_show.
+
 OPTIONS
     -spine <spine>
         The built spine: its name or handle (temp, spine:temp). Required.
@@ -131,4 +140,4 @@ ERRORS
 
 SEE ALSO
     create_spine, move_obj, legalize_placement, route_pin, route_net,
-    route_final_stub, assign_track_for_route
+    route_final_stub, assign_track_for_route, gui_show

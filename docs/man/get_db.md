@@ -25,7 +25,9 @@ DESCRIPTION
     shape in it, and 'spine_spec:<spec>', 'spine_level:<spec>/<level>'
     and 'spine_cell:<spec>/<level>/<cell>' for spine specs, and
     'design:<design>', 'port:<design>/<pin>', 'port_shape:<design>/<pin>/<k>'
-    and 'track_pattern:<design>/<k>' for the design read by read_def. Handles are plain
+    and 'track_pattern:<design>/<k>' for the design read by read_def,
+    'via_def:<name>' for a via definition and 'via:<net>/<n>' for the
+    n-th via of a net. Handles are plain
     strings, so they can be stored in Tcl variables and passed back to
     get_db.
 
@@ -74,7 +76,9 @@ DESCRIPTION
         track_assignments, insts, route_rules (route_rule:default first),
         spines, nets (the nets of every built spine and their final stubs,
         which are nets too), stubs (only the final stubs: stub:<spine>/<stub>),
-        straps, pin_wires, net_wires, selected. A leading
+        straps, pin_wires, net_wires, via_defs, via_def (the via
+        definitions of the tech LEF and the DEF), vias, via (every via of
+        the routing), selected. A leading
         dot is optional: get_db .tech.layer is the same as get_db tech.layer, and
         get_db .tech is the same as get_db tech.
             get_db tech.layer      -> layer:H1 layer:H2 ... (LEF order)
@@ -107,7 +111,10 @@ DESCRIPTION
         glob matching when the right side has * ? or [. Comparison is
         numeric when both sides are numbers, string otherwise. A bare
         attribute is true when non-empty (!.direction finds pins with no
-        DIRECTION); "" is the empty string. The Cadence form uses braces:
+        DIRECTION); "" is the empty string. An attribute may be a chain
+        that ends in a value, taken from the object the chain leads to:
+              get_db inst:sp_L2_inv1 .pins -if {.net.name == sp_L1*}
+        The Cadence form uses braces:
         -if {.name == IA}. The parenthesized form -if (.name == IA) is also
         accepted.
 
@@ -120,7 +127,9 @@ OPTIONS
 OBJECT ATTRIBUTES
     tech
         obj_type, file, lef_version, db_units, manufacturing_grid,
-        layer (handles), layers (same), extra (unmodeled top-level LEF text)
+        min_layer, max_layer (the layer range of read_tech; empty when
+        not given), layer (handles), layers (same), extra (unmodeled
+        top-level LEF text)
     layer
         obj_type, name, type, direction, pitch_x, pitch_y, offset_x,
         offset_y, width, min_width, max_width, area, min_enclosed_area,
@@ -132,6 +141,29 @@ OBJECT ATTRIBUTES
         See 'man read_spine_spec'.
     design, port, port_shape, track_pattern
         See 'man read_def'.
+    via_def, via
+        See 'man assign_via_for_route'. A net's vias:
+        get_db [get_db nets *pattern*] .vias
+    pin (pin:<inst>/<pin>, a pin of an instance)
+        obj_type, name, inst (handle), lib_pin (handle), direction, use,
+        net (handle: the net the pin is on, empty when it is on none),
+        layers, rect
+        The net is a spine_net (spine_net:<spine>/<net>) when it is a net
+        of a built spine, else a net (net:<net>). Both have name and pins,
+        so the chain goes on: get_db pin:sp_L2_inv1/A .net.name
+    spine_net (spine_net:<spine>/<net>)
+        obj_type, name, driver (handle of the instance), loads (names:
+        instances, or the stub of a leaf's net), pins (handles: the
+        instance pins on it), group, length, detour, route, route_rule
+        (handle), net_wires (handles), vias (handles), spine (handle)
+    net (net:<net>, a net that is no spine's: the net of a port, such as
+    the root net of a spine, or a net connect_pin made)
+        obj_type, name, driver (the handle of the output pin or input
+        port that drives it, empty when nothing does), pins (handles:
+        the instance pins on it), ports (handle: the port of the design
+        whose net it is), route_rule (handle), net_wires (handles), vias
+        (handles): its routing, as for a spine_net (route_net)
+        'get_db nets' lists the spine nets and stubs, not these.
     Distances are microns. type and direction are lowercase.
 
 TAB COMPLETION
@@ -161,6 +193,17 @@ EXAMPLES
     htree> get_db layers .name -if {.direction == vertical && .pitch_x > 0.2}
     G2 IB
     htree> foreach l [get_db layers] { puts "[get_db $l .name] [get_db $l .pitch_x]" }
+    htree> get_db [get_db nets *L1*] .vias
+    via:sp_L1_inv1_Y/1 via:sp_L1_inv1_Y/2 ...
+    htree> get_db [get_db nets *L1*] .vias.cut_layer
+    htree> get_db [get_db inst:sp_L2_inv1 .pins -if {.name == A}] .net
+    spine_net:sp/sp_L1_inv1_Y
+    htree> get_db [get_db inst:sp_L2_inv1 .pins -if {.name == A}] .net.name
+    sp_L1_inv1_Y
+    htree> get_db pin:sp_L2_inv1/A .net.pins
+    pin:sp_L1_inv1/Y pin:sp_L2_inv1/A
+    htree> get_db pin:sp_L1_inv1/A .net
+    net:net
 
 ERRORS
     HT4-020  usage error (missing argument, bad -if placement)
@@ -174,4 +217,5 @@ ERRORS
     HT4-028  no design loaded; run read_def first
 
 SEE ALSO
-    read_tech, read_lef, read_spine_spec, read_def, write_db, read_db
+    read_tech, read_lef, read_spine_spec, read_def, write_db, read_db,
+    assign_via_for_route, get_obj_in_area, connect_pin

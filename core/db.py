@@ -5,14 +5,18 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 20  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+SCHEMA_VERSION = 22  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
                      # 7: track assignments; 8: instances; 9: route rules;
                      # 10: level_pitch, deviation, built spines; 11: spine cell location;
                      # 12: named route rules with several layers, net route rules;
                      # 13: route_pin straps; 14: route_pin pin wires;
                      # 15: spine origin and -mirror; 16: route_net wires;
                      # 17: strap max_extension; 18: route_net shields; 19: DEF rows;
-                     # 20: spine path and straight-spine coordinates (move_spine_to_boundary)
+                     # 20: spine path and straight-spine coordinates (move_spine_to_boundary);
+                     # 21: via definitions, via assignments and vias (VIA_SCHEMA; a
+                     #     version 20 file gets these tables when it is read)
+                     # 22: connect_pin connections (CONNECTION_SCHEMA; a version 20
+                     #     or 21 file gets the table when it is read)
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -332,6 +336,78 @@ CREATE TABLE lef_extra (
 );
 """
 
+# Schema version 21. Kept apart so that a version 20 database can be given
+# these tables when it is read (Database.read).
+VIA_SCHEMA = """
+-- Via definitions: the VIA blocks of the tech LEF (read_tech) and the VIAS
+-- of the DEF (read_def). A name is held once; the DEF's replaces the LEF's.
+CREATE TABLE via_def (
+    id INTEGER PRIMARY KEY,
+    name TEXT UNIQUE NOT NULL,
+    source TEXT,                         -- lef | def
+    is_default TEXT,                     -- true | false (LEF: VIA <name> DEFAULT)
+    via_rule TEXT,                       -- shapes generated from this VIARULE's parameters
+    line INTEGER,
+    extra TEXT,                          -- statements not modeled, one per line
+    text TEXT                            -- as in the file
+);
+
+CREATE TABLE via_def_shape (
+    id INTEGER PRIMARY KEY,
+    via_def_id INTEGER REFERENCES via_def(id),
+    seq INTEGER,                         -- 1-based within the via
+    layer TEXT,
+    type TEXT,                           -- rect | polygon
+    points TEXT,                         -- microns, about the via's origin
+    mask INTEGER
+);
+CREATE INDEX via_def_shape_def ON via_def_shape (via_def_id);
+
+-- assign_via_for_route: the definition a route uses between two routing
+-- layers (through one cut layer), for one net or for every net.
+CREATE TABLE via_assignment (
+    id INTEGER PRIMARY KEY,
+    bottom TEXT NOT NULL, cut TEXT NOT NULL, top TEXT NOT NULL,
+    net TEXT NOT NULL,                   -- '': every net without one of its own
+    via_def TEXT NOT NULL,
+    UNIQUE (bottom, top, net)
+);
+
+-- The vias of the routing: one per cut layer where a route changes layer.
+-- Derived (core/vias.py) from the crossing boxes of net_wire and from the
+-- pin wires, and rebuilt when those change; never edited directly.
+CREATE TABLE via (
+    id INTEGER PRIMARY KEY,
+    net TEXT NOT NULL,                   -- the net it carries (a shield's via: the power net)
+    seq INTEGER,                         -- 1, 2, ... per net
+    kind TEXT,                           -- cross | stub_cross | pg_cross | auto | pin | strap
+    via_def TEXT,                        -- NULL: no definition assigned for its layers
+    bottom TEXT, cut TEXT, top TEXT,     -- cut NULL: no definition joins the two layers
+    x REAL, y REAL,                      -- its origin: the centre of rect
+    rect TEXT,                           -- the box the two shapes it joins share
+    source TEXT                          -- the crossing box or pin wire it comes from
+);
+CREATE INDEX via_net ON via (net);
+"""
+SCHEMA += VIA_SCHEMA
+
+# Schema version 22. Kept apart as VIA_SCHEMA is: an older database gets the
+# table, empty, when it is read.
+CONNECTION_SCHEMA = """
+-- connect_pin / disconnect_pin: the connections made by hand, one row per
+-- load pin (core/netlist.py). The connections of a built spine are in
+-- spine_net; a row here overrules the spine spec's root_net for its pin.
+CREATE TABLE connection (
+    id INTEGER PRIMARY KEY,
+    inst TEXT NOT NULL,                  -- the load: an instance
+    pin TEXT NOT NULL,                   -- and its input pin
+    net TEXT,                            -- NULL: disconnected by hand
+    driver TEXT,                         -- "<inst>/<pin>" or "port:<port>"
+    UNIQUE (inst, pin)
+);
+"""
+SCHEMA += CONNECTION_SCHEMA
+
 LAYER_COLUMNS = ["name", "type", "direction", "pitch_x", "pitch_y", "offset_x", "offset_y",
                  "width", "min_width", "max_width", "area", "min_enclosed_area",
                  "min_step", "min_step_max_edges", "min_spacing", "lef_text"]
@@ -352,6 +428,15 @@ class Database:
         # Selected object handles, in selection order. Session state, not design
         # data: kept in memory only, never written by write_db.
         self.selection = []
+        # The wires of each delete_wire, last last, as [(handle, table, row dict)],
+        # for delete_wire -undo. Session state too.
+        self.deleted_wires = []
+        # (connection, its change count) when the via table was last brought
+        # in step with the routing (core/vias.py).
+        self.via_stamp = None
+        # ((connection, its change count), {inst: {pin: net}}): the net of every
+        # pin as last worked out (core/netlist.py), good until the data changes.
+        self.netlist = None
         self.conn = self._new_memory()
         with self.conn:
             self.conn.executescript(SCHEMA)
@@ -367,11 +452,18 @@ class Database:
     def has_tech(self) -> bool:
         return self.conn.execute("SELECT 1 FROM tech").fetchone() is not None
 
-    def load_tech(self, tech: TechLef):
-        """Replace all tech data with tech, atomically."""
+    def load_tech(self, tech: TechLef, min_layer=None, max_layer=None):
+        """Replace all tech data with tech, atomically. Returns the names of
+        its vias left out because the DEF defines a via of that name.
+        min_layer, max_layer: the layer range tech was cut down to
+        (read_tech), kept for tech_layer_range."""
         with self.conn:
             for table in ("layer_extra", "layer", "tech_extra", "tech"):
                 self.conn.execute(f"DELETE FROM {table}")
+            for key, name in (("tech:min_layer", min_layer), ("tech:max_layer", max_layer)):
+                self.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+                if name:
+                    self.conn.execute("INSERT INTO meta VALUES (?, ?)", (key, name))
             self.conn.execute(
                 "INSERT INTO tech (id, lef_version, db_units, manufacturing_grid, file) "
                 "VALUES (1, ?, ?, ?, ?)",
@@ -386,9 +478,94 @@ class Database:
             for seq, extra in enumerate(tech.extras, start=1):
                 self.conn.execute("INSERT INTO tech_extra VALUES (?, ?, ?, ?)",
                                   (seq, extra.kind, extra.line, extra.text))
+            return self._set_via_defs("lef", tech.vias)
+
+    # -- via definitions -------------------------------------------------------
+    def _set_via_defs(self, source: str, vias):
+        """Replace the via definitions of source (lef | def) with vias
+        (ViaDef). A name both files define is the DEF's. Returns those names.
+        Inside the caller's transaction."""
+        ex = self.conn.execute
+        ex("DELETE FROM via_def_shape WHERE via_def_id IN "
+           "(SELECT id FROM via_def WHERE source = ?)", (source,))
+        ex("DELETE FROM via_def WHERE source = ?", (source,))
+        both = []
+        for via in vias:
+            old = ex("SELECT id FROM via_def WHERE name = ?", (via.name,)).fetchone()
+            if old is not None:
+                both.append(via.name)
+                if source == "lef":
+                    continue
+                ex("DELETE FROM via_def_shape WHERE via_def_id = ?", (old["id"],))
+                ex("DELETE FROM via_def WHERE id = ?", (old["id"],))
+            key = ex("INSERT INTO via_def (name, source, is_default, via_rule, line, extra, "
+                     "text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     (via.name, source, "true" if via.default else "false", via.via_rule,
+                      via.line, "\n".join(via.extra), via.lef_text)).lastrowid
+            self.conn.executemany(
+                "INSERT INTO via_def_shape (via_def_id, seq, layer, type, points, mask) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(key, k, sh.layer, sh.type, " ".join(_num(v) for v in sh.points), sh.mask)
+                 for k, sh in enumerate(via.shapes, start=1)])
+        return both
+
+    def via_def_names(self):
+        return [r["name"] for r in self.conn.execute("SELECT name FROM via_def ORDER BY id")]
+
+    def via_def_row(self, name: str):
+        return self.conn.execute("SELECT * FROM via_def WHERE name = ?", (name,)).fetchone()
+
+    def via_def_shapes(self, via_def_id: int):
+        return self.conn.execute("SELECT * FROM via_def_shape WHERE via_def_id = ? "
+                                 "ORDER BY seq", (via_def_id,)).fetchall()
+
+    def all_via_def_shapes(self):
+        """(via name, layer, type, points text) of every definition's shapes."""
+        return self.conn.execute(
+            "SELECT d.name, s.layer, s.type, s.points FROM via_def_shape s "
+            "JOIN via_def d ON d.id = s.via_def_id ORDER BY d.id, s.seq").fetchall()
+
+    def set_via_assignment(self, bottom, cut, top, net, via_def):
+        """The definition for the routes of net ('' = every net) between
+        bottom and top. Returns the name it replaces, or None."""
+        with self.conn:
+            old = self.conn.execute("SELECT via_def FROM via_assignment WHERE bottom = ? "
+                                    "AND top = ? AND net = ?", (bottom, top, net)).fetchone()
+            self.conn.execute("DELETE FROM via_assignment WHERE bottom = ? AND top = ? "
+                              "AND net = ?", (bottom, top, net))
+            self.conn.execute("INSERT INTO via_assignment (bottom, cut, top, net, via_def) "
+                              "VALUES (?, ?, ?, ?, ?)", (bottom, cut, top, net, via_def))
+        return old["via_def"] if old is not None else None
+
+    def clear_via_assignments(self, nets=None):
+        """Remove the assignments of nets ('' = the one for every net), or all."""
+        with self.conn:
+            if nets is None:
+                return self.conn.execute("DELETE FROM via_assignment").rowcount
+            return sum(self.conn.execute("DELETE FROM via_assignment WHERE net = ?",
+                                         (n,)).rowcount for n in nets)
+
+    def via_assignment_rows(self):
+        return self.conn.execute("SELECT * FROM via_assignment ORDER BY id").fetchall()
+
+    def set_vias(self, rows):
+        """Replace the via table with rows of (net, seq, kind, via_def, bottom,
+        cut, top, x, y, rect, source) (core/vias.py)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM via")
+            self.conn.executemany(
+                "INSERT INTO via (net, seq, kind, via_def, bottom, cut, top, x, y, rect, "
+                "source) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", rows)
 
     def tech_row(self):
         return self.conn.execute("SELECT * FROM tech").fetchone()
+
+    def tech_layer_range(self):
+        """(min_layer, max_layer) the tech data was read with (read_tech),
+        None for one not given."""
+        found = dict(self.conn.execute(
+            "SELECT key, value FROM meta WHERE key IN ('tech:min_layer', 'tech:max_layer')"))
+        return found.get("tech:min_layer"), found.get("tech:max_layer")
 
     def layer_names(self):
         return [r["name"] for r in self.conn.execute("SELECT name FROM layer ORDER BY id")]
@@ -615,11 +792,13 @@ class Database:
         return self.conn.execute("SELECT 1 FROM design").fetchone() is not None
 
     def load_def(self, d):
-        """Replace the design with d (a DefDesign), atomically."""
+        """Replace the design with d (a DefDesign), atomically. Returns the
+        names of its vias that replace a tech LEF via of the same name."""
         with self.conn:
             for table in ("track_pattern", "site_row", "port_extra", "port_shape", "port",
                           "design"):
                 self.conn.execute(f"DELETE FROM {table}")
+            both = self._set_via_defs("def", getattr(d, "vias", []))
             self.conn.execute(
                 "INSERT INTO design (id, name, file, def_version, units, boundary) "
                 "VALUES (1, ?, ?, ?, ?, ?)",
@@ -651,6 +830,7 @@ class Database:
                 "INSERT INTO port_extra VALUES (?, ?, ?)",
                 [(i, k, e) for i, p in enumerate(d.ports, start=1)
                  for k, e in enumerate(p.extra, start=1)])
+        return both
 
     def site_rows_of(self, site) -> bool:
         return bool(site) and self.conn.execute("SELECT 1 FROM site_row WHERE site = ?",
@@ -691,6 +871,11 @@ class Database:
 
     def port_row(self, name: str):
         return self.conn.execute("SELECT * FROM port WHERE name = ?", (name,)).fetchone()
+
+    def port_of_net(self, net: str):
+        """A port whose net this is (its DEF net, else its own name), or None."""
+        return self.conn.execute("SELECT * FROM port WHERE COALESCE(NULLIF(net, ''), name) = ? "
+                                 "ORDER BY id", (net,)).fetchone()
 
     def port_shape_rows(self, port_id: int):
         return self.conn.execute("SELECT * FROM port_shape WHERE port_id = ? ORDER BY seq",
@@ -808,6 +993,32 @@ class Database:
                                   "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                                   [(sid,) + tuple(n) for n in nets])
 
+    def add_net_buffers(self, insts, members, nets, cut, moved, links=()):
+        """Buffers put on nets (add_buffer_on_net), atomically. insts as for
+        add_spine. On the nets of built spines: members and nets (the nets the
+        buffers drive) too, each with its spine id first; cut [(spine_net id,
+        loads, length, route, ref_route)]: the nets given, which now end at
+        their first buffers; moved [(connection id, net, driver)]: the
+        connect_pin loads that are behind a buffer now. On the nets of no
+        spine: links [(inst, pin, net, driver)], the connection of the input
+        of each buffer and of each load behind one."""
+        with self.conn:
+            self.conn.executemany("INSERT INTO inst (name, ref_cell, x, y, orient, status) "
+                                  "VALUES (?, ?, ?, ?, ?, 'placed')", insts)
+            self.conn.executemany("INSERT INTO spine_member VALUES (?, ?, ?, ?, ?, ?, ?)", members)
+            self.conn.executemany("INSERT INTO spine_net (spine_id, name, driver, loads, grp, "
+                                  "length, detour, route, ref_route) "
+                                  "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", nets)
+            self.conn.executemany("UPDATE spine_net SET loads = ?, length = ?, detour = 0, "
+                                  "route = ?, ref_route = ? WHERE id = ?",
+                                  [tuple(c[1:]) + (c[0],) for c in cut])
+            self.conn.executemany("UPDATE connection SET net = ?, driver = ? WHERE id = ?",
+                                  [(net, driver, k) for k, net, driver in moved])
+            self.conn.executemany("DELETE FROM connection WHERE inst = ? AND pin = ?",
+                                  [link[:2] for link in links])
+            self.conn.executemany("INSERT INTO connection (inst, pin, net, driver) "
+                                  "VALUES (?, ?, ?, ?)", links)
+
     def spine_names(self):
         return [r[0] for r in self.conn.execute("SELECT name FROM spine ORDER BY id")]
 
@@ -825,6 +1036,10 @@ class Database:
     def spine_net_rows(self, spine_id: int):
         return self.conn.execute("SELECT * FROM spine_net WHERE spine_id = ? ORDER BY id",
                                  (spine_id,)).fetchall()
+
+    def connection_rows(self):
+        """The connections made by hand (connect_pin), oldest first."""
+        return self.conn.execute("SELECT * FROM connection ORDER BY id").fetchall()
 
     def move_insts(self, names, dx: float, dy: float, pin_routes=False):
         """Move instances by (dx, dy) microns; with pin_routes, their route_pin
@@ -1018,6 +1233,28 @@ class Database:
         with self.conn:
             self.conn.execute(f"UPDATE {table} SET rect = ? WHERE id = ?", (rect, row_id))
 
+    def delete_wires(self, items):
+        """Remove route shapes [(table, row id)] (delete_wire)."""
+        with self.conn:
+            for table, row_id in items:
+                assert table in ("net_wire", "strap", "pin_wire")
+                self.conn.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
+
+    def restore_wires(self, rows):
+        """Put route shapes [(table, row as a dict)] back as they were, row
+        ids included, so they keep their place in the table's order
+        (delete_wire -undo)."""
+        with self.conn:
+            for table, row in rows:
+                assert table in ("net_wire", "strap", "pin_wire")
+                self.conn.execute(f"INSERT INTO {table} ({', '.join(row)}) "
+                                  f"VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+
+    def wire_id_used(self, table: str, row_id: int) -> bool:
+        assert table in ("net_wire", "strap", "pin_wire")
+        return self.conn.execute(f"SELECT 1 FROM {table} WHERE id = ?",
+                                 (row_id,)).fetchone() is not None
+
     def net_wire_row(self, net: str, seq: int):
         return self.conn.execute("SELECT * FROM net_wire WHERE net = ? AND seq = ?",
                                  (net, seq)).fetchone()
@@ -1068,22 +1305,35 @@ class Database:
             dst.close()
 
     def read(self, path: str):
-        """Replace the in-memory database with the file at path."""
+        """Replace the in-memory database with the file at path. Returns the
+        schema version of the file (20, 21: upgraded here; the tables it did
+        not have are empty)."""
         src = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
         try:
             try:
                 row = src.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
             except sqlite3.DatabaseError as exc:
                 raise SchemaMismatch(f"not an htree database ({exc})")
-            if row is None or row[0] != str(SCHEMA_VERSION):
-                found = row[0] if row else "none"
+            found = row[0] if row else "none"
+            if found not in (str(SCHEMA_VERSION), "21", "20"):
                 raise SchemaMismatch(f"schema version {found}, expected {SCHEMA_VERSION}")
             conn = self._new_memory()
             src.backup(conn)
         finally:
             src.close()
+        if found != str(SCHEMA_VERSION):      # the same data, without the newer tables
+            with conn:
+                if found == "20":
+                    conn.executescript(VIA_SCHEMA)
+                conn.executescript(CONNECTION_SCHEMA)
+                conn.execute("UPDATE meta SET value = ? WHERE key = 'schema_version'",
+                             (str(SCHEMA_VERSION),))
         self.conn.close()
         self.conn = conn
+        self.deleted_wires.clear()            # wires of the old database
+        self.via_stamp = None
+        self.netlist = None
+        return found
 
 
 def _via_prefixes(insts):

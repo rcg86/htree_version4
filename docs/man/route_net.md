@@ -1,5 +1,5 @@
 NAME
-    route_net - route spine nets on the tracks of a route rule, from the
+    route_net - route nets on the tracks of a route rule, from the
     driver's output pin to every load's input pin or stub
 
 SYNOPSIS
@@ -37,7 +37,8 @@ DESCRIPTION
          most the strap's max_extension (max_strap_extension in the pin
          routing spec, default 3 um) and must keep the strap layer's tech
          spacing to other nets' shapes; a side that cannot is left
-         unextended and the report says why (no track, too far, blocked).
+         unextended and the report says why (no track, too far, blocked,
+         outside the design boundary).
          The extensions are stored with the net (kind extension, on the
          strap layer); the strap keeps its size.
       b. The route only reaches the pin routes: a vertical wire across the
@@ -47,8 +48,40 @@ DESCRIPTION
       - route_pin not done: a warning (HT4-172), and the route ends at the
         track crossing nearest the pin centre, on either layer, not
         connected.
-    A leaf net's load is its stub: the route ends at the track crossing
-    nearest the stub's tap. The stub itself is not routed.
+    A leaf net's load is its stub: the route ends at the stub's tap (half
+    way along the stub, bends included), on the track route_final_stub
+    gives the stub. That is the track the stubs of the spine on one
+    centre line share, which need not be the one nearest this stub (see
+    'man route_final_stub'); route_net works it out the same way, once a
+    run, from the shapes as they are when the first leaf net of the spine
+    is routed. The stub itself is not routed, and its track is not kept
+    free for it: a net routed later may take it, and route_final_stub
+    then moves the stubs (HT4-192 there for a leaf route that ends short).
+    When the stub is routed already (route_final_stub), the route ends on
+    its wire, at the track crossing nearest the point of the wire nearest
+    the tap.
+
+    Nets of no spine. -net also takes a net that is no spine's (net:<name>;
+    get_db pin:<inst>/<pin> .net gives it): the net of an input port of
+    the design, or one connect_pin or add_buffer_on_net made. It needs
+    one driver (the port, or an output pin) and one or more input pins
+    of instances on it: a net without is left as it is (HT4-265; without
+    a message when it only matched a pattern). The ends are the pins on
+    the net, whichever pin of its cell each is, with their pin routes as
+    above (steps a and b). The pins of spine cells are pins as any
+    other: the net of a port on the input of the root of a spine is
+    routed to that pin.
+    A port has no pin route. The route ends at the track crossing
+    nearest the centre of the port's shapes that is inside the boundary.
+    It is connected to the port only where a wire of the route lies on a
+    shape of the port, on the layer of that shape; the report then says
+    'connected on <layer>'. A port on a layer below the rule's, or beside
+    the tracks, is not connected (HT4-266): no wire and no via is made
+    down to a port.
+    A spine net is routed to the loads of the spine net as before
+    (get_db spine_net:... .loads): a pin connect_pin put on a leaf's net,
+    or by a pin that is not the first input of its cell, is in the
+    netlist only.
 
     Overlap at layer changes. Each wire end is extended by half the width
     of the other layer, so where a horizontal and a vertical wire meet they
@@ -61,6 +94,30 @@ DESCRIPTION
     would come closer than the rule spacing to a route_pin strap or pin
     wire on that layer, or to a wire of another routed net. Crossings
     between grid points are not checked.
+
+    Design boundary. The boundary (DEF DIEAREA) is a hard limit: nothing
+    route_net stores lies outside it. A wire on the boundary line is
+    inside; no clearance to the boundary is kept.
+      - A track crossing is part of the grid only when its box (vertical
+        width x horizontal width) is inside the boundary, and a step along
+        a track is taken only when the whole wire of that step is: the
+        route goes round a notch or a corner of the boundary, also a
+        longer way with more layer changes, never across it.
+      - A pin route (step a) is not extended to a track where the
+        extension would leave the boundary. At a strap the route ends on
+        a crossing whose wire over the whole strap is inside; when the
+        track nearest the strap centre has none, the track on the other
+        side of the centre is taken.
+      - At a stub or an unrouted pin the route ends on the nearest of the
+        crossings round the point that is inside.
+      - A pin or stub with no such crossing is outside the boundary: its
+        net is not routed (HT4-178). When the only way to a load leaves
+        the boundary, that load is not routed (HT4-174, "no path inside
+        the design boundary").
+      - Shields are cut where they would leave the boundary (the report
+        gives the length), and a power strap is not extended across it.
+    The boundary must be rectilinear (HT4-179 otherwise). A design with no
+    boundary (no DIEAREA) is routed without this limit.
 
     Shields (-shield). After a net is routed, each of its wires (the main
     route) at least ignore_shield_less_than_routing_length long (root
@@ -86,8 +143,9 @@ DESCRIPTION
     route_pin straps and pin wires, other nets' wires and shields of the
     other power net (shapes of its own power net may touch it), the
     net's own wires (at a jog) and the other shield; pieces shorter than
-    the width are dropped. The report gives each shield net's length and
-    how much was cut. Shields are stored with the signal net (kind
+    the width are dropped. It is also cut where it would leave the design
+    boundary. The report gives each shield net's length and how much was
+    cut, for either reason. Shields are stored with the signal net (kind
     shield, .shield_net VDD_SOC or VSS), replaced when the net is routed
     again, drawn labelled with their power net, and written by write_def
     under SPECIALNETS as + SHIELD <signal net> wiring, with + SHIELDNET on
@@ -104,9 +162,10 @@ DESCRIPTION
     shortest way. With one shield per net, a cell's two VDD_SOC straps both
     join the VDD_SOC shield, and its two VSS straps the VSS shield. An
     extension must keep the rule spacing to shapes of other nets on the
-    strap layer. A strap another routed net has already joined (a cell is
-    on two nets: its input and its output) is left as it is and reported
-    as already joined. Extensions are stored with the net (kind
+    strap layer and stay inside the design boundary. A strap another
+    routed net has already joined (a cell is on two nets: its input and
+    its output) is left as it is and reported as already joined.
+    Extensions are stored with the net (kind
     shield_ext, .shield_net VDD_SOC / VSS), with a crossing box where strap
     and shield meet, and written by write_def as stripes of the power net.
     At the end the report says how many power pins of the nets' cells are
@@ -127,13 +186,17 @@ DESCRIPTION
     stay (route_final_stub's). The
     net's .route_rule is set to -rule. Wires and boxes are drawn in the
     GUI under "Routes (route_pin, route_net)": wires in their layer colour,
-    crossing boxes as white outlines. write_db saves them.
+    crossing boxes as white outlines. The via of a crossing box is drawn
+    under "Vias", with the via_<bottom>_<top> row of the layer list
+    (via_IA_IB). write_db saves them.
 
 OPTIONS
     -net <nets>
-        Spine net names, glob patterns (*temp_L7*), or spine_net: handles,
-        as a Tcl list: [get_db nets], [get_db nets .name] and
+        Net names, glob patterns (*temp_L7*), or spine_net: and net:
+        handles, as a Tcl list: [get_db nets], [get_db nets .name] and
         {temp_L1_inv1_Y temp_L2*} all work. Every word must match a net.
+        A pattern takes the spine nets, and the nets of no spine that can
+        be routed.
         get_db nets also lists the final stubs (stubs are nets); route_net
         leaves them to route_final_stub and says which it left. Required.
     -rule <route_rule>
@@ -158,12 +221,17 @@ OBJECTS AND ATTRIBUTES
         shield_ext),
         shield_net (a shield's power net), layer (a cross: "<layer>/<layer>"), rect
         ("x1 y1 x2 y2"), width and length (a wire: across and along it;
-        a cross: x and y size), net (spine_net handle)
-    spine_net:<spine>/<net> .net_wires lists one net's; get_db net_wires
-    lists all.
+        a cross: x and y size), net (spine_net or net handle)
+    spine_net:<spine>/<net> .net_wires and net:<name> .net_wires list
+    one net's; get_db net_wires lists all.
+    via:<net>/<n>
+        each crossing box is also a via object, one per cut layer between
+        its two layers: spine_net:<spine>/<net> .vias, net:<name> .vias,
+        get_db vias. See 'man assign_via_for_route'.
 
 RETURN VALUE
-    The handles of the nets that were routed.
+    The handles of the nets that were routed (spine_net:<spine>/<net>,
+    net:<name>).
 
 EXAMPLES
     htree> create_route_rule -name r1 -layer IA -width 0.36
@@ -176,27 +244,41 @@ EXAMPLES
         driver v_L1_inv1/Y (strap 5): connected across the strap (strap extended 0.128 right) at {5624.28 10074.6}
         load v_L2_inv1/A (strap 3): connected across the strap at {5624.28 11104.2}
     htree> route_net -net [get_db nets *L7*] -rule r1 -via_weight 10
+    htree> connect_pin -from clk -to buf1/A
+    htree> route_pin -inst buf1
+    htree> route_net -net [get_db pin:buf1/A .net] -rule r1
+    net:clk_in
 
 ERRORS
     HT4-001  missing -net or -rule, a bad -via_weight, or -shield_nets
              not two nets
     HT4-025  no tech data loaded (read_tech)
-    HT4-170  no spine net matches a -net word, or a cell has no signal
-             input or output pin
+    HT4-170  no net matches a -net word, or a cell has no signal input
+             or output pin
     HT4-171  no such rule, 'default', or a rule without a horizontal and
              a vertical layer
     HT4-172  WARN: route_pin not done on a driver or load: the route ends
              near the pin, not connected
     HT4-173  WARN: the net's old wires were replaced
-    HT4-174  WARN: a terminal cannot be reached (blocked); the net is
-             routed without it, or not at all
+    HT4-174  WARN: a terminal cannot be reached (blocked, or no path
+             inside the design boundary); the net is routed without it,
+             or not at all
     HT4-176  WARN: a pin or stub is beyond the signal tracks (outside the
              die): its end is taken from the last track
     HT4-177  WARN: power pins whose strap reaches no shield of its net,
              or no shield beside a wire whose next track is not a power
              track
+    HT4-178  WARN: a pin or stub is outside the design boundary (no track
+             crossing at it holds a wire inside); the net is not routed
+    HT4-179  the design boundary has a slanted edge: routes are kept
+             inside a rectilinear boundary only
     HT4-175  a rule layer has no DEF tracks in its direction, or its track
              assignment leaves no signal track
+    HT4-265  WARN: a net of no spine is not routed: no driver, more than
+             one, no input pin on it, or its port has no shapes and no
+             location
+    HT4-266  WARN: the route of a port's net ends near the port, not
+             connected to it
 
 SEE ALSO
     create_route_rule, route_pin, assign_track_for_route, create_spine,

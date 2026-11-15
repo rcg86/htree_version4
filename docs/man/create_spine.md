@@ -146,7 +146,7 @@ OBJECTS AND ATTRIBUTES
         spine's), net
         (the leaf's spine_net, which drives it), route_rule (set_db; kept
         per stub), net_wires (its route_final_stub wire and crossings),
-        spine
+        vias (the vias of its leaf net on its wire), spine
     spine_net:<spine>/<net>
         obj_type, name (<driver inst>_Y), driver (inst), loads (inst names
         or the stub), group (L1-L2, ...), length, detour, route (one

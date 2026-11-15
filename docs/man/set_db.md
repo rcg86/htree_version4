@@ -13,7 +13,8 @@ DESCRIPTION
     if one check fails, nothing is changed.
 
     Settable attributes:
-      spine_net .route_rule   the route rule the net is routed with: a
+      spine_net .route_rule, net .route_rule
+                              the route rule the net is routed with: a
                               rule name or handle from create_route_rule,
                               or 'default' to go back to the built-in
                               rule (tech minimum width and its spacing on

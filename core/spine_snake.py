@@ -168,7 +168,14 @@ class Snake:
         cell = db.lib_cell_row(spine["ref_cell"]) if spine["ref_cell"] else None
         self.cell = (cell["size_x"], cell["size_y"]) if cell is not None and \
             cell["size_x"] is not None else (0.0, 0.0)
-        half = max(self.cell) / 2
+        self.sizes = {}                  # inst: (w, h) of a cell that is not the spine's
+        for inst, _, _ in self.members:  # (add_buffer_on_net -ref_cell)
+            row = db.inst_row(inst)
+            other = db.lib_cell_row(row["ref_cell"]) if row is not None and \
+                row["ref_cell"] != spine["ref_cell"] else None
+            if other is not None and other["size_x"] is not None:
+                self.sizes[inst] = (other["size_x"], other["size_y"])
+        half = max(max(size) for size in [self.cell, *self.sizes.values()]) / 2
         offsets = [c - self.across for _, _, c in self.members]
         self.width = (min(0.0, min(offsets) - half), max(0.0, max(offsets) + half))
 
@@ -289,6 +296,10 @@ class Snake:
             return False
         self.pts, self.start, self.head, self.moves, self._backed = self._undo.pop()
         return True
+
+    def undoable(self):
+        """How many moves and head changes undo() can take back."""
+        return len(self._undo)
 
     def _state(self):
         return list(self.pts), self.start, self.head, list(self.moves), self._backed
@@ -470,6 +481,18 @@ class Snake:
         line = Line(self.body())
         return [(inst,) + self._place(line, a, c) for inst, a, c in self.members]
 
+    def boxes(self):
+        """[(inst, x1, y1, x2, y2)]: the cells on the path as it is."""
+        found = []
+        for n, x, y in self.cells():
+            w, h = self.sizes.get(n, self.cell)
+            found.append((n, x - w / 2, y - h / 2, x + w / 2, y + h / 2))
+        return found
+
+    def place(self, along, across):
+        """(x, y) on the path as it is of a point of the straight spine."""
+        return self._place(Line(self.body()), along, across)
+
     def stub_lines(self):
         """[(row id, name, points)]: each stub along the path."""
         line = Line(self.body())
@@ -477,18 +500,19 @@ class Snake:
 
     def net_lines(self):
         """[(row id, name, [(x1, y1, x2, y2)])]: the net centre lines."""
+        return [(k, name, [a + b for seg in segs for a, b in self.seg_lines(seg)])
+                for k, name, segs in self.nets]
+
+    def seg_lines(self, seg):
+        """[((x1, y1), (x2, y2))] on the path as it is of one centre line
+        (along, across, along, across) of the straight spine."""
         line = Line(self.body())
-        found = []
-        for k, name, segs in self.nets:
-            lines = []
-            for a1, c1, a2, c2 in segs:
-                if abs(c1 - c2) < TOL:           # along the spine: follows the path
-                    pts = self._run(line, a1, a2, c1)
-                else:                            # across it: one straight line
-                    pts = [self._place(line, a1, c1), self._place(line, a2, c2)]
-                lines += [a + b for a, b in zip(pts, pts[1:]) if a != b]
-            found.append((k, name, lines))
-        return found
+        a1, c1, a2, c2 = seg
+        if abs(c1 - c2) < TOL:                   # along the spine: follows the path
+            pts = self._run(line, a1, a2, c1)
+        else:                                    # across it: one straight line
+            pts = [self._place(line, a1, c1), self._place(line, a2, c2)]
+        return [(a, b) for a, b in zip(pts, pts[1:]) if a != b]
 
     def axis_of(self, inst):
         """x or y: the way the path runs where this cell sits."""
@@ -499,8 +523,7 @@ class Snake:
     def cell_overlaps(self):
         """Pairs of the spine's cells that overlap on the path as it is (in
         the inside of a bend, where the columns of the two stretches meet)."""
-        w, h = self.cell
-        boxes = [(n, x - w / 2, y - h / 2, x + w / 2, y + h / 2) for n, x, y in self.cells()]
+        boxes = self.boxes()
         return [(a[0], b[0]) for i, a in enumerate(boxes) for b in boxes[i + 1:]
                 if a[1] < b[3] - TOL and b[1] < a[3] - TOL and a[2] < b[4] - TOL
                 and b[2] < a[4] - TOL]
@@ -520,8 +543,7 @@ class Snake:
         routing goes (Database.set_spine_shape). Returns what was removed."""
         line = Line(self.body())
         snap = lambda v: round(round(v / self.grid) * self.grid, 6)
-        w, h = self.cell
-        insts = [(n, snap(x - w / 2), snap(y - h / 2)) for n, x, y in self.cells()]
+        insts = [(n, snap(x1), snap(y1)) for n, x1, y1, _, _ in self.boxes()]
         text = lambda pts: " ".join(_num(c) for p in pts for c in p)
         stubs = [(k, text(pts)) for k, _, pts in self.stub_lines()]
         nets = [(k, ";".join(" ".join(_num(c) for c in seg) for seg in segs))

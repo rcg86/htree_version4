@@ -20,6 +20,7 @@ them, move_obj moves them with their instance, write_def writes them as
 stripes of the power net.
 """
 
+from core import netlist
 from core.commands.route_net import _gap, _ia_shapes, strap_spacing
 from core.db import _num
 from core.messages import HtreeError, info, warn
@@ -56,8 +57,7 @@ def run(session, argv):
     except HtreeError as exc:
         raise HtreeError(NO_INST, str(exc).replace("route_pin:", "optimize_pg_connection:"))
     out = session.out
-    signal = {r["name"] for s in db.spine_names()
-              for r in db.spine_net_rows(db.spine_row(s)["id"])} | {"SIGNAL"}
+    signal = netlist.signal_nets(db) | {"SIGNAL"}
     total_new, total_straps, done = 0, 0, []
     for name in names:
         db.set_net_wires(f"pg:{name}", [])          # this command's earlier pieces go

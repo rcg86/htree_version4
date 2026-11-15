@@ -449,13 +449,19 @@ def test_bent_stubs_in_the_gui_data_and_the_routers(spine):
     assert stubs[2][1] == pytest.approx([78.64, 30.6, 78.64, 39.84])
     from core.commands.route_net import _stub_terminal
     stub = s.db.spine_stub_rows(s.db.spine_row("sp")["id"])[1]
-    assert _stub_terminal(stub).point == pytest.approx((78.38, 30.6))
+    assert _stub_terminal(s.db, stub).point == pytest.approx((78.38, 30.6))
     s.eval("create_route_rule -name r -layer {IA IB} -width 0.36 -spacing 0.36")
     out_of(s)
     s.eval("route_final_stub -rule r")
-    text = out_of(s)
-    assert "HT4-193" in text and "sp/stub2" in text   # over the bend: not routed yet
+    assert "2 of 2 stubs routed" in out_of(s)
     wires = [r for r in s.db.net_wire_rows() if r["kind"] == "stub"]
-    assert [r["layer"] for r in wires] == ["IA"]      # stub1 lies flat now: on IA
+    # stub1 lies flat now: on IA; stub2, over the bend: a wire a piece (test_route_bent_stub)
+    assert [r["layer"] for r in wires] == ["IA", "IA", "IB"]
     x1, y1, x2, y2 = _floats(wires[0]["rect"])
     assert (x1, x2) == pytest.approx((47.88, 66.88)) and y2 - y1 == pytest.approx(0.36)
+    # routed: its leaf's route_net ends on the wire, at the point nearest the tap
+    assert _stub_terminal(s.db, stub, "sp_L3_inv2_Y").point == pytest.approx((78.38, 30.6))
+    s.db.set_net_wires("sp_L3_inv2_Y", [("stub", "IA", "68.88 33.3 79.74 33.66"),
+                                        ("stub", "IB", "79.38 33.3 79.74 39.84")], stub=True)
+    term = _stub_terminal(s.db, stub, "sp_L3_inv2_Y")
+    assert term.point == pytest.approx((78.38, 33.48)) and term.routed

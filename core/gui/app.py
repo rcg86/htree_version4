@@ -55,8 +55,8 @@ def show(session):
         close()                               # a new session gets a new window
     if _window is None:
         _window = MainWindow(session)
+        _window.refresh()                     # before the hook: see _refresh_if_changed
         session.after_command.append(_refresh_if_changed(session))
-        _window.refresh()
     _window.show()
     _window.raise_()
     _window.activateWindow()
@@ -85,11 +85,12 @@ def _refresh_if_changed(session):
     state = {"key": _db_key(session), "sel": list(session.db.selection)}
 
     def hook():
-        key = _db_key(session)
-        if key != state["key"]:
-            state["key"] = key
+        if _db_key(session) != state["key"]:
             if _window is not None:
                 _window.refresh()                # also re-applies the selection
+            # After it: the reload brings the via table in step with the routing
+            # (core/vias.py), a change of the database that needs no reload.
+            state["key"] = _db_key(session)
         elif session.db.selection != state["sel"] and _window is not None:
             _window.show_selection()
         state["sel"] = list(session.db.selection)

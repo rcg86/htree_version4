@@ -10,8 +10,8 @@ def comp(session, line):
 
 
 def test_command_names(session):
-    assert comp(session, "get") == ["get_db "]
-    assert comp(session, "puts [get") == ["get_db "]
+    assert comp(session, "get") == ["get_db ", "get_obj_in_area "]
+    assert comp(session, "puts [get") == ["get_db ", "get_obj_in_area "]
     assert "read_tech " in comp(session, "")
 
 

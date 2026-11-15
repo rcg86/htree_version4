@@ -14,7 +14,13 @@ DESCRIPTION
         rows;
       - with the cell inside the row, at a whole number of the row's site
         steps from its origin;
-      - overlapping no other instance (abutting is fine).
+      - overlapping no other instance (abutting is fine);
+      - with the cell inside the design boundary (DEF DIEAREA). A row
+        can be lower than the cell (a cell that is several rows tall), so
+        a cell in a row at the edge of the die may reach across the
+        edge: a free site where it does not is taken before a nearer
+        one where it does. With no such site near enough the nearest
+        free site is taken.
     The nearest is by x + y distance, at most one cell width + height from
     where the instance is: a legalization, not a re-placement. An instance
     with no free site within that stays where it is (warning HT4-212), for

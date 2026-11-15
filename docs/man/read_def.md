@@ -24,7 +24,17 @@ DESCRIPTION
                 and STEP: the placement sites (move_obj -legal snaps
                 instances to them)
 
-    Every other section and statement (GCELLGRID, VIAS,
+      VIAS      every via: its RECT and POLYGON shapes with MASK, or
+                the shapes generated from its VIARULE parameters (CUTSIZE,
+                LAYERS, CUTSPACING, ENCLOSURE, ROWCOL, ORIGIN, OFFSET; a
+                cut PATTERN is kept in .extra and not applied, HT4-097).
+                They are via definitions (get_db via_defs, source def)
+                beside those of the tech LEF; a DEF via replaces a LEF
+                via of the same name (HT4-096; read_tech again to have
+                the LEF's back after a DEF without it). See 'man
+                assign_via_for_route'
+
+    Every other section and statement (GCELLGRID,
     COMPONENTS, NETS, SPECIALNETS, BLOCKAGES, PINPROPERTIES, ...) is
     skipped without being stored, and listed with its count in the
     summary. The file is read line by line; '.def.gz' files are read
@@ -110,7 +120,8 @@ EXAMPLES
       Tracks      : 56 patterns on 19 layers (IB IA G2 G1 H2 H1 D12 D11 ... M1)
       Tracks tech : IB IA G2 G1 H2 H1 D12
       Rows        : 167043 (ln04lpp_sc_s7p94t_c60)
-      Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) VIAS PINPROPERTIES BLOCKAGES
+      Vias        : 2 (via_a via_b)
+      Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) PINPROPERTIES BLOCKAGES
       Pin layers  : D6(2084) D8(16404) D12(17251) ...
       In tech     : D12 G1 H1 G2 H2
     **WARN: (HT4-093): 62522 pin shape(s) on layers not in tech: D6 D8 D9 D11 D7 D10. They are kept but ignored in calculations
@@ -123,6 +134,8 @@ ERRORS
     HT4-093  WARN: pin shapes on layers not in tech (kept, ignored in
              calculations)
     HT4-094  WARN: no tech data loaded, pin layers not checked
+    HT4-096  WARN: a via of the DEF replaced the tech LEF via of its name
+    HT4-097  WARN: the cut PATTERN of generated vias is not applied
     HT4-095  WARN: no DIEAREA, the design has no boundary
     HT4-028  (get_db) no design loaded; run read_def first
 

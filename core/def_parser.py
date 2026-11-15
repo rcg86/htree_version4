@@ -1,8 +1,8 @@
-"""DEF reader for the design boundary and pins. Pure: reads a file, returns
-dataclasses, never touches the db.
+"""DEF reader for the design boundary, pins and via definitions. Pure: reads a
+file, returns dataclasses, never touches the db.
 
 Only the header (VERSION, DESIGN, UNITS, DIVIDERCHAR, BUSBITCHARS), DIEAREA,
-ROW, TRACKS and PINS are read. Every other section and statement
+ROW, TRACKS, VIAS and PINS are read. Every other section and statement
 (GCELLGRID, COMPONENTS, NETS, ...) is skipped and counted. The file is read line by line,
 so a large floorplan DEF is never held as one token list. '.gz' files are
 read directly.
@@ -18,8 +18,10 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
-# Statements that open a section closed by "END <keyword>".
-SECTIONS = {"PROPERTYDEFINITIONS", "VIAS", "STYLES", "NONDEFAULTRULES", "REGIONS",
+from core.lef import VIA_PARAMETERS, Shape, ViaDef, generated_via_shapes
+
+# Statements that open a section closed by "END <keyword>" and are skipped.
+SECTIONS = {"PROPERTYDEFINITIONS", "STYLES", "NONDEFAULTRULES", "REGIONS",
             "COMPONENTMASKSHIFT", "COMPONENTS", "PINPROPERTIES", "BLOCKAGES", "SLOTS",
             "FILLS", "SPECIALNETS", "NETS", "SCANCHAINS", "GROUPS", "BEGINEXT"}
 # COMPONENTMASKSHIFT is a single statement, not a section.
@@ -109,6 +111,8 @@ class DefDesign:
     ports: List[Port] = field(default_factory=list)
     tracks: List[TrackPattern] = field(default_factory=list)
     rows: List[SiteRow] = field(default_factory=list)
+    vias: List[ViaDef] = field(default_factory=list)       # shapes in microns
+    via_patterns: List[str] = field(default_factory=list)  # vias whose PATTERN is not applied
     skipped: Counter = field(default_factory=Counter)      # keyword -> count
 
 
@@ -145,6 +149,8 @@ class _Parser:
                 break
             if key == "PINS":
                 self.pins(it)
+            elif key == "VIAS":
+                self.vias(it)
             elif key == "ROW":
                 start = self.lineno
                 self.design.rows.append(self.row(_tokens(self.statement(raw, it)), start))
@@ -292,10 +298,12 @@ class _Parser:
                 row.step_x, row.step_y = self.int(w[10], line) / u, self.int(w[11], line) / u
         return row
 
-    # -- PINS ------------------------------------------------------------------
-    def pins(self, it):
+    # -- PINS, VIAS ------------------------------------------------------------
+    def entries(self, it, section, what):
+        """(text, first line) of each '- <name> ... ;' entry of a section, up
+        to its 'END <section>'."""
         if self.design.units is None:
-            self.error("PINS before UNITS DISTANCE MICRONS")
+            self.error(f"{section} before UNITS DISTANCE MICRONS")
         start = self.lineno
         buf, first = "", 0
         for raw in it:
@@ -304,16 +312,95 @@ class _Parser:
                 if not stripped or stripped.startswith("#"):
                     continue
                 words = stripped.split()
-                if words[0] == "END" and len(words) > 1 and words[1].upper() == "PINS":
+                if words[0] == "END" and len(words) > 1 and words[1].upper() == section:
                     return
                 if not stripped.startswith("-"):
-                    self.error(f"expected '- <pin name>' in PINS, got '{stripped[:40]}'")
+                    self.error(f"expected '- <{what} name>' in {section}, "
+                               f"got '{stripped[:40]}'")
                 first = self.lineno
             buf += raw
             if _ends_statement(buf):
-                self.design.ports.append(self.pin(_tokens(buf), first))
+                yield buf, first
                 buf = ""
-        self.error("PINS section has no 'END PINS'", start)
+        self.error(f"{section} section has no 'END {section}'", start)
+
+    def pins(self, it):
+        for text, first in self.entries(it, "PINS", "pin"):
+            self.design.ports.append(self.pin(_tokens(text), first))
+
+    def vias(self, it):
+        seen = {v.name for v in self.design.vias}
+        for text, first in self.entries(it, "VIAS", "via"):
+            via = self.via(_tokens(text), first, text)
+            if via.name in seen:
+                self.error(f"via '{via.name}' is defined twice in VIAS", first)
+            seen.add(via.name)
+            self.design.vias.append(via)
+
+    def via(self, toks, line, text) -> ViaDef:
+        """- name + RECT layer [+ MASK n] ( x y ) ( x y ) ... ; or POLYGON, or
+        the VIARULE parameters the shapes are generated from."""
+        if len(toks) < 2 or toks[0] != "-":
+            self.error("expected '- <via name>'", line)
+        via = ViaDef(name=toks[1], line=line, lef_text=text.strip())
+        u = self.design.units
+        params, shape = {}, None                # shape: (key, layer, mask) still without points
+        for g in _plus_groups(toks[2:-1] if toks[-1] == ";" else toks[2:]):
+            key, args = g[0].upper(), g[1:]
+            if shape is not None:               # '+ RECT layer' '+ MASK n ( x y ) ( x y )'
+                if key != "MASK" or not args:
+                    self.error(f"+ {shape[0]} {shape[1]} of via '{via.name}' has no points",
+                               line)
+                via.shapes.append(self.via_shape(shape[0], shape[1],
+                                                 self.int(args[0], line), args[1:], via, line))
+                shape = None
+            elif key in ("RECT", "POLYGON"):
+                if not args:
+                    self.error(f"+ {key} of via '{via.name}' needs a layer name", line)
+                if len(args) == 1:
+                    shape = (key, args[0], None)
+                else:
+                    via.shapes.append(self.via_shape(key, args[0], None, args[1:], via, line))
+            elif key == "VIARULE" and len(args) == 1:
+                via.via_rule = args[0]
+            elif key == "LAYERS" and len(args) == 3:
+                params["layers"] = args
+            elif key == "ROWCOL" and len(args) == 2:
+                params["rowcol"] = [self.int(a, line) for a in args]
+            elif key in VIA_PARAMETERS and len(args) == VIA_PARAMETERS[key]:
+                params[key.lower()] = [self.int(a, line) / u for a in args]
+            else:
+                if key == "PATTERN":
+                    self.design.via_patterns.append(via.name)
+                via.extra.append("+ " + " ".join(g))
+        if shape is not None:
+            self.error(f"+ {shape[0]} {shape[1]} of via '{via.name}' has no points", line)
+        if via.via_rule is not None:
+            missing = [k for k in ("layers", "cutsize", "cutspacing", "enclosure")
+                       if k not in params]
+            if missing:
+                self.error(f"via '{via.name}' names VIARULE {via.via_rule} but has no "
+                           f"{' '.join(k.upper() for k in missing)}", line)
+            via.shapes = generated_via_shapes(**params)
+        elif not via.shapes:
+            self.error(f"via '{via.name}' has no shapes", line)
+        return via
+
+    def via_shape(self, key, layer, mask, words, via, line) -> Shape:
+        pts = self.points(words, line)
+        if len(pts) * 4 != len(words):
+            self.error(f"unexpected text after the points of + {key} {layer} "
+                       f"of via '{via.name}'", line)
+        if key == "RECT":
+            if len(pts) != 2:
+                self.error(f"+ RECT {layer} of via '{via.name}' needs 2 points, "
+                           f"got {len(pts)}", line)
+            (x1, y1), (x2, y2) = pts            # store lower left, upper right
+            pts = [(min(x1, x2), min(y1, y2)), (max(x1, x2), max(y1, y2))]
+        elif len(pts) < 3:
+            self.error(f"+ POLYGON {layer} of via '{via.name}' needs 3 or more points, "
+                       f"got {len(pts)}", line)
+        return Shape(layer, key.lower(), [c for p in pts for c in self.um(p)], mask)
 
     def pin(self, toks, line) -> Port:
         if len(toks) < 2 or toks[0] != "-":

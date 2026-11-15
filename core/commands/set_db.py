@@ -62,6 +62,7 @@ def _set_inst_status(db, handle, status):
 
 # (object type, attr) -> (value check returning the stored value, setter)
 SETTABLE = {("spine_net", "route_rule"): (_route_rule_value, _set_net_route_rule),
+            ("net", "route_rule"): (_route_rule_value, _set_net_route_rule),
             ("stub", "route_rule"): (_route_rule_value, _set_net_route_rule),
             ("inst", "place_status"): (_place_status_value, _set_inst_status),
             ("inst", "status"): (_place_status_value, _set_inst_status)}

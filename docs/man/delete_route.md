@@ -12,7 +12,9 @@ DESCRIPTION
 
       - A stub (get_db stubs): its route_final_stub wire and crossing
         boxes are removed. Its leaf net keeps its route.
-      - A spine net: what route_net made for it is removed: wires, strap
+      - A spine net, or a net of no spine (net:<name>: a port's,
+        connect_pin's, add_buffer_on_net's): what route_net made for it
+        is removed: wires, strap
         extensions, crossing boxes, shields and shield extensions. The
         route_pin straps and pin wires route_net had named after the net
         go back to SIGNAL, as they connect to nothing now (the straps keep
@@ -23,8 +25,8 @@ DESCRIPTION
 
 OPTIONS
     -nets <nets>
-        Net or stub names, glob patterns, spine_net: or stub: handles, as a
-        Tcl list: [get_db stubs], [get_db nets *L7*], {temp_L1_inv1_Y stub3}
+        Net or stub names, glob patterns, spine_net:, net: or stub:
+        handles, as a Tcl list: [get_db stubs], [get_db nets *L7*], {temp_L1_inv1_Y stub3}
         all work. A name matching both a net and a stub selects both.
         Every word must match one. Required.
     -help
@@ -46,4 +48,4 @@ ERRORS
     HT4-196  WARN: none of the nets had routing; nothing removed
 
 SEE ALSO
-    route_net, route_final_stub, get_db, write_def
+    route_net, route_final_stub, delete_wire, get_db, write_def

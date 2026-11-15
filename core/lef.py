@@ -2,8 +2,8 @@
 
 Nothing is dropped. Layer statements that are not modeled as columns go to
 Layer.extra verbatim; top-level statements and blocks that are not modeled go to
-the extras list verbatim; each layer and macro keeps its full original text in
-lef_text.
+the extras list verbatim; each layer, via and macro keeps its full original text
+in lef_text.
 """
 
 import re
@@ -16,6 +16,11 @@ NAMED_BLOCKS = {"VIA", "VIARULE", "SITE", "MACRO", "NONDEFAULTRULE", "ARRAY"}
 UNNAMED_BLOCKS = {"PROPERTYDEFINITIONS", "SPACING", "UNITS"}
 # LEF pin DIRECTION -> the value Cadence tools report.
 PIN_DIRECTIONS = {"input": "in", "output": "out", "inout": "inout", "feedthru": "feedthru"}
+
+
+# Number of values of each VIARULE parameter of a generated via (LEF VIA, DEF VIAS).
+VIA_PARAMETERS = {"CUTSIZE": 2, "CUTSPACING": 2, "ENCLOSURE": 4, "ROWCOL": 2, "ORIGIN": 2,
+                  "OFFSET": 4}
 
 
 class LefParseError(Exception):
@@ -56,21 +61,36 @@ class Extra:
 
 
 @dataclass
+class Shape:
+    layer: str
+    type: str                     # "rect" or "polygon"
+    points: List[float]           # rect: x1 y1 x2 y2; polygon: x y x y ...
+    mask: Optional[int] = None
+
+
+@dataclass
+class ViaDef:
+    """A via definition: a LEF VIA block or an entry of DEF VIAS. Shapes are
+    about the via's origin (microns). A via given by VIARULE parameters has
+    its shapes generated (generated_via_shapes) and keeps the rule's name."""
+    name: str
+    line: int
+    default: bool = False         # LEF: VIA <name> DEFAULT
+    shapes: List[Shape] = field(default_factory=list)
+    via_rule: Optional[str] = None
+    extra: List[str] = field(default_factory=list)
+    lef_text: str = ""
+
+
+@dataclass
 class TechLef:
     file: str
     lef_version: Optional[str] = None
     db_units: Optional[int] = None
     manufacturing_grid: Optional[float] = None
     layers: List[Layer] = field(default_factory=list)
+    vias: List[ViaDef] = field(default_factory=list)
     extras: List[Extra] = field(default_factory=list)
-
-
-@dataclass
-class Shape:
-    layer: str
-    type: str                     # "rect" or "polygon"
-    points: List[float]           # rect: x1 y1 x2 y2; polygon: x y x y ...
-    mask: Optional[int] = None
 
 
 @dataclass
@@ -208,6 +228,8 @@ class _Parser:
                     self.error(f"duplicate layer '{layer.name}'", layer.line)
                 names.add(layer.name)
                 tech.layers.append(layer)
+            elif key == "VIA":
+                tech.vias.append(self.via())
             elif key in NAMED_BLOCKS or key in UNNAMED_BLOCKS:
                 tech.extras.append(self.block(key))
             else:
@@ -333,9 +355,10 @@ class _Parser:
             else:
                 port.extra.append(" ".join(words) + " ;")
 
-    def shape(self, key: str, args: List[str], layer: Optional[str], line: int) -> Shape:
+    def shape(self, key: str, args: List[str], layer: Optional[str], line: int,
+              owner: str = "PORT") -> Shape:
         if layer is None:
-            self.error(f"{key} before any LAYER in PORT", line)
+            self.error(f"{key} before any LAYER in {owner}", line)
         mask = None
         if args and args[0].upper() == "MASK":
             if len(args) < 2:
@@ -393,6 +416,49 @@ class _Parser:
                 return Extra(key, first, self.raw(first, last))
         self.error(f"{key} block has no 'END {name}'", first)
 
+    def via(self) -> ViaDef:
+        """VIA <name> [DEFAULT] ... END <name>: LAYER / RECT / POLYGON shapes,
+        or the VIARULE parameters the shapes are generated from."""
+        _, first = self.next()  # VIA
+        name, _ = self.next()
+        via = ViaDef(name=name, line=first)
+        if (self.peek() or "").upper() in ("DEFAULT", "GENERATED"):
+            via.default = self.next()[0].upper() == "DEFAULT"
+        layer, params = None, {}
+        while True:
+            tok = self.peek()
+            if tok is None:
+                self.error(f"VIA {name} has no 'END {name}'", first)
+            if tok.upper() == "END":
+                self.next()
+                end, last = self.next()
+                if end != name:
+                    self.error(f"expected 'END {name}', got 'END {end}'", last)
+                via.lef_text = self.raw(first, last)
+                break
+            words, line, _ = self.statement()
+            key = words[0].upper() if words else ""
+            if key == "LAYER" and len(words) == 2:
+                layer = words[1]
+            elif key in ("RECT", "POLYGON"):
+                via.shapes.append(self.shape(key, words[1:], layer, line, "VIA"))
+            elif key == "VIARULE" and len(words) == 2:
+                via.via_rule = words[1]
+            elif key == "LAYERS" and len(words) == 4:
+                params["layers"] = words[1:]
+            elif key in VIA_PARAMETERS and len(words) == 1 + VIA_PARAMETERS[key]:
+                params[key.lower()] = [self.number(w, line) for w in words[1:]]
+            else:
+                via.extra.append(" ".join(words) + " ;")
+        if via.via_rule is not None:
+            missing = [k for k in ("layers", "cutsize", "cutspacing", "enclosure")
+                       if k not in params]
+            if missing:
+                self.error(f"VIA {name} names VIARULE {via.via_rule} but has no "
+                           f"{' '.join(k.upper() for k in missing)}", first)
+            via.shapes = generated_via_shapes(**params)
+        return via
+
     def layer(self) -> Layer:
         _, first = self.next()  # LAYER
         name, _ = self.next()
@@ -445,6 +511,35 @@ class _Parser:
                 layer.min_spacing = value
             return True
         return False
+
+
+def generated_via_shapes(layers, cutsize, cutspacing, enclosure, rowcol=(1, 1),
+                         origin=(0, 0), offset=(0, 0, 0, 0)) -> List[Shape]:
+    """The shapes of a via given by VIARULE parameters (LEF / DEF 5.8), in
+    microns: layers (bottom, cut, top); a rowcol (rows, columns) array of
+    cutsize cuts cutspacing apart, centred on origin; each metal the array
+    grown by its enclosure (x bottom, y bottom, x top, y top) and moved by
+    its offset. A PATTERN (cuts left out) is not applied: every cut is made."""
+    bottom, cut, top = layers
+    rows, cols = int(rowcol[0]), int(rowcol[1])
+    w = cols * cutsize[0] + (cols - 1) * cutspacing[0]
+    h = rows * cutsize[1] + (rows - 1) * cutspacing[1]
+    ox, oy = origin
+    r = lambda *v: [round(c, 6) for c in v]
+    shapes = [Shape(bottom, "rect", r(ox + offset[0] - w / 2 - enclosure[0],
+                                      oy + offset[1] - h / 2 - enclosure[1],
+                                      ox + offset[0] + w / 2 + enclosure[0],
+                                      oy + offset[1] + h / 2 + enclosure[1]))]
+    for j in range(rows):
+        for i in range(cols):
+            x = ox - w / 2 + i * (cutsize[0] + cutspacing[0])
+            y = oy - h / 2 + j * (cutsize[1] + cutspacing[1])
+            shapes.append(Shape(cut, "rect", r(x, y, x + cutsize[0], y + cutsize[1])))
+    shapes.append(Shape(top, "rect", r(ox + offset[2] - w / 2 - enclosure[2],
+                                       oy + offset[3] - h / 2 - enclosure[3],
+                                       ox + offset[2] + w / 2 + enclosure[2],
+                                       oy + offset[3] + h / 2 + enclosure[3])))
+    return shapes
 
 
 def parse_tech_lef(path: str) -> TechLef:

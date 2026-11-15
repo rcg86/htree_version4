@@ -1,0 +1,322 @@
+Spine clock tree generator (spinegen): design spec
+Date: 2026-10-31 Status: draft for review Audience: the engineer or coding agent who will plan and implement the tool. This document is self-contained; no other context is needed.
+
+1. Background
+A clock is distributed along a vertical spine by a tree of inverters (or buffers). The leaves of the tree each drive one vertical wire segment, a stub, at its midpoint. The stubs sit end to end along the spine with a small gap between them, so together they cover the whole spine length.
+
+Each driving cell can only drive a limited length of wire. Every root-to-stub path must also be equal in length and in number of stages, so that the clock arrives everywhere at the same time.
+
+Designing these trees by hand showed that:
+
+a plain binary tree always works but uses many cells (21 cells at 5000 µm);
+hand-made custom trees use fewer cells but easily break either the drive limit or path equality (a 13-cell custom tree at 5000 µm needs two drivers at about 1675 µm, over the 1020 µm limit, to keep paths equal).
+This tool finds the best-fit tree automatically, and also checks and places trees written by hand.
+
+2. Goals and non-goals
+Goals
+
+search mode: given a spine length and drive limit, find the structure with the fewest cells that meets every hard constraint (section 6), with cell positions.
+place mode: given a structure written by hand, compute its cell positions, or report exactly which constraints it cannot meet and by how much.
+Write the structure in the YAML format in section 9.1 (no coordinates), so it can be edited by hand and fed back into place.
+Verify every result with an independent checker.
+Non-goals (see also section 15)
+
+Timing, slew, cell sizing, routing layers. Wire length in µm stands in for drive strength; no timing analysis is done.
+Snapping coordinates to a placement grid.
+Adding dummy loads automatically.
+Spans needing more than about 16 stubs.
+3. Glossary
+Term	Meaning
+Spine	The vertical line along which the clock is distributed. Its length is the span.
+Stub	A vertical wire segment along the spine, driven at its midpoint by one leaf cell.
+Tap	The midpoint of a stub, where its leaf cell connects.
+Cell	An inverter or buffer in the tree.
+Stage / level	A cell's depth in the tree. The root is stage 1 (L1); the leaves are the last stage. In outputs, "level" always means stage.
+Load	A cell (or stub) driven by a cell. A dummy counts as a load.
+Fanout	Number of loads a cell drives.
+Leaf	A cell that drives a stub.
+Repeater	A cell with exactly one load.
+Dummy	A cell with no loads and no stub. Used by designers to balance load counts. Allowed in place input; never created by search.
+Net	The wire driven by one cell, reaching all its loads.
+Net wire	Length of a cell's net in µm (section 5). Must not exceed max_drive.
+Branch	The part of a net from the driver to one load.
+Detour	Extra (snaked) wire added to a branch to lengthen a short path. Counts toward net wire.
+Path length	Wire length from the root to a stub tap, along the tree.
+Shape	The tree's connectivity without positions (section 7.1).
+4. Inputs
+Inputs come from a parameters YAML file (example in section 9.2) for search, or from the parameter fields of a structure YAML for place.
+
+Field	Example	Required	Meaning
+span	5000	yes	Spine length, µm. Stubs fill it end to end.
+max_drive	1020	yes	Maximum net wire per cell, µm, stub included. Any value from 0 up to this is valid.
+gap	10	yes	Gap between adjacent stubs, µm.
+level_pitch_x	2.88	yes	X step per stage, µm.
+origin_x	10	yes	X of stage 1 (the root), µm.
+max_fanout	3	no	Maximum loads per cell: 2 or 3. Default 3. Any other value is an error.
+root_y	2500	no	Y of the root, µm. If omitted, the solver chooses it.
+max_stubs	8	no	Highest stub count to try. Default: smallest power of two ≥ N_min (section 5).
+max_cells	40	no	Cell cap for the search. Default 4 × stub count.
+time_limit_s	60	no	Search time limit, seconds. Default 60.
+Units are µm throughout. Coordinates are cell centers. Y = 0 is the bottom of the lowest stub, and Y increases upward.
+
+5. Geometry and wire model
+Let S = span, g = gap, h = level_pitch_x, D = max_drive.
+
+Stubs. For a stub count N (all stubs equal length):
+
+stub length: L = (S − (N − 1)·g) / N
+stub i (i = 0 at the bottom) covers [i·(L + g), i·(L + g) + L]
+tap of stub i: t_i = L/2 + i·(L + g)
+Each stub has exactly one leaf cell, placed at Y = t_i. The leaf's net wire is h + L, so N must satisfy h + L ≤ D. The smallest valid stub count is:
+
+N_min = ceil((S + g) / (D − h + g))
+
+Example: S = 5000, D = 1020, h = 2.88, g = 10 gives N_min = 5 (stub length 992 µm).
+
+Columns. A cell at stage k sits at X = origin_x + (k − 1)·h. Stubs sit one column beyond the deepest stage.
+
+Branches. A branch from driver p to load q has length b ≥ |y_p − y_q|. The excess b − |y_p − y_q| is detour wire.
+
+Net wire. h + Σ b over the driver's branches (one horizontal stem h per net). This is exact when the driver sits between its loads, and slightly pessimistic when two loads are on the same side (a real route would share wire). For a leaf, net wire is h + L.
+
+Path length. Sum of (h + b) over each hop from the root to the leaf, plus h from the leaf to its stub tap. Every path has the same number of stages, so the horizontal part is the same on every path; path equality therefore means equal Σ b.
+
+6. Constraints (all hard)
+Drive: every net's wire ≤ D, including each leaf's h + L.
+Balance: every root-to-stub path has the same length and the same number of stages.
+Fanout: every non-leaf cell drives 1 to max_fanout loads. A leaf drives exactly one stub.
+Order: a cell drives only neighboring runs of taps (no interleaving), so nets never cross.
+Root: if root_y is given, the root sits there.
+Bounds: every cell has 0 ≤ y ≤ S.
+search never relaxes a constraint: when 1 and 2 conflict it adds cells (repeaters or stages). place reports violations instead.
+
+Tolerance for all comparisons: 0.001 µm.
+
+7. Algorithm: search
+7.1 Shapes
+A shape fixes connectivity without positions:
+
+a node of height 0 is a leaf covering one tap;
+a node of height k ≥ 1 has 1 to max_fanout children, all of height k − 1, covering consecutive, non-overlapping runs of taps that together make up the node's own run;
+the root has height d − 1 and covers all N taps, so all leaves are at depth d.
+Cell count = node count.
+
+7.2 Placement of one shape: linear program
+For a fixed shape, positions come from an LP:
+
+Variables: y_c for every non-leaf cell; b_e ≥ 0 for every edge (driver, load); one path length Λ.
+Fixed: each leaf's y = t_i; the root's y = root_y if given.
+Constraints:
+b_e ≥ y_p − y_q and b_e ≥ y_q − y_p for each edge (p, q);
+h + Σ_{e from p} b_e ≤ D for each non-leaf cell p;
+Σ_{e on path from root to leaf i} b_e = Λ for each leaf i;
+0 ≤ y_c ≤ S for each cell.
+Objective: minimize Σ b_e (total wire, excluding constant stems).
+Infeasible LP means no placement of that shape meets the constraints.
+
+7.3 Search order and selection
+For each N from N_min to max_stubs:
+
+For depth d from 1 + ceil(log_f N) (f = max_fanout) upward, list shapes in increasing cell count.
+Prune a node before solving if its run of taps cannot be reached in the stages below it. A node of height k covering taps i..j needs t_j − t_i ≤ 2·k·(D − h). (Each hop's branch is at most D − h, so a node is at most k·(D − h) from any tap below it.)
+Solve the LP for each remaining shape. At the first cell count where any shape is feasible, solve all shapes with that count and keep the best.
+Ranking, applied within each N and then across all N:
+
+fewest cells;
+fewest stages;
+least total wire;
+a fixed shape ordering (lexicographic on tap-run boundaries, top-down), so results repeat exactly.
+7.4 Limits
+If no feasible shape is found within max_cells or time_limit_s, the tool reports that and exits with a non-zero status. It never outputs a structure that breaks a constraint.
+
+8. Algorithm: place
+Input: a structure YAML (section 9.1).
+
+Build the tree from the input fields. Reject a missing driver or a cycle. A cell with an output stub is a leaf; a cell with no loads and no output is a dummy.
+Check max_fanout (dummies count as loads) and that the stubs named by leaves match stubs.count and stubs.order. Reject leaves at different depths.
+Compute each cell's stage from the connectivity. Keep the user's level and cell names, but set X from the stage: a cell listed under L1 that is actually stage 2 sits in the stage-2 column.
+Place each dummy at its driver's Y, in the next column. Dummies add no wire and are excluded from path equality.
+Leaves are placed at the taps of their stubs, using stubs.order (top to bottom) to map stub names to positions.
+Solve the LP in 7.2.
+If infeasible, re-solve keeping path equality but allowing nets over D, minimizing the total overflow above D. Report each cell over D and by how much. Exit with a non-zero status.
+9. File formats
+9.1 Structure YAML (input to place, output of search)
+No coordinates. Each cell names only its driver (input); fanout is derived. Leaves also name their stub (output). Example (the current hand-made 13-cell design at 5000 µm, which is expected to be infeasible):
+
+clock_tree:
+  name: custom_spine_5000
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1020
+    count_stub_in_drive: true
+    max_fanout: 3
+
+  placement:
+    origin_x: 10
+    level_pitch_x: 2.88
+
+  spine:
+    orientation: vertical
+    span: 5000
+
+  stubs:
+    count: 6
+    gap: 10
+    tap: center
+    order: [stub3, stub4, stub5, stub6, stub1, stub2]   # top to bottom
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+        inv3: {input: L1/inv1/Y}
+    L2:
+      cells:
+        inv1: {input: L1/inv1/Y}
+        inv2: {input: L1/inv3/Y}        # dummy: no loads, no output
+    L3:
+      cells:
+        inv1: {input: L1/inv3/Y}
+        inv2: {input: L2/inv1/Y}
+        inv3: {input: L2/inv1/Y}
+    L4:
+      cells:
+        inv1: {input: L3/inv1/Y, output: stub1}
+        inv2: {input: L3/inv1/Y, output: stub2}
+        inv3: {input: L3/inv2/Y, output: stub3}
+        inv4: {input: L3/inv2/Y, output: stub4}
+        inv5: {input: L3/inv3/Y, output: stub5}
+        inv6: {input: L3/inv3/Y, output: stub6}
+Rules:
+
+input is net for the root, otherwise <level>/<cell>/Y.
+max_drive_length maps to max_drive; max_fanout is optional here (default 3). root_y, if needed, goes under placement.
+When search writes this file, levels are stages (L1 = root), cells are numbered inv1, inv2, … from the top within each level, and stubs are numbered stub1 … stubN from the top, with order listing them top to bottom.
+9.2 Parameters YAML (input to search)
+span: 5000
+max_drive: 1020
+gap: 10
+level_pitch_x: 2.88
+origin_x: 10
+max_fanout: 3
+# root_y: 2500       # optional
+# max_stubs: 8       # optional
+# max_cells: 40      # optional
+# time_limit_s: 60   # optional
+9.3 Coordinates CSV (output)
+Two sections in one file, or two files (cells.csv, stubs.csv); the implementer picks one and documents it.
+
+Cells: level, name, stage, x, y, loads, net_wire, detour_wire, is_dummy (loads is a ;-separated list of load names).
+
+Stubs: name, y_bottom, y_top, tap_y, driver.
+
+All numbers printed to 0.001 µm.
+
+9.4 Report (output, plain text)
+parameters used, including max_fanout;
+chosen stub count and stub length;
+cell count and stage count;
+largest net wire and its driver;
+path length, and confirmation that all paths are equal (or the spread);
+total wire and total detour;
+for each N tried: best cell count found, or why nothing was feasible;
+in place mode: every violated constraint with the amount.
+9.5 Plot (output, SVG)
+One SVG, written as text (no plotting library):
+
+Y axis in µm with grid lines every 1000 µm; X axis with one tick per stage column and one for the stub column;
+X scaled far more than Y (about 36 px per µm in X, about 0.1 px per µm in Y), so the columns separate visibly;
+each cell as a labeled box showing its name and x, y;
+nets as orthogonal lines from driver to loads;
+stubs as thick vertical lines with tap dots, labeled with name and Y range;
+dummies drawn dashed; any cell over max_drive highlighted.
+10. Command line
+spinegen search <params.yaml> --out <dir>
+spinegen place  <structure.yaml> --out <dir>
+Each run writes structure.yaml, the coordinates CSV, report.txt, and plot.svg to <dir>. Exit status 0 on success; non-zero when infeasible or on invalid input, with the reason on stderr and in the report.
+
+11. Implementation
+Python 3, run on the Linux design servers.
+SciPy optimize.linprog with the HiGHS method for the LP; PyYAML for YAML. Confirm the installed versions on the servers before writing code.
+Suggested package layout, one job per module:
+Module	Job
+spinegen/model.py	Parameters, validation, stub sizing, tree data types
+spinegen/shapes.py	Shape listing and pruning (7.1, 7.3)
+spinegen/solve.py	Building and solving the LP (7.2, 8.7)
+spinegen/search.py	Search loop and ranking (7.3, 7.4)
+spinegen/place.py	place mode (section 8)
+spinegen/check.py	Independent checker (12.1); shares no code with solve.py
+spinegen/io_yaml.py	Reading and writing structure and parameter YAML
+spinegen/report.py	Report and CSV output
+spinegen/plot_svg.py	SVG plot
+spinegen/cli.py	Command line
+tests/	pytest tests (section 12)
+12. Testing
+Run with python -m pytest on the servers.
+
+12.1 Independent checker
+check.py reads only the structure and the coordinates CSV and recomputes, from scratch:
+
+every net's wire, against max_drive;
+every root-to-stub path's length and stage count;
+every cell's load count, against max_fanout;
+stub lengths, gaps and taps against section 5.
+Every search and place result in the tests passes through it.
+
+12.2 Expected results
+These come from hand calculation during design. They are expectations for the tool to confirm, not measured results.
+
+4000 µm, max_fanout 2 and 3: 4 stubs of 992.5 µm, 9 cells, 4 stages, every path equal. By hand, 7- and 8-cell shapes fail the drive limit. One valid placement (the tool may return a different one with the same counts and no more total wire):
+
+Cell	Stage	X	Y	Net wire
+root	1	10	2000	1002.88
+stage 2 (×2)	2	12.88	2500, 1500	505.38
+stage 3 (×2)	3	15.76	3002.5, 997.5	1005.38
+leaves (×4)	4	18.64	3503.75, 2501.25, 1498.75, 496.25	995.38
+Stubs at X = 21.52. Path length to every tap: 1515.27 µm.
+
+5000 µm: passes the checker with at most 21 cells (the binary tree with repeaters, which uses 8 stubs of 616.25 µm and 6 stages).
+
+Binary bound: for spans from 1000 to 8000 µm in steps of 500, search never needs more cells than the binary reference on the same span. The binary reference is a small separate function, built as follows:
+
+N = smallest power of two ≥ N_min; tap pitch p = L + g.
+Split the taps in halves recursively. The children of a split at height k are d = 2^(k−1)·p apart.
+If h + d ≤ D, the split needs no repeaters. Otherwise each of its two branches gets ceil((d/2 − (D − h)/2) / (D − h)) repeaters.
+Cells = N leaves + (N − 1) split cells + all repeaters.
+This gives 9 cells at 4000 µm and 21 at 5000 µm.
+
+Fanout: for the same span, max_fanout 3 never needs more cells than max_fanout 2.
+
+place on the section 9.1 example: reports infeasible and names at least one of L1/inv1 and L2/inv1. By hand, keeping paths equal needs about 1673 to 1676 µm on each; the relaxed LP may split the overflow differently.
+
+12.3 Edge cases
+Spans just below and just above a change in N_min.
+A span short enough for one stub (the root is the leaf).
+root_y off center.
+A span that cannot be built within max_cells: reports infeasible, non-zero exit.
+max_fanout other than 2 or 3: error.
+place input with a missing driver, a cycle, a cell over max_fanout, leaves at different depths, or stub names that don't match stubs.order.
+12.4 Likely failure modes to guard against
+LP rounding (for example 1019.9999998): compare with the 0.001 µm tolerance.
+Shape explosion on long spans: respect time_limit_s and say so.
+Non-repeatable ties: apply the fixed ordering in 7.3.
+13. Acceptance criteria
+ search on section 9.2 parameters produces all four outputs, and the checker passes.
+ place on the section 9.1 example reports infeasible with the overflowing drivers and amounts.
+ A structure written by search can be read back by place and gives the same cell count, stage count and total wire (coordinates may differ where the LP has several optimal placements), and the checker passes.
+ All tests in section 12 pass on the servers.
+ Results are identical across repeated runs.
+14. Open questions before implementation
+Python, SciPy and PyYAML versions on the servers.
+One CSV file with two sections, or two files (9.3).
+Whether the plot should also be exported as PNG (needs an extra library).
+15. Out of scope
+Snapping coordinates to a placement grid. Snapping can break path equality by up to one grid step; design it once the grid is known.
+Adding dummy loads automatically to balance load counts.
+Delay, slew, cell sizing and layer choice.
+Spans needing more than about 16 stubs (needs stronger pruning).
+Modeling where the root net actually arrives; root_y fixes it by hand.

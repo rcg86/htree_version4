@@ -17,7 +17,14 @@ DESCRIPTION
     Prints what the database holds. The file is opened read-only and is
     not changed. Its schema version must match this tool's: a database
     written by an older version of the tool is rejected and has to be
-    rebuilt from the source files.
+    rebuilt from the source files. Two older versions are read:
+      21  the last without the connections of connect_pin. Nothing is
+          missing: it has the connections of its spines, and none made
+          by hand.
+      20  the last without via definitions. Its routing has its vias
+          (they are derived from the routing), but no via definitions
+          until read_tech and read_def are run again, so the vias have
+          no cut layers until then.
 
     Not saved, so not restored: the selection (it is cleared), the GUI
     view, Tcl variables and procs. An open GUI window redraws with the

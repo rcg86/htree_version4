@@ -6,7 +6,9 @@ write what htree4 added to the design as DEF 5.8, for defIn (incremental).
 
 COMPONENTS: the instances (create_inst, create_spine -build), PLACED.
 SPECIALNETS: route_pin straps and pin wires of power nets (not a signal net),
-as stripes. NETS: the spine nets with their pin connections, and every shape
+as stripes. NETS: the spine nets, and the nets of no spine with a pin on them
+(a port's, connect_pin's, add_buffer_on_net's), with their pin connections
+(a port as ( PIN <port> )), and every shape
 shorted to them: route_net wires and strap extensions, and the straps and pin
 wires route_net connected (renamed to the net). Each shape is written as a
 RECT, exactly as stored. Crossing boxes are overlaps of wires already written,
@@ -16,6 +18,7 @@ and are left out (counted in the report).
 
 import os
 
+from core import netlist
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -87,7 +90,7 @@ def def_text(db, sections):
             lines.append(f"  - {r['name']} {r['ref_cell']} + {status} ( {dbu(r['x'])} "
                          f"{dbu(r['y'])} ) {ORIENT.get(r['orient'] or 'N', 'N')} ;")
         lines += ["END COMPONENTS", ""]
-    signal_nets = set(_spine_nets(db))
+    signal_nets = netlist.signal_nets(db)
     if "specialnets" in sections:
         power = {}                   # net -> [(layer, rect, kind)], [(inst, pin)]
         for r in db.strap_rows():
@@ -121,17 +124,28 @@ def def_text(db, sections):
         lines += ["END SPECIALNETS", ""]
     if "nets" in sections:
         nets = _spine_nets(db)
-        counts["nets"] = len(nets)
-        lines.append(f"NETS {len(nets)} ;")
+        plain = netlist.plain_nets(db)           # the nets of no spine
+        counts["nets"] = len(nets) + len(plain)
+        lines.append(f"NETS {len(nets) + len(plain)} ;")
         straps = {}
         for r in db.strap_rows():
             straps.setdefault(r["net"], []).append((r["layer"], r["rect"]))
         for r in db.pin_wire_rows():
             straps.setdefault(r["net"], []).append((r["layer"], r["rect"]))
+        by_hand = {}                 # connect_pin loads that are not in a net's loads
+        for r in db.connection_rows():
+            if r["net"] in nets:
+                by_hand.setdefault(r["net"], []).append((r["inst"], r["pin"]))
+        conns_of = {}
         for name, row in nets.items():
             conns = [(row["driver"], _pin(db, row["driver"], "out"))]
             conns += [(load, _pin(db, load, "in")) for load in row["loads"].split()
                       if db.inst_row(load) is not None]
+            conns_of[name] = conns + by_hand.get(name, [])
+        for name in plain:                       # a port is ( PIN <port> )
+            conns_of[name] = [("PIN", e.pin) if e.kind == "port" else (e.inst, e.pin)
+                              for e in netlist.ends(db, name)]
+        for name, conns in conns_of.items():
             rows = db.net_wire_rows(name)
             shield_nets = dict.fromkeys(r["shield_net"] for r in rows if r["kind"] == "shield")
             lines.append(f"  - {name}" + "".join(f" ( {i} {p} )" for i, p in conns if p)
@@ -171,7 +185,12 @@ def _spine_nets(db):
 def _pin(db, inst, direction):
     """The signal input ('in') or output ('out') pin of an instance's cell."""
     row = db.inst_row(inst)
-    cell = db.lib_cell_row(row["ref_cell"]) if row is not None else None
+    return cell_pin(db, row["ref_cell"], direction) if row is not None else None
+
+
+def cell_pin(db, ref_cell, direction):
+    """The first signal input ('in') or output ('out') pin of a library cell."""
+    cell = db.lib_cell_row(ref_cell)
     if cell is None:
         return None
     for p in db.lib_pin_names(cell["id"]):

@@ -91,7 +91,9 @@ DESCRIPTION
     see-through, under the "Routes (route_pin, route_net)" checkbox and the layer
     checkboxes; Label writes each strap's net and each pin wire's pin on
     it. They can be selected (click, Shift+drag, right drag) or with
-    select_obj. write_db saves them.
+    select_obj. write_db saves them. The vias of a pin wire, over its
+    pin and under its strap, are drawn under the Vias checkbox, each
+    with its via_<bottom>_<top> row of the layer list.
 
 OPTIONS
     -inst <insts>

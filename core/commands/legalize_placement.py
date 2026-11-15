@@ -5,7 +5,8 @@
 Each instance goes to the nearest free site of its cell: a DEF ROW (read_def)
 whose site is the cell's LEF SITE and whose orientation is the instance's (N
 cells in N rows, FS cells in FS rows), the cell inside the row, at a whole
-number of site steps from the row origin, overlapping no other instance. It
+number of site steps from the row origin, overlapping no other instance,
+and inside the design boundary when a free site there is near enough. It
 looks no farther than one cell width + height from where the instance is;
 an instance with no free site there stays (warning). Instances already on a
 legal, free site do not move; fixed ones (.place_status fixed) never move.
@@ -28,7 +29,7 @@ from core import objects
 from core.db import _num
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
-from core.placement import placed_bbox
+from core.placement import placed_bbox, rect_in_polygon
 
 NAME = "legalize_placement"
 SUMMARY = "Place instances on the free legal sites of their cells (DEF rows, LEF SITE)"
@@ -87,7 +88,7 @@ def run(session, argv):
         else:
             kept.append(name)
         boxes[name] = objects.inst_bbox(db, db.inst_row(name))
-    info(f"legalize_placement: {len(moved)} instance(s) moved onto sites (up to {_num(worst)} "
+    info(f"legalize_placement: {len(moved)} instance(s) moved onto sites (up to {_num(round(worst, 6))} "
          f"um), {len(kept)} already legal, {len(fixed)} fixed (not moved)", out)
     if missed:
         warn(NO_SITE, f"no free site of the cell's site and orientation within one cell "
@@ -103,7 +104,10 @@ def run(session, argv):
 
 def _free_site(db, r, cell, site, others):
     """The nearest (x, y) site for instance row r that overlaps none of the
-    boxes in others, within one cell width + height; None if there is none."""
+    boxes in others, within one cell width + height; None if there is none.
+    A site with the cell inside the design boundary comes before a nearer
+    one where it is not: a row can be lower than the cell, so a cell in a
+    row at the edge of the die may reach across it."""
     w, h = cell["size_x"], cell["size_y"]
     reach = w + h
     orient = r["orient"] or "N"
@@ -128,13 +132,20 @@ def _free_site(db, r, cell, site, others):
         else:                                             # a one-site row
             candidates.append((abs(row["x"] - r["x"]) + abs(row["y"] - r["y"]),
                                round(row["x"], 6), round(row["y"], 6)))
+    boundary = [float(v) for v in (db.design_row()["boundary"] or "").split()] \
+        if db.has_design() else []
+    across = None                # the nearest free site, the cell not inside the boundary
     for d, x, y in sorted(set(candidates)):
         if d > reach + TOL:
             break
         box = placed_bbox(w, h, r["orient"], x, y)
-        if not any(_overlap(box, o) for o in others):
+        if any(_overlap(box, o) for o in others):
+            continue
+        if not boundary or rect_in_polygon(box, boundary):
             return x, y
-    return None
+        if across is None:
+            across = x, y
+    return across
 
 
 def _gaps(a, b):
@@ -311,7 +322,8 @@ def _overlap(a, b):
 
 
 def _nets_of(db, insts):
-    """Routed spine nets with a driver or load among insts."""
+    """Routed nets (of a spine, or of none) with a driver or load among insts."""
+    from core import netlist
     moved = set(insts)
     found = []
     for s in db.spine_names():
@@ -319,4 +331,7 @@ def _nets_of(db, insts):
             ends = {n["driver"], *n["loads"].split()}
             if ends & moved and db.net_wire_rows(n["name"]):
                 found.append(n["name"])
+    for name in netlist.plain_nets(db):
+        if {inst for inst, _ in netlist.by_net(db)[name]} & moved and db.net_wire_rows(name):
+            found.append(name)
     return found

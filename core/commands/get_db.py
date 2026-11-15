@@ -14,7 +14,7 @@
 import os
 from fnmatch import fnmatchcase
 
-from core import objects, root_attrs
+from core import objects, root_attrs, vias
 from core.db import _num
 from core.expr import Expr
 from core.messages import HtreeError, info
@@ -65,6 +65,10 @@ ROOTS = {
     "net": lambda db: _nets(db) + _stubs(db),
     "stubs": lambda db: _stubs(db),
     "stub": lambda db: _stubs(db),
+    "via_defs": lambda db: [f"via_def:{n}" for n in db.via_def_names()],
+    "via_def": lambda db: [f"via_def:{n}" for n in db.via_def_names()],
+    "vias": lambda db: [vias.handle(r) for r in vias.rows(db)],
+    "via": lambda db: [vias.handle(r) for r in vias.rows(db)],
 }
 
 
@@ -217,11 +221,12 @@ def _walk_path(db, path: str):
 
 
 def _follow(db, handles, attr):
-    out = []
+    out, seen = [], set()
     for handle in handles:
         value = objects.get_attr(db, handle, attr)
         for h in (value if isinstance(value, list) else [value]):
-            if h not in out:
+            if h is not None and h not in seen:      # None: the object has no such relation
+                seen.add(h)
                 out.append(h)
     return out
 
@@ -261,7 +266,12 @@ def _name(handle: str) -> str:
 
 
 def _as_text(db, handle, attr):
-    value = objects.get_attr(db, handle, attr)
+    if "." in attr:                               # -if {.net.name == clk}
+        handles, attr = _walk_chain(db, [handle], _attr_chain("." + attr))
+        value = _values(db, handles, attr) if handles else None
+        value = list(value) if isinstance(value, tuple) else value
+    else:
+        value = objects.get_attr(db, handle, attr)
     if isinstance(value, list):
         return " ".join(objects.format_value(v) for v in value)
     return objects.format_value(value)
@@ -286,6 +296,9 @@ def _dump_tech(db, out):
     info("tech", out)
     for attr in ("file", "lef_version", "db_units", "manufacturing_grid"):
         info(f"  {attr:<20}: {objects.format_value(tech[attr])}", out)
+    for attr, name in zip(("min_layer", "max_layer"), db.tech_layer_range()):
+        if name:
+            info(f"  {attr:<20}: {name}", out)
     info(f"  {'layers':<20}: {len(layers)}", out)
     skip = {"obj_type", "name", "lef_text", "tech", "extra"}
     for name in layers:

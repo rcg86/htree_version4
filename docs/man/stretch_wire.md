@@ -16,20 +16,24 @@ DESCRIPTION
     Auto vias. Where the part the wire gains crosses a wire of the same
     net (its electrical net: VSS for a VSS strap or a VSS shield) on
     another routing layer at most route_auto_via_insertion_during_stretch
-    layers away (root attribute, set_db; default 1), a via is added at the
-    crossing box. Layers count in tech order of the routing layers: with
-    D12 H1 H2 G1 G2 IA IB, 1 joins IA and IB only, 3 joins H2 to IA (over
-    G1 and G2), 0 adds none. No via where a crossing box or via is already
+    vias away (root attribute, set_db; default 1), a via is added at the
+    crossing box. The distance is the number of cut layers between the
+    two, by the via definitions (read_tech, read_def): with D12 H1 H2 G1
+    G2 IA IB, 1 joins IA and IB only, 3 joins H2 to IA (over G1 and G2),
+    0 adds none. Routing layers no via definition joins count by their
+    order in the tech LEF. No via where a crossing box or via is already
     there, and none for straps of unrouted signal pins (net SIGNAL).
     Shortening the wire removes its auto vias it no longer covers;
     move_wire, route_pin and route_net (rebuilding the wire) remove them;
     they move with the wire's instance or spine (legalize_placement,
     move_obj).
 
-    Until vias have their own table, an auto via is stored as a net_wire
-    of kind via under net auto_via:<wire handle>, layer <lower>/<upper>
-    (e.g. H2/IA), .shield_net its net. The GUI draws it as an outline like
-    a crossing box; write_def does not write it yet.
+    An auto via is stored as a net_wire of kind via under net
+    auto_via:<wire handle>, layer <lower>/<upper> (e.g. H2/IA),
+    .shield_net its net, and is a via object of kind auto on that net,
+    one per cut layer (get_db vias; man assign_via_for_route). The GUI
+    draws it as an outline like a crossing box; write_def does not write
+    it yet.
 
     The GUI's Tools > Stretch runs this command when an edge of a wire is
     dragged; Tools > Undo Edit puts the edge back (and so removes the
@@ -64,4 +68,4 @@ ERRORS
     HT4-222  WARN: the wire is off the tracks of its layer
 
 SEE ALSO
-    move_wire, set_db, route_net, route_pin, gui_show
+    move_wire, delete_wire, set_db, route_net, route_pin, gui_show

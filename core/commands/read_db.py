@@ -27,7 +27,7 @@ def run(session, argv):
     if not os.path.isfile(path):
         raise HtreeError(NOT_FOUND, f"read_db: file '{path}' not found")
     try:
-        session.db.read(path)
+        version = session.db.read(path)
     except SchemaMismatch as exc:
         raise HtreeError(BAD_DB, f"read_db: '{path}': {exc}")
     except sqlite3.Error as exc:
@@ -36,6 +36,9 @@ def run(session, argv):
     info(f"Database read from '{os.path.abspath(path)}'", session.out)
     for line in summary(session.db):
         info(line, session.out)
+    if version == "20":
+        info("  The file is of schema version 20 and has no via definitions: run read_tech "
+             "and read_def again to load them", session.out)
     return None
 
 
@@ -60,8 +63,13 @@ def summary(db):
                          ("Spines", db.spine_names())):
         if names:
             rows.append((label, " ".join(names)))
+    if db.via_def_names():
+        rows.append(("Via definitions", str(len(db.via_def_names()))))
     if db.has_insts():
         rows.append(("Instances", str(len(db.inst_names()))))
+    if db.connection_rows():
+        rows.append(("Connections", f"{len(db.connection_rows())} pin(s) set by connect_pin "
+                                    f"or disconnect_pin, not in the loads of a spine net"))
     if not rows:
         return ["  (the database is empty)"]
     width = max(len(label) for label, _ in rows)

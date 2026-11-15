@@ -91,6 +91,7 @@ def test_gui_show_opens_window(loaded):
     assert not w.object_boxes["nets"].isChecked()
     assert not w.object_boxes["spine"].isEnabled()             # no spine built
     assert not w.object_boxes["cells"].isEnabled()             # no instances yet
+    assert not w.object_boxes["flylines"].isEnabled()          # no pin on a net yet
     assert w.layer_boxes["H1"].isChecked() and not w.layer_boxes["M1"].isChecked()
     loaded.eval("gui_show")                                           # again: same window
     assert app.window() is w
@@ -279,21 +280,22 @@ def test_menu_and_toolbar(loaded):
     menus = {a.text().replace("&", ""): [x.text() for x in a.menu().actions() if x.text()]
              for a in w.menuBar().actions()}
     assert menus == {"File": ["Close Window"],
-                     "Edit": ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Undo Edit",
-                              "Shortcuts..."],
+                     "Edit": ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Delete",
+                              "Undo Edit", "Move Spine...", "Swap Spine Head", "Shortcuts..."],
                      "View": ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected",
                               "Ruler", "Clear Rulers", "Show View Panel"],
                      "Select": ["Clear Selection"]}
     assert [a.text() for a in w.toolbar.actions() if a.text()] == \
-        ["Fit", "Zoom Selected", "Blink Selected", "Zoom In", "Zoom Out"]
+        ["Fit", "Zoom Selected", "Blink Selected", "Zoom In", "Zoom Out", "Move Spine..."]
     assert w.ruler_button.text() == "Ruler"                   # next to Blink Selected
     tools = w.toolbar.actions()                               # Zoom In, Zoom Out after Ruler
     ruler = next(i for i, a in enumerate(tools) if w.toolbar.widgetForAction(a) is w.ruler_button)
     assert [a.text() for a in tools[ruler + 1:ruler + 3]] == ["Zoom In", "Zoom Out"]
     assert w.toolbar.widgetForAction(tools[ruler + 3]) is w.tools_button   # then Tools
     assert w.tools_button.text() == "Tools"
+    assert tools[ruler + 4] is w.act_move_spine               # then Move Spine
     assert [a.text() for a in w.tools_menu.actions() if a.text()] == \
-        ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Undo Edit"]
+        ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Delete", "Undo Edit"]
     assert w.toolBarArea(w.toolbar) == w.toolBarArea(w.toolbar).TopToolBarArea  # under the menu
 
 
@@ -323,7 +325,16 @@ def test_shortcuts_list_and_create(loaded, tmp_path, monkeypatch):
     assert [new.action_box.itemText(i) for i in range(new.action_box.count())] == \
         ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected", "Ruler",
          "Clear Rulers", "Select", "Stretch", "Move", "Snap (tracks, edges, grid)",
-         "Undo Edit", "Clear Selection", "Shortcuts..."]       # all but Close Window
+         "Delete", "Undo Edit", "Move Spine...", "Swap Spine Head", "Clear Selection",
+         "Shortcuts..."]                                       # all but Close Window
+    assert w.act_delete.shortcut().isEmpty()                  # Delete: none until created
+    assert w.set_user_shortcut("delete", "Del") is None
+    assert w.act_delete.shortcut() == QKeySequence("Del")
+    assert ("Delete", QKeySequence("Del").toString(QKeySequence.NativeText), "user",
+            "delete") in ShortcutsDialog(w).rows()
+    assert w.set_user_shortcut("delete", None) is None
+    assert ("Move: selected wires one track", "Shift+Arrow keys", "built in", None) in \
+        ShortcutsDialog(w).rows()                             # fixed: listed, not editable
     assert w.set_user_shortcut("zoom_in", "Ctrl+Z") is None
     assert w.set_user_shortcut("zoom_out", "Ctrl+Shift+Z") is None
     assert w.act_zoom_in.shortcut() == QKeySequence("Ctrl+Z")
@@ -1391,3 +1402,80 @@ def test_rows_drawn_and_site_dropdown(loaded):
     img = w.canvas.viewport().grab().toImage()
     p = w.canvas.mapFromScene(scene(0.55, 0.0))
     assert img.pixelColor(p.x(), p.y()).name() != color
+
+
+# -- flylines of the selection (Objects > Flyline) --------------------------------------
+
+@pytest.fixture
+def spine_built(spine_loaded):
+    spine_loaded.eval("create_spine -name sp1 -spec_name sp1 -location {10 5} -build "
+                      "-ref_cell INV_D1")
+    return spine_loaded
+
+
+def test_flylines_of_pins_instances_and_ports(spine_built):
+    from core.gui.flylines import flylines
+    from core.objects import pin_centre
+    s, db = spine_built, spine_built.db
+    at = lambda pin: pin_centre(db, *pin.split("/"))
+    root, leaf1, leaf2 = "sp1_L1_inv1", "sp1_L2_inv1", "sp1_L2_inv2"
+    # a load: to the driver of its net; a driver: to every load
+    assert flylines(db, [f"pin:{leaf1}/A"]) == [(at(f"{leaf1}/A"), at(f"{root}/Y"))]
+    fan = [(at(f"{root}/Y"), at(f"{leaf1}/A")), (at(f"{root}/Y"), at(f"{leaf2}/A"))]
+    assert flylines(db, [f"pin:{root}/Y"]) == fan
+    # an instance: each of its connected pins (nothing else is on the root net)
+    assert flylines(db, [f"inst:{root}"]) == fan
+    # a leaf: its input to its driver, its output to the nearest point of its stub
+    to_driver, to_stub = flylines(db, [f"inst:{leaf1}"])
+    assert to_driver == (at(f"{leaf1}/A"), at(f"{root}/Y"))
+    x1, y1, x2, y2 = (float(v) for v in s.eval("get_db stub:sp1/stub1 .points").split())
+    assert to_stub[0] == at(f"{leaf1}/Y")
+    assert x1 == x2 == to_stub[1][0]                           # a vertical stub
+    assert to_stub[1][1] == min(max(to_stub[0][1], y1), y2)
+    # two ends of a line selected: the line comes once
+    assert len(flylines(db, [f"pin:{leaf1}/A", f"pin:{root}/Y"])) == 2
+    assert len(flylines(db, [f"inst:{root}", f"inst:{leaf1}", f"inst:{leaf2}"])) == 4
+    # power pins are on no net; nets and wires have no flylines
+    for sel in ([], [f"pin:{root}/VDD"], ["spine_net:sp1/sp1_L1_inv1_Y"], ["stub:sp1/stub1"]):
+        assert flylines(db, sel) == []
+    # a port of the design: the centre of its shapes
+    s.eval(f"connect_pin -from a -to {root}/A -disconnect")
+    assert flylines(db, [f"pin:{root}/A"]) == [(at(f"{root}/A"), (10, 0.2))]
+    assert flylines(db, ["port:top/a"]) == [((10, 0.2), at(f"{root}/A"))]
+    assert flylines(db, ["port:top/b"]) == []                  # nothing else on its net
+
+
+def test_flyline_box_shows_them_only_when_ticked(spine_built):
+    from core.gui.canvas import HANDLE_KEY, OWNER_KEY, scene
+    from core.objects import pin_centre
+    s = spine_built
+    w = _view(s)
+    box = w.object_boxes["flylines"]
+    assert box.isEnabled() and not box.isChecked()             # off until asked for
+    assert box.toolTip().startswith("Lines from the selected pins")
+    w.on_select(["inst:sp1_L1_inv1"], "replace")
+    assert w.canvas.fly_items == []                            # not ticked: none drawn
+    box.setChecked(True)                                       # ... now, for the selection
+    assert len(w.canvas.fly_items) == 2 and all(i.isVisible() for i in w.canvas.fly_items)
+    a, b = (scene(*pin_centre(s.db, *p.split("/"))) for p in ("sp1_L1_inv1/Y", "sp1_L2_inv1/A"))
+    line = w.canvas.fly_items[0].line()
+    assert (line.p1(), line.p2()) == (a, b)
+    # over the layout, and nothing to pick
+    assert all(i.data(HANDLE_KEY) is None and i.data(OWNER_KEY) is None
+               for i in w.canvas.fly_items)
+    assert None not in w.canvas.owners_in(w.canvas.content.adjusted(-5, -5, 5, 5), touching=True)
+    w.on_select(["pin:sp1_L2_inv1/A"], "replace")              # follows the selection
+    assert len(w.canvas.fly_items) == 1
+    s.eval("select_obj inst:sp1_L2_inv2")                      # ... a command's too: added
+    assert len(w.canvas.fly_items) == 3
+    w.refresh()                                                # the layout drawn again
+    assert len(w.canvas.fly_items) == 3
+    assert all(i.scene() is w.canvas.scene() for i in w.canvas.fly_items)
+    w.on_select([], "replace")
+    assert w.canvas.fly_items == []
+    w.on_select(["inst:sp1_L1_inv1"], "replace")
+    assert len(w.canvas.fly_items) == 2
+    box.setChecked(False)                                      # unticked: gone
+    assert w.canvas.fly_items == []
+    w.on_select(["inst:sp1_L2_inv1"], "replace")
+    assert w.canvas.fly_items == []

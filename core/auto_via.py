@@ -1,17 +1,18 @@
 """Vias added by stretch_wire where a stretched wire newly crosses a wire of
 its own net (root attribute route_auto_via_insertion_during_stretch: how
-many routing layers apart the two may be).
+many vias apart the two may be: cut layers when the via definitions join
+the two layers, else routing layers in tech order).
 
-Until vias get their own table, an auto via is a net_wire row of kind via,
-kept under the wire it was made for: net auto_via:<wire handle>, layer
-"<lower>/<upper>" (routing layer order), rect the crossing box, .shield_net
-the electrical net. The GUI draws it as an outline, like the route_net
-crossing boxes. It goes when its wire is stretched off it, moved, or
+An auto via is a net_wire row of kind via, kept under the wire it was made
+for: net auto_via:<wire handle>, layer "<lower>/<upper>" (routing layer
+order), rect the crossing box, .shield_net the electrical net. The GUI draws
+it as an outline, like the route_net crossing boxes, and it is a via object
+of kind auto (core/vias.py). It goes when its wire is stretched off it, moved, or
 rebuilt (route_pin, route_net), and moves with its wire's instance or
 spine.
 """
 
-from core import objects, root_attrs
+from core import objects, root_attrs, vias
 from core.db import _num
 
 ATTR = "route_auto_via_insertion_during_stretch"
@@ -78,16 +79,16 @@ def after_stretch(db, handle, old, new):
             dropped.append(f"{r['layer']} {{{r['rect']}}}")
     depth = root_attrs.get(db, ATTR)
     order = routing_order(db)
+    distance = vias.hop_distance(db)
     gained = [g for g in _gained(old, new) if g]
     added = []
     if net and depth > 0 and gained and row["layer"] in order:
-        mine_k = order[row["layer"]]
         have = {(r["layer"], r["rect"]) for r in db.net_wire_rows()
                 if "/" in r["layer"]}                 # crossing boxes and vias already there
         for other, other_net, layer, rect in _shapes(db):
             if other == handle or other_net != net or layer not in order or layer == row["layer"]:
                 continue
-            if abs(order[layer] - mine_k) > depth:
+            if distance(row["layer"], layer) > depth:
                 continue
             box = _box(new, rect)
             if box is None or not any(_box(box, g) for g in gained):

@@ -10,7 +10,10 @@ object under the cursor, Ctrl+click adds or removes it, click on empty space
 clears. Selectable: ports, instances, instance pins, spine nets and stubs,
 route_pin straps and pin wires.
 Middle drag and the arrow keys pan (past any edge), the wheel zooms about the
-cursor, F fits the design in the window. In ruler mode, left clicks set the
+cursor, F fits the design in the window. While Move Spine is on, Shift+arrow
+pulls the head of the spine instead (core/gui/spine_move.py), and the spine
+is previewed where its moves put it. In the Move tool, Shift+arrow moves the
+selected wires one track that way (trackStep). In ruler mode, left clicks set the
 start and end of a ruler (snapped to drawn edges when snapping is on), right
 click cancels. Tracks are
 painted behind the shapes, and a pattern appears only once its lines are at
@@ -62,6 +65,11 @@ BLINK_MS = 200            # per half cycle
 BLINK_MIN_PIXELS = 30     # the blink marker is at least this big on screen
 ZOOM_MIN_UM = 5.0         # zoom selected shows at least this much of the layout
 RULER_COLOR = "#00e5ff"
+FLY_COLOR = "#ff80ab"         # flylines of the selection (Objects > Flyline)
+MOVE_COLOR = "#ffb300"        # Move Spine: the preview of the moved spine
+HEAD_COLOR = "#ff5252"        # ... and the arrow at its head
+HEAD_PIXELS = 16              # the arrow's length on screen
+ARROWS = {Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Up: "up", Qt.Key_Down: "down"}
 SNAP_PIXELS = 10          # the ruler snaps to a drawn edge this close to the cursor
 
 
@@ -120,6 +128,17 @@ def model(p: QPointF):
     return p.x(), -p.y()
 
 
+class ViaCut(QGraphicsRectItem):
+    """A via cut: a box with a cross in it."""
+
+    def paint(self, painter, option, widget=None):
+        super().paint(painter, option, widget)
+        r = self.rect()
+        painter.setPen(self.pen())
+        painter.drawLine(r.topLeft(), r.bottomRight())
+        painter.drawLine(r.bottomLeft(), r.topRight())
+
+
 class LayoutCanvas(QGraphicsView):
     mouseMoved = Signal(float, float)        # model x, y
     # Objects the user picked and how: "replace", "toggle" (Ctrl+click) or
@@ -130,6 +149,7 @@ class LayoutCanvas(QGraphicsView):
     # dragged from one coordinate to another (handle, edge, to, from).
     wiresMoved = Signal(list, float, float)
     wireStretched = Signal(str, str, float, float)
+    trackStep = Signal(str)                  # Move tool, Shift+arrow: up|down|left|right
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -149,7 +169,7 @@ class LayoutCanvas(QGraphicsView):
         self.visible_layers = set()
         self.show = {"boundary": True, "ports": True, "tracks": False, "cells": True,
                      "pins": True, "labels": False, "spine": True, "routes": True,
-                     "rows": False}
+                     "vias": True, "rows": False, "flylines": False}
         self.rows_hidden = set()             # sites whose rows are not drawn
         self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
         self.class_hidden = set()            # (layer, signal|power|ground) not drawn
@@ -175,6 +195,11 @@ class LayoutCanvas(QGraphicsView):
         self.edit = {"mode": None, "snap": True}
         self._edit_drag = None
         self.selected = set()                # handles shown as selected
+        # Move Spine: called with up|down|left|right on Shift+arrow while it is
+        # on (None: Shift+arrow pans), and the items of its preview.
+        self.shift_arrow = None
+        self.move_items = []
+        self.fly_items = []                  # flylines of the selection
 
     # -- content ----------------------------------------------------------------
     def set_layout(self, layout, visible_layers):
@@ -188,7 +213,10 @@ class LayoutCanvas(QGraphicsView):
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
         self.inst_items, self.inst_pin_items = [], {}       # outlines; layer -> pin items
         self.spine_items = []
+        self.move_items = []                 # deleted by clear(); Move Spine draws it again
+        self.fly_items = []                  # ... and the window its flylines
         self.strap_items = {}                # layer -> route_pin strap items
+        self.via_items = {}                  # via row of the layer list -> cut and pad items
         self.visible_layers = set(visible_layers)
         if layout.boundary:
             poly = QPolygonF([scene(x, y) for x, y in
@@ -217,6 +245,7 @@ class LayoutCanvas(QGraphicsView):
         self._add_insts(layout, colors)
         self._add_spines(layout)
         self._add_straps(layout, colors)
+        self._add_vias(layout.vias, colors)
         self.content = self._content_rect()
         if not self.content.isEmpty():
             pad = PAN_MARGIN * max(self.content.width(), self.content.height())
@@ -282,6 +311,70 @@ class LayoutCanvas(QGraphicsView):
                 self.spine_items.append(item)
                 self.owner_items.setdefault(owner, []).append(item)
 
+    def set_move_preview(self, boxes, lines, path, head, heading):
+        """Move Spine: draw the spine where its moves put it, over the layout
+        (not selectable). boxes: its cells (x1, y1, x2, y2); lines: its stubs
+        (thick) and net centre lines (thin) as (thick, [(x, y), ...]); path:
+        the points of the path under its body; head, heading: where the head
+        is and the way it points (a unit vector), drawn as an arrow of fixed
+        size on screen."""
+        self.clear_move_preview()
+        sc = self.scene()
+        pens = {}
+        for key, width, style in (("box", 1, Qt.SolidLine), ("thin", 1, Qt.SolidLine),
+                                  ("thick", 3, Qt.SolidLine), ("path", 1, Qt.DashLine)):
+            pens[key] = QPen(QColor(MOVE_COLOR), width, style)
+            pens[key].setCosmetic(True)
+        fill = QBrush(QColor(255, 179, 0, 50))
+        items = [sc.addRect(QRectF(scene(x1, y2), scene(x2, y1)), pens["box"], fill)
+                 for x1, y1, x2, y2 in boxes]
+        for thick, pts in [(None, path)] + list(lines):
+            pen = pens["path" if thick is None else "thick" if thick else "thin"]
+            items += [sc.addLine(QLineF(scene(*a), scene(*b)), pen)
+                      for a, b in zip(pts, pts[1:])]
+        # the arrow: tip at the head, pointing out of the body; the scene's y is down
+        n = HEAD_PIXELS
+        arrow = QGraphicsPolygonItem(QPolygonF([QPointF(n, 0), QPointF(0, -n / 2),
+                                                QPointF(0, n / 2)]))
+        arrow.setPen(QPen(QColor("#ffffff"), 1))
+        arrow.setBrush(QBrush(QColor(HEAD_COLOR)))
+        arrow.setFlag(QGraphicsItem.ItemIgnoresTransformations)
+        arrow.setRotation(math.degrees(math.atan2(-heading[1], heading[0])))
+        arrow.setPos(scene(*head))
+        sc.addItem(arrow)
+        for item in items:
+            item.setZValue(25)
+        arrow.setZValue(26)
+        self.move_items = items + [arrow]
+
+    def set_flylines(self, lines):
+        """The flylines of the selection: straight lines ((x1, y1), (x2, y2)),
+        model coordinates, over the layout and the highlight (not
+        selectable). Drawn only while Flyline is ticked (show['flylines'])."""
+        for item in self.fly_items:
+            self.scene().removeItem(item)
+        pen = QPen(QColor(FLY_COLOR), 1)
+        pen.setCosmetic(True)
+        self.fly_items = [self.scene().addLine(QLineF(scene(*a), scene(*b)), pen)
+                          for a, b in lines]
+        for item in self.fly_items:
+            item.setZValue(15)
+            item.setVisible(self.show["flylines"])
+
+    def clear_move_preview(self):
+        for item in self.move_items:
+            self.scene().removeItem(item)
+        self.move_items = []
+
+    def show_point(self, x, y):
+        """Pan, if needed, so that model point (x, y) is in the window with a
+        margin of a tenth of it."""
+        view = self.viewport().rect()
+        mx, my = view.width() // 10, view.height() // 10
+        p = self.mapFromScene(scene(x, y))
+        if not view.adjusted(mx, my, -mx, -my).contains(p):
+            self.centerOn(scene(x, y))
+
     def _add_straps(self, layout, colors):
         """route_pin straps and pin wires: the layer colour, see-through so the
         cell and its pins show beneath. Straps are labelled with the net, pin
@@ -310,6 +403,57 @@ class LayoutCanvas(QGraphicsView):
             self.strap_items.setdefault(st.layer, []).append(item)
             self.owner_items.setdefault(st.handle, []).append(item)
 
+    def _add_vias(self, shapes, colors):
+        """The vias (ViaShape), over the wires and under the crossing boxes,
+        which so still take the click, in the colour of their row of the
+        layer list (via_<bottom>_<top>): a cut as a see-through box with a
+        cross, a pad of a via definition as an outline. Each is owned by its
+        via (via:<net>/<n>) and shown with its row."""
+        sc = self.scene()
+        for v in shapes:
+            color = QColor(colors.get(v.layer, "#ffffff"))
+            fill = QColor(color)
+            fill.setAlpha(150)
+            brush = QBrush(fill) if v.cut else QBrush(Qt.NoBrush)
+            if v.type == "rect":
+                x1, y1, x2, y2 = v.points
+                rect = QRectF(scene(x1, y2), scene(x2, y1))
+                item = ViaCut(rect) if v.cut else QGraphicsRectItem(rect)
+                item.setPen(QPen(color, 0))
+                item.setBrush(brush)
+                sc.addItem(item)
+            else:
+                item = sc.addPolygon(QPolygonF([scene(x, y) for x, y in
+                                                zip(v.points[0::2], v.points[1::2])]),
+                                     QPen(color, 0), brush)
+            item.setData(HANDLE_KEY, v.handle)
+            item.setData(OWNER_KEY, v.handle)
+            item.setData(CLASS_KEY, v.cls)
+            item.setData(LAYER_KEY, v.layer)
+            item.setZValue(6.6 if v.cut else 6.5)
+            self.via_items.setdefault(v.layer, []).append(item)
+            self.owner_items.setdefault(v.handle, []).append(item)
+
+    def set_vias(self, shapes):
+        """Draw these vias (ViaShape) in place of the ones drawn, without a
+        reload: after an edit, which can add, move or remove vias and numbers
+        the vias of its nets anew."""
+        for items in self.via_items.values():
+            for item in items:
+                self.highlighted.pop(item, None)
+                self.owner_items.pop(item.data(HANDLE_KEY), None)
+                self.scene().removeItem(item)
+        self.via_items = {}
+        self._add_vias(shapes, {l.name: l.color for l in self.layout.layers})
+        self._show_vias()
+        self.viewport().update()
+
+    def _show_vias(self):
+        for layer, items in self.via_items.items():
+            on = self.show["vias"] and layer in self.visible_layers
+            for item in items:
+                item.setVisible(on and self._class_shown(layer, item))
+
     def _content_rect(self):
         lay = self.layout
         if lay.bbox:
@@ -336,6 +480,9 @@ class LayoutCanvas(QGraphicsView):
             on = self.show["routes"] and layer in self.visible_layers
             for item in items:
                 item.setVisible(on and self._class_shown(layer, item))
+        self._show_vias()
+        for item in self.fly_items:
+            item.setVisible(self.show["flylines"])
         self.viewport().update()
 
     def _class_shown(self, layer, item):
@@ -782,19 +929,40 @@ class LayoutCanvas(QGraphicsView):
     def replace_route_shapes(self, prefix, shapes):
         """Remove the route shapes whose handle starts with prefix and draw
         shapes (Strap) instead: an edit's auto vias, without a reload."""
+        self._drop_route_items(lambda handle: handle.startswith(prefix))
+        self.draw_route_shapes(shapes)
+
+    def remove_route_shapes(self, handles):
+        """Take the route shapes with these handles off the drawing
+        (delete_wire), without a reload."""
+        handles = set(handles)
+        self._drop_route_items(lambda handle: handle in handles)
+        self.viewport().update()
+
+    def draw_route_shapes(self, shapes):
+        """Draw more route shapes (Strap), in their layer's colour and
+        visibility, without a reload."""
+        if not shapes:
+            return
+        drawn = {layer: len(items) for layer, items in self.strap_items.items()}
+        self.add_route_shapes(shapes, {l.name: l.color for l in self.layout.layers})
+        for layer, items in self.strap_items.items():     # the new ones only: as apply_visibility
+            on = self.show["routes"] and layer in self.visible_layers
+            for item in items[drawn.get(layer, 0):]:
+                item.setVisible(on and self._class_shown(layer, item))
+        self.viewport().update()
+
+    def _drop_route_items(self, gone):
         for layer, items in self.strap_items.items():
             keep = []
             for item in items:
-                if (item.data(HANDLE_KEY) or "").startswith(prefix):
+                if gone(item.data(HANDLE_KEY) or ""):
                     self.highlighted.pop(item, None)
                     self.owner_items.pop(item.data(HANDLE_KEY), None)
                     self.scene().removeItem(item)
                 else:
                     keep.append(item)
             items[:] = keep
-        if shapes:
-            self.add_route_shapes(shapes, {l.name: l.color for l in self.layout.layers})
-        self.apply_visibility()
 
     def editing(self):
         return self._edit_drag is not None
@@ -1119,7 +1287,14 @@ class LayoutCanvas(QGraphicsView):
         step_x, step_y = self.viewport().width() // 4, self.viewport().height() // 4
         moves = {Qt.Key_Left: (step_x, 0), Qt.Key_Right: (-step_x, 0),
                  Qt.Key_Up: (0, step_y), Qt.Key_Down: (0, -step_y)}
-        if ev.key() in moves:                     # the arrow shows where to look
+        if ev.key() in moves and ev.modifiers() & Qt.ShiftModifier and \
+                self.shift_arrow is not None:
+            self.shift_arrow(ARROWS[ev.key()])   # Move Spine: pull the head
+        elif ev.key() in moves and ev.modifiers() & Qt.ShiftModifier and \
+                self.edit["mode"] == "move":
+            if self._edit_drag is None:           # Move: the selected wires one track
+                self.trackStep.emit(ARROWS[ev.key()])
+        elif ev.key() in moves:                   # the arrow shows where to look
             # (F is the window's Fit action, so a user shortcut can replace it)
             self.pan_by(*moves[ev.key()])
         else:

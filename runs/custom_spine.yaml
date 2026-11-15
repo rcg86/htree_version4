@@ -1,13 +1,13 @@
 
 spine_spec:
-  name: custom_spine_5000
+  name: custom_spine_4000
   type: spine
   units: um
   point: center
   root_net: net
 
   constraints:
-    max_drive_length: 1020       # 1000 +/- 20 um of wire per driver
+    max_drive_length: 1200       # 1000 +/- 20 um of wire per driver
     count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
 
   placement:
@@ -17,65 +17,7 @@ spine_spec:
 
   spine:
     orientation: vertical
-    span: 6000                   # total Y covered by the stubs
-
-  stubs:
-    gap: 10
-    tap: center                  # driven at the midpoint
-
-  levels:
-    L1:
-      cells:
-        inv1: {input: net}
-        inv2: {input: L1/inv1/Y}
-                location: 1000
-        inv3: {input: L1/inv2/Y}
-                location: 1000
-    L2:
-      cells:
-        inv1: {input: L1/inv1/Y}
-                location: 500
-        inv2: {input: L1/inv3/Y}
-                location: -500
-    L3:
-      cells:
-        inv1: {input: L1/inv3/Y}
-        inv2: {input: L2/inv1/Y}
-        inv3: {input: L2/inv1/Y}
-    L4:
-      cells:
-        inv1: {input: L3/inv1/Y, output: stub1}
-        inv2: {input: L3/inv1/Y, output: stub2}
-        inv3: {input: L3/inv2/Y, output: stub3}
-        inv4: {input: L3/inv2/Y, output: stub4}
-        inv5: {input: L3/inv3/Y, output: stub5}
-        inv6: {input: L3/inv3/Y, output: stub6}
-
-
-
-
-
----
-
-
-spine_spec:
-  name: custom_spine_5001
-  type: spine
-  units: um
-  point: center
-  root_net: net
-
-  constraints:
-    max_drive_length: 1030       # 1000 +/- 20 um of wire per driver
-    count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
-
-  placement:
-    origin_x: 10                 # X of L1
-    level_pitch_x: 2.88          # X step between levels, and from L4 to the stubs
-
-  spine:
-    orientation: vertical
-    span: 4000                   # total Y covered by the stubs
+    span: 4600                   # total Y covered by the stubs
 
   stubs:
     gap: 10
@@ -89,21 +31,19 @@ spine_spec:
         inv3: {input: L1/inv2/Y}
     L2:
       cells:
-        inv1: {input: L1/inv1/Y}
-        inv2: {input: L1/inv3/Y}
+        inv1: {input: L1/inv2/Y}
+
     L3:
       cells:
         inv1: {input: L1/inv3/Y}
         inv2: {input: L2/inv1/Y}
-        inv3: {input: L2/inv1/Y}
     L4:
       cells:
         inv1: {input: L3/inv1/Y, output: stub1}
         inv2: {input: L3/inv1/Y, output: stub2}
         inv3: {input: L3/inv2/Y, output: stub3}
         inv4: {input: L3/inv2/Y, output: stub4}
-        inv5: {input: L3/inv3/Y, output: stub5}
-        inv6: {input: L3/inv3/Y, output: stub6}
+
 
 
 

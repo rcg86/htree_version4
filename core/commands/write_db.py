@@ -3,6 +3,7 @@
 import os
 import sqlite3
 
+from core import vias
 from core.messages import HtreeError, info
 from core.options import parse_options
 
@@ -28,6 +29,7 @@ def run(session, argv):
         raise HtreeError(EXISTS, f"write_db: '{path}' exists; use -overwrite to replace it")
     # Write beside the target and rename, so a failed write never loses the old file.
     tmp = f"{path}.tmp{os.getpid()}"
+    vias.sync(session.db)                 # the via table is derived: write it up to date
     try:
         session.db.write(tmp)
         os.replace(tmp, path)

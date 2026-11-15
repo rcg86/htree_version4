@@ -94,12 +94,15 @@ def run(session, argv):
 
 def inst_names(session, text):
     """Instance names from a Tcl list of names, glob patterns (*temp_*) and
-    inst: handles, in database order for patterns; each word must match."""
+    inst: handles, in database order for patterns; each word must match. A
+    word that is the name of an instance is that instance (d[3] is no
+    pattern then)."""
     every = session.db.inst_names()
+    exact = set(every)
     names = []
     for word in session.split_list(text):
         word = word.removeprefix("inst:")
-        hits = [n for n in every if fnmatch.fnmatchcase(n, word)]
+        hits = [word] if word in exact else [n for n in every if fnmatch.fnmatchcase(n, word)]
         if not hits:
             raise HtreeError(NO_INST, f"route_pin: no instance '{word}' (create_inst; "
                              f"get_db insts lists them)")

@@ -1,7 +1,7 @@
 """Main window: menu bar, a small toolbar under it, the layout canvas in the
 middle (a Layout tab, and a Schematic tab once create_spine -validate -show
-has drawn one), the visibility panel on the right, cursor position and
-selection in the status bar."""
+has drawn one), the visibility panel on the right, the Move Spine panel on
+the left while it is open, cursor position and selection in the status bar."""
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
@@ -14,14 +14,20 @@ import tkinter
 
 from core.gui import shortcuts
 from core.gui.canvas import LayoutCanvas
-from core.gui.layout_data import load_layout
+from core.gui.layout_data import load_layout, with_via_rows
+from core.gui.spine_move import SpineMover
 
 # Object categories: (key, label). Categories with no data yet are disabled.
 OBJECTS = [("boundary", "Boundary"), ("ports", "Ports"), ("tracks", "Tracks"),
            ("rows", "Rows (sites)"),
            ("nets", "Nets"), ("cells", "Cells (instances)"), ("pins", "Pins"),
-           ("spine", "Spine"), ("routes", "Routes (route_pin, route_net)")]
+           ("spine", "Spine"), ("routes", "Routes (route_pin, route_net)"),
+           ("vias", "Vias"), ("flylines", "Flyline")]
 NOT_YET = {"nets": "No nets in the database yet"}
+VIA_TIP = ("The vias of the routes: a box with a cross, or the cuts and pads of its via "
+           "definition (assign_via_for_route). Each is shown with its via_ row of Layers")
+FLY_TIP = ("Lines from the selected pins, or the pins of the selected instances, to what "
+           "their nets connect them to")
 BUTTON_ZOOM = 1.5            # Zoom In / Zoom Out step
 NAMES_SHOWN = 3              # status bar centre: names of a multiple selection shown
 # The small boxes beside each layer: (net class, text, tooltip). All start on.
@@ -43,6 +49,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.tabs)
         self.object_boxes = {}
         self.layer_boxes = {}
+        self.layer_in_tech = {}               # layer -> a tech layer when its box was made
         self.class_boxes = {}                # (layer, signal|power|ground) -> QCheckBox
         self.all_class_boxes = {}            # signal|power|ground -> the All layers box
         self.assign_boxes = {}               # (layer, net) -> QCheckBox
@@ -52,6 +59,10 @@ class MainWindow(QMainWindow):
         self._edited = None                  # wires an edit here is changing: redraw just them
         self._build_panel()
         self._build_actions()
+        # Move Spine: the interactive move_spine_to_boundary, hidden until asked for.
+        self.mover = SpineMover(self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.mover)
+        self.mover.hide()
         self.pos_label = QLabel("")
         self.sel_label = QLabel("")
         # Centre: the selected object's name (a wire's net, inst/pin for a pin).
@@ -76,6 +87,8 @@ class MainWindow(QMainWindow):
             box.setChecked(self.canvas.show.get(key, False))
             box.toggled.connect(lambda on, k=key: self.canvas.set_show(k, on))
             self.object_boxes[key] = box
+            if key == "flylines":                 # drawn for the selection, when ticked
+                box.toggled.connect(lambda on: self.show_flylines())
             if key == "pins":                     # Pins, with a Label box beside it
                 row = QHBoxLayout()
                 row.addWidget(box)
@@ -171,6 +184,9 @@ class MainWindow(QMainWindow):
         hint = QLabel("Drag: zoom to box   Wheel: zoom   F: fit\n"
                       "Edit > Shortcuts: list and create shortcuts\n"
                       "Middle drag / arrows: pan\n"
+                      "Move Spine: Shift+arrows move the head\n"
+                      "Tools: Move: Shift+arrows move the selected\n"
+                      "  wires one track\n"
                       "Click: select   Ctrl+click: add/remove\n"
                       "Shift+drag: select in box   get_db selected\n"
                       "Right drag: select all touching box\n"
@@ -242,7 +258,8 @@ class MainWindow(QMainWindow):
                                          "lengthen or shorten it (stretch_wire)")
         self.act_tool_move = QAction("Move", self, checkable=True)
         self.act_tool_move.setToolTip("Drag a wire, strap or pin wire (all selected ones when "
-                                      "it is selected) to move it (move_wire)")
+                                      "it is selected) to move it (move_wire); Shift+arrow "
+                                      "moves the selected ones to the next track of their net")
         self.tool_group = QActionGroup(self)
         # Optional: the key of the mode in use (S again in Stretch) turns it off,
         # which goes back to Select.
@@ -260,11 +277,22 @@ class MainWindow(QMainWindow):
                                       "Stretch: the edge onto a nearby edge or track; else "
                                       "the manufacturing grid")
         self.act_edit_snap.toggled.connect(lambda on: self.canvas.edit.update(snap=on))
+        self.act_delete = action("Delete", self.delete_selected, None,
+                                 "Delete the selected wires, straps and pin wires "
+                                 "(delete_wire); Undo Edit puts them back")
         self.act_undo_edit = action("Undo Edit", self.undo_edit, None,
-                                    "Undo the last Stretch or Move")
+                                    "Undo the last Stretch, Move or Delete")
         self.act_undo_edit.setEnabled(False)
+        # Move Spine: bend a built spine by moving its head (move_spine_to_boundary).
+        self.act_move_spine = action("Move Spine...", lambda: self.mover.open(), None,
+                                     "Bend a built spine: Shift+arrow moves its head, the "
+                                     "body follows (move_spine_to_boundary)")
+        self.act_swap_head = action("Swap Spine Head", lambda: self.mover.swap_head(), None,
+                                    "Move Spine: make the other end of the spine the head")
+        self.act_swap_head.setEnabled(False)  # on while a spine is being moved
         self.canvas.wiresMoved.connect(self.on_wires_moved)
         self.canvas.wireStretched.connect(self.on_wire_stretched)
+        self.canvas.trackStep.connect(self.step_selected)
         self.act_ruler.toggled.connect(lambda on: on and self.act_tool_select.setChecked(True))
         self.act_shortcuts = action("Shortcuts...", self.show_shortcuts, None,
                                     "List the keyboard shortcuts and create new ones")
@@ -277,10 +305,12 @@ class MainWindow(QMainWindow):
             "ruler": self.act_ruler, "clear_rulers": self.act_clear_rulers,
             "tool_select": self.act_tool_select, "tool_stretch": self.act_tool_stretch,
             "tool_move": self.act_tool_move, "edit_snap": self.act_edit_snap,
-            "undo_edit": self.act_undo_edit, "clear_selection": self.act_clear_sel,
+            "delete": self.act_delete,
+            "undo_edit": self.act_undo_edit, "move_spine": self.act_move_spine,
+            "swap_head": self.act_swap_head, "clear_selection": self.act_clear_sel,
             "shortcuts": self.act_shortcuts}
         self.default_shortcuts = {"fit": "F", "ruler": "K", "clear_rulers": "Shift+K",
-                                  "tool_stretch": "S", "tool_move": "M",
+                                  "tool_stretch": "S", "tool_move": "M", "swap_head": "H",
                                   "clear_selection": "Esc"}
         for key, seq in self.default_shortcuts.items():
             self.creatable[key].setShortcut(QKeySequence(seq))
@@ -299,7 +329,11 @@ class MainWindow(QMainWindow):
             edit_menu.addAction(a)            # also makes their shortcuts work
         edit_menu.addAction(self.act_edit_snap)
         edit_menu.addSeparator()
+        edit_menu.addAction(self.act_delete)
         edit_menu.addAction(self.act_undo_edit)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.act_move_spine)
+        edit_menu.addAction(self.act_swap_head)
         edit_menu.addSeparator()
         edit_menu.addAction(self.act_shortcuts)
         view_menu = bar.addMenu("&View")
@@ -347,14 +381,17 @@ class MainWindow(QMainWindow):
         self.tools_menu.addSeparator()
         self.tools_menu.addAction(self.act_edit_snap)
         self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.act_delete)
         self.tools_menu.addAction(self.act_undo_edit)
         self.tools_button = QToolButton()
         self.tools_button.setText("Tools")
-        self.tools_button.setToolTip("Fix routes by hand: Stretch an edge, Move a wire")
+        self.tools_button.setToolTip("Fix routes by hand: Stretch an edge, Move a wire, "
+                                     "Delete the selected wires")
         self.tools_button.setMenu(self.tools_menu)
         self.tools_button.setPopupMode(QToolButton.InstantPopup)
         self.tools_button.setToolButtonStyle(Qt.ToolButtonTextOnly)
         tools.addWidget(self.tools_button)
+        tools.addAction(self.act_move_spine)
         self.addToolBar(Qt.TopToolBarArea, tools)
         self.toolbar = tools
         self.canvas.rulerPlaced.connect(self.on_ruler)
@@ -363,7 +400,8 @@ class MainWindow(QMainWindow):
     def all_actions(self):
         """The window's actions, in menu order, for the shortcut list."""
         return [self.act_close, self.act_tool_select, self.act_tool_stretch, self.act_tool_move,
-                self.act_edit_snap, self.act_undo_edit, self.act_shortcuts, self.act_fit,
+                self.act_edit_snap, self.act_delete, self.act_undo_edit,
+                self.act_move_spine, self.act_swap_head, self.act_shortcuts, self.act_fit,
                 self.act_zoom_in, self.act_zoom_out, self.act_zoom_sel, self.act_blink_sel,
                 self.act_ruler, self.act_clear_rulers, self.act_clear_sel]
 
@@ -392,7 +430,7 @@ class MainWindow(QMainWindow):
     def show_shortcuts(self):
         shortcuts.ShortcutsDialog(self).exec()
 
-    # -- Tools: Stretch and Move run move_wire / stretch_wire ------------------------
+    # -- Tools: Stretch, Move and Delete run stretch_wire / move_wire / delete_wire ---
     def set_tool(self, mode):
         """None (select), "stretch" or "move"."""
         if mode and self.act_ruler.isChecked():
@@ -409,20 +447,86 @@ class MainWindow(QMainWindow):
         self.run_edit(f"stretch_wire -wire {handle} -edge {edge} -to {_n(to)}",
                       f"stretch_wire -wire {handle} -edge {edge} -to {_n(old)}")
 
+    def step_selected(self, direction):
+        """Move tool, Shift+arrow: the selected wires one track up, down, left
+        or right (move_wire -next_track), each onto the next track of its own
+        net, a signal wire with its shields. Undo Edit moves them back by what
+        each moved."""
+        from core import objects
+        from core.commands import move_wire
+        sel = objects.selected(self.session.db)
+        wires = " ".join(h for h in sel if objects.obj_type(h) in objects.WIRE_TABLES)
+        if not wires:
+            self.statusBar().showMessage("Move: select a wire first (Shift+arrow moves the "
+                                         "selected wires one track)", 8000)
+            return
+        moves, stay = move_wire.next_track_moves(
+            self.session.db, move_wire.wire_rows(self.session, wires, move_wire.NAME), direction)
+        left = "; ".join(f"{h} ({why})" for h, why in stay)
+        if not moves:
+            self.statusBar().showMessage(f"Move: not moved: {left}", 8000)
+            return
+        moved = " ".join(m[0] for m in moves)
+        back = " ".join(f"{{{_n(-m[3][0])} {_n(-m[3][1])}}}" for m in moves)
+        self.run_edit(f"move_wire -wires {{{wires}}} -next_track {direction}",
+                      f"move_wire -wires {{{moved}}} -delta {{{back}}}",
+                      [m[0] for m in moves])  # with the shields of a signal wire
+        if stay:
+            self.statusBar().showMessage(f"Move: not moved: {left}", 8000)
+
+    def delete_selected(self):
+        """Tools > Delete: delete_wire on the selected route shapes. Other
+        selected objects (instances, pins, ports, stubs) stay."""
+        from core import objects
+        from core.commands import delete_wire
+        from core.commands.move_wire import wire_rows
+        sel = objects.selected(self.session.db)
+        wires = " ".join(h for h in sel if objects.obj_type(h) in objects.WIRE_TABLES)
+        if not wires:
+            self.statusBar().showMessage(
+                "Delete: select a wire, strap or pin wire first"
+                + (" (instances, pins, ports and stubs are not deleted)" if sel else ""), 8000)
+            return
+        rows = delete_wire.targets(self.session.db,
+                                   wire_rows(self.session, wires, delete_wire.NAME))
+        self.run_edit(f"delete_wire -wires {{{wires}}}", "delete_wire -undo",
+                      [h for h, _, _ in rows])
+
     def undo_edit(self):
         if self.undo_edits:
             self.run_edit(self.undo_edits.pop(), None)
 
-    def run_edit(self, cmd, undo):
+    def run_edit(self, cmd, undo, edited=None):
         """Run an edit command as if typed: it is echoed with its output in
         the terminal, only the wires it changes are redrawn (the view stays
         where it is), and undo (the command that reverses it) is kept for
-        Undo Edit. Returns True when it ran."""
+        Undo Edit. edited: the wires it changes, when they are more than its
+        -wires. Returns True when it ran."""
+        session = self.session
+        words = session.split_list(cmd)
+        if edited is not None:
+            self._edited = list(edited)
+        elif "-undo" in words:                # delete_wire -undo: the wires it puts back
+            from core.commands import delete_wire
+            self._edited = delete_wire.last_deleted(session.db)
+        else:
+            self._edited = session.split_list(words[words.index("-wires" if "-wires" in words
+                                                                else "-wire") + 1])
+        try:
+            ok, _ = self.run_command(cmd)
+        finally:
+            self._edited = None
+        if ok and undo:
+            self.undo_edits.append(undo)
+        self.act_undo_edit.setEnabled(bool(self.undo_edits))
+        return ok
+
+    def run_command(self, cmd):
+        """Run a command as if typed: it is echoed with its output in the
+        terminal; a failure also shows in the status bar. Returns (True when
+        it ran, its output)."""
         session = self.session
         out, session.out = session.out, io.StringIO()
-        words = session.split_list(cmd)
-        self._edited = session.split_list(words[words.index("-wires" if "-wires" in words
-                                                            else "-wire") + 1])
         ok = True
         try:
             session.eval(cmd)
@@ -430,15 +534,11 @@ class MainWindow(QMainWindow):
             ok = False
         finally:
             text, session.out = session.out.getvalue(), out
-            self._edited = None
         session.notify(f"{cmd}\n{text.rstrip()}" if text.strip() else cmd)
-        if ok and undo:
-            self.undo_edits.append(undo)
-        self.act_undo_edit.setEnabled(bool(self.undo_edits))
         if not ok:
             self.statusBar().showMessage(text.strip().splitlines()[-1] if text.strip()
                                          else f"failed: {cmd}", 8000)
-        return ok
+        return ok, text
 
     def on_escape(self):
         if self.canvas.editing():
@@ -479,7 +579,10 @@ class MainWindow(QMainWindow):
             if w is not None:                     # hide now: deleteLater paints until then
                 w.hide()
                 w.deleteLater()
-        old = {name: box.isChecked() for name, box in self.layer_boxes.items()}
+        # A layer keeps the user's choice while it stays a tech layer, or stays none.
+        old = {name: box.isChecked() for name, box in self.layer_boxes.items()
+               if (lay := self.layout.layer(name)) and lay.in_tech == self.layer_in_tech[name]}
+        self.layer_in_tech = {info.name: info.in_tech for info in self.layout.layers}
         old_classes = {k: box.isChecked() for k, box in self.class_boxes.items()}
         self.layer_boxes, self.class_boxes = {}, {}
         for info in self.layout.layers:
@@ -490,12 +593,18 @@ class MainWindow(QMainWindow):
             if info.track_patterns:
                 counts.append(f"{info.track_patterns} track patterns")
             box = QCheckBox(f"{label}  ({info.port_shapes})" if info.port_shapes else label)
-            box.setToolTip(f"{info.name}: " + (", ".join(counts) or "no objects")
-                           + ("" if info.in_tech else "; not in tech, ignored in calculations"))
+            if info.via:                          # the vias between two layers
+                box.setToolTip(f"{info.name}: {info.port_shapes or 'no'} via(s) between "
+                               f"{info.via[0]} and {info.via[1]}"
+                               + (f", cut layer {info.cut}" if info.cut else ""))
+            else:
+                box.setToolTip(f"{info.name}: " + (", ".join(counts) or "no objects") + (
+                    "" if info.in_tech else "; not in tech, ignored in calculations"))
             pix = QPixmap(12, 12)
             pix.fill(QColor(info.color))
             box.setIcon(QIcon(pix))
-            # Keep the user's choice across refreshes; new layers: tech on, others off.
+            # Keep the user's choice across refreshes; new layers, and layers read_tech
+            # made tech layers (a wider layer range): tech on, others off.
             box.setChecked(old.get(info.name, info.in_tech))
             box.toggled.connect(lambda on, n=info.name: self.canvas.set_layer_visible(n, on))
             # The layer, then small Signal / Power / Ground boxes on the same row.
@@ -507,7 +616,8 @@ class MainWindow(QMainWindow):
             for cls, text, tip in CLASS_BOXES:
                 small = QCheckBox(text)
                 small.setStyleSheet("QCheckBox { font-size: 8pt; }")
-                small.setToolTip(tip)
+                small.setToolTip(f"Vias of {cls} nets between {info.via[0]} and {info.via[1]}"
+                                 if info.via else tip)
                 small.setChecked(old_classes.get((info.name, cls), True))
                 small.toggled.connect(lambda on, n=info.name, c=cls:
                                       self._class_toggled(n, c, on))
@@ -623,22 +733,9 @@ class MainWindow(QMainWindow):
     def refresh(self):
         """Reload everything from the database (after a command changed it).
         During an edit made here, only the edited wires are redrawn."""
-        if self._edited is not None:
-            from core import objects
-            rects = {}
-            for h in self._edited:
-                row = objects.wire_row(self.session.db, h)
-                if row is not None:
-                    rects[h] = tuple(float(c) for c in row["rect"].split())
-            self.canvas.update_rects(rects)
-            from core import auto_via
-            from core.gui.layout_data import net_wire_strap
-            for h in self._edited:                # its auto vias (stretch_wire)
-                self.canvas.replace_route_shapes(
-                    f"net_wire:{auto_via.owner(h)}/",
-                    [net_wire_strap(r) for r in self.session.db.net_wire_rows(auto_via.owner(h))])
-            self.show_selection()
+        if self._edited is not None and self._redraw_edited():
             return
+        from core import netlist
         self.layout = load_layout(self.session.db)
         self._rebuild_layer_boxes()
         self._rebuild_assignments()
@@ -655,15 +752,64 @@ class MainWindow(QMainWindow):
                "spine": bool(self.layout.spines),
                "routes": bool(self.layout.straps or self.layout.pin_wires
                               or self.layout.net_wires),
-               "pins": inst_pins, "labels": inst_pins or bool(self.layout.shapes)}
+               "vias": bool(self.layout.vias),
+               "pins": inst_pins, "labels": inst_pins or bool(self.layout.shapes),
+               "flylines": bool(netlist.pins(self.session.db))}     # a pin on a net
+        tips = {"flylines": FLY_TIP, "vias": VIA_TIP}
         for key, present in has.items():
             self.object_boxes[key].setEnabled(present)
-            self.object_boxes[key].setToolTip("" if present else "Nothing in the database yet")
+            self.object_boxes[key].setToolTip(tips.get(key, "") if present
+                                              else "Nothing in the database yet")
         visible = {n for n, b in self.layer_boxes.items() if b.isChecked()}
         self.canvas.set_layout(self.layout, visible)
         self.show_selection()
         title = f"htree4 - {self.layout.design}" if self.layout.design else "htree4"
         self.setWindowTitle(title)
+        self.mover.reloaded()                 # its spine list, or its preview again
+
+    def _redraw_edited(self):
+        """Redraw just the wires an edit made here changed: moved or stretched
+        ones at their new rect, deleted ones gone, ones put back drawn again.
+        False when that needs the whole layout (a wire back on a layer that
+        has no colour yet)."""
+        from core import auto_via, objects
+        from core.gui.layout_data import net_wire_strap, pin_wire_shape, strap_shape
+        shape = {"net_wire": net_wire_strap, "strap": strap_shape, "pin_wire": pin_wire_shape}
+        rects, gone, back = {}, [], []
+        for h in self._edited:
+            row = objects.wire_row(self.session.db, h)
+            if row is None:
+                gone.append(h)
+            elif h in self.canvas.owner_items:
+                rects[h] = tuple(float(c) for c in row["rect"].split())
+            else:
+                back.append(shape[objects.obj_type(h)](row))
+        names = {l.name for l in self.layout.layers}
+        if {st.layer for st in back} - names:
+            return False
+        self.canvas.update_rects(rects)
+        self.canvas.remove_route_shapes(gone)
+        self.canvas.draw_route_shapes(back)
+        for h in self._edited:                # its auto vias (stretch_wire)
+            self.canvas.replace_route_shapes(
+                f"net_wire:{auto_via.owner(h)}/",
+                [net_wire_strap(r) for r in self.session.db.net_wire_rows(auto_via.owner(h))])
+        # The vias: all of them, an edit numbers the vias of its nets anew. One between
+        # two layers that had no vias gets its row in the layer list.
+        layers, self.layout.vias = with_via_rows(
+            self.session.db, [l for l in self.layout.layers if l.via is None],
+            self.layout.via_colors)
+        if [l.name for l in layers] != [l.name for l in self.layout.layers]:
+            self.layout.layers = layers
+            self._rebuild_layer_boxes()
+            self.canvas.visible_layers = {n for n, b in self.layer_boxes.items()
+                                          if b.isChecked()}
+        self.canvas.set_vias(self.layout.vias)
+        if self.layout.vias:
+            self.object_boxes["vias"].setEnabled(True)
+            self.object_boxes["vias"].setToolTip(VIA_TIP)
+        self.show_selection()
+        return True
 
     def show_schematic(self, plan):
         """Draw a create_spine plan in the Schematic tab and switch to it."""
@@ -699,6 +845,7 @@ class MainWindow(QMainWindow):
         from core import objects
         sel = objects.selected(self.session.db)
         self.canvas.highlight(sel)
+        self.show_flylines(sel)
         if not sel:
             self.sel_label.setText("")
         elif len(sel) == 1:
@@ -710,9 +857,20 @@ class MainWindow(QMainWindow):
         self.name_label.setText(", ".join(names[:NAMES_SHOWN]) + more)
         self.name_label.setToolTip("\n".join(names) if more else "")
 
+    def show_flylines(self, sel=None):
+        """Draw the flylines of the selection (core/gui/flylines.py) while
+        Flyline is ticked; none when it is not."""
+        from core import objects
+        from core.gui.flylines import flylines
+        db = self.session.db
+        on = self.object_boxes["flylines"].isChecked()
+        if on and sel is None:
+            sel = objects.selected(db)
+        self.canvas.set_flylines(flylines(db, sel) if on else [])
+
     def object_name(self, handle):
         """The name the status bar shows in its centre: a wire's net (a
-        shield's, a power extension's or a via's: its power net), an
+        shield's, a power extension's or a via's: its power net), a via's net, an
         instance's name, inst/pin for a pin, a port's pin name. A strap or pin
         wire of an unrouted signal pin (net SIGNAL) shows its inst/pin."""
         from core import objects
@@ -734,6 +892,8 @@ class MainWindow(QMainWindow):
             return rest.split("/")[1] if "/" in rest else rest
         if kind == "spine_net":                            # <spine>/<net>
             return rest.partition("/")[2] or rest
+        if kind == "via":                                  # <net>/<n>
+            return rest.rpartition("/")[0] or rest
         return rest or handle                              # inst, pin (inst/pin), net, stub
 
     def describe(self, handle):
@@ -773,6 +933,13 @@ class MainWindow(QMainWindow):
             shield = f"  {g('shield_net')} shielding {g('net')}" if g("kind") == "shield" else ""
             return (f"{handle}  {g('kind')}  layer {g('layer')}  rect {{{g('rect')}}}  "
                     f"{g('width')} x {g('length')}{shield}")
+        if kind == "via":
+            g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
+            cut = f" through {g('cut_layer')}" if g("cut_layer") else ""
+            via_def = g("via_def").partition(":")[2] or "none"     # via_def:<name>
+            return (f"{handle}  {g('kind')}  {g('bottom_layer')} to {g('top_layer')}{cut}  "
+                    f"via_def {via_def}  at {{{g('location')}}}  "
+                    f"rect {{{g('rect')}}}  of {g('source')}")
         if kind == "stub":
             g = lambda a: objects.format_value(objects.get_attr(db, handle, a))
             return (f"{handle}  driver {g('driver')}  points {{{g('points')}}}  "

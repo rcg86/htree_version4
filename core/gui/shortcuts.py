@@ -17,7 +17,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QComboBox, QDialog, QDialogBut
                                QVBoxLayout)
 
 # Keys handled by the canvas itself, not by an action: shown, not editable.
-FIXED = [("Pan", "Arrow keys"), ("Zoom", "Mouse wheel")]
+FIXED = [("Pan", "Arrow keys"), ("Move Spine: move the head", "Shift+Arrow keys"),
+         ("Move: selected wires one track", "Shift+Arrow keys"), ("Zoom", "Mouse wheel")]
 
 
 def store_path():

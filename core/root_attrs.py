@@ -47,7 +47,7 @@ ATTRS = {
     "route_auto_via_insertion_during_stretch": Attr(
         "int", lambda db: 1, "1",
         "Tools > Stretch / stretch_wire: a via is added where the stretched wire newly "
-        "crosses a wire of its net up to this many routing layers away (1: the next "
+        "crosses a wire of its net up to this many vias away (1: the next "
         "layer, IA-IB; 3: H2-IA over G1 and G2; 0: none)"),
 }
 

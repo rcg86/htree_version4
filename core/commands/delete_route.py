@@ -4,15 +4,17 @@ themselves (instances, connections, route rules) stay.
     delete_route -nets [get_db stubs]
     delete_route -nets {temp_L1_inv1_Y temp_L2*}
 
-A stub loses its route_final_stub wire and crossing boxes. A spine net loses
-what route_net made: wires, strap extensions, crossing boxes, shields and
-shield extensions; the route_pin straps and pin wires it had named after the
-net go back to SIGNAL, as they connect to nothing now. A leaf net keeps its
+A stub loses its route_final_stub wire and crossing boxes. A spine net, or a
+net of no spine (net:<name>: a port's, connect_pin's, add_buffer_on_net's),
+loses what route_net made: wires, strap extensions, crossing boxes, shields
+and shield extensions; the route_pin straps and pin wires it had named after
+the net go back to SIGNAL, as they connect to nothing now. A leaf net keeps its
 stub's wire, and a stub keeps its leaf net's route: each is deleted on its own.
 """
 
 import fnmatch
 
+from core import netlist
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -31,7 +33,7 @@ def run(session, argv):
     opts, _ = parse_options(NAME, argv, OPTIONS)
     if "-nets" not in opts:
         raise HtreeError(USAGE, "delete_route: -nets is required. Usage: delete_route -nets "
-                         "<nets>  (names, patterns, spine_net: or stub: handles)")
+                         "<nets>  (names, patterns, spine_net:, net: or stub: handles)")
     db = session.db
     nets, stubs = _targets(session, opts["-nets"])
     out = session.out
@@ -43,7 +45,7 @@ def run(session, argv):
              f"removed" + (f"; {pins} strap(s) and pin wire(s) back on {SIGNAL}"
                            if pins else ""), out)
         if wires or pins:
-            done.append(f"spine_net:{spine}/{name}")
+            done.append(f"spine_net:{spine}/{name}" if spine else f"net:{name}")
     for spine, stub, leaf in stubs:
         wires = db.set_net_wires(leaf, [], stub=True) if leaf else 0
         info(f"  stub {spine}/{stub}: {wires} wire(s) and crossing box(es) removed"
@@ -59,7 +61,8 @@ def run(session, argv):
 
 def _targets(session, text):
     """([(spine, net name)], [(spine, stub name, leaf net)]) from names, glob
-    patterns, spine_net: and stub: handles; each word must match one."""
+    patterns, spine_net:, net: and stub: handles; each word must match one.
+    A net of no spine (net:<name>) has spine None."""
     db = session.db
     nets, stubs = [], []
     for s in db.spine_names():
@@ -68,12 +71,18 @@ def _targets(session, text):
         nets += [(s, r["name"]) for r in rows]
         leaf = {r["loads"]: r["name"] for r in rows}
         stubs += [(s, r["name"], leaf.get(r["name"])) for r in db.spine_stub_rows(spine["id"])]
+    mine = {name for _, name in nets}
+    # the nets of no spine: with a pin on them, or still holding a route
+    plain = [n for n in dict.fromkeys(netlist.plain_nets(db) + [
+        r["net"] for r in db.net_wire_rows() if r["kind"] == "wire"]) if n not in mine]
     found_nets, found_stubs = [], []
     for word in session.split_list(text):
         kind, _, rest = word.partition(":") if ":" in word else ("", "", word)
         spine, _, name = rest.partition("/") if kind else ("", "", rest)
         hit_nets = [n for n in nets if kind in ("", "spine_net")
                     and (n == (spine, name) if kind else fnmatch.fnmatchcase(n[1], name))]
+        hit_nets += [(None, n) for n in plain if kind in ("", "net")
+                     and (n == rest if kind else fnmatch.fnmatchcase(n, rest))]
         hit_stubs = [t for t in stubs if kind in ("", "stub")
                      and ((t[0], t[1]) == (spine, name) if kind
                           else fnmatch.fnmatchcase(t[1], name))]

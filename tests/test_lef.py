@@ -75,8 +75,10 @@ def test_extras_are_kept(write_lef):
     ]
     assert v1.type == "cut"
     kinds = [(e.kind, e.line) for e in tech.extras]
-    assert kinds == [("BUSBITCHARS", 2), ("UNITS", 5), ("VIA", 21), ("SITE", 25)]
-    assert tech.extras[2].text.splitlines()[-1] == "END V1_0"
+    assert kinds == [("BUSBITCHARS", 2), ("UNITS", 5), ("SITE", 25)]
+    via, = tech.vias                        # a VIA is modeled, not an extra
+    assert (via.name, via.line, via.default) == ("V1_0", 21, True)
+    assert via.lef_text.splitlines()[-1] == "END V1_0"
 
 
 LEF_MULTILINE_PROPERTY = """LAYER D12

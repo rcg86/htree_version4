@@ -15,12 +15,21 @@ DESCRIPTION
         connect <inst>/<pin> -net <net>
 
     Step 1 creates every spine net: the output net of each spine cell
-    (<inst>_Y), mirrored halves included. Then one step per spine level,
-    from the root: each cell is created, placed at its lower-left corner
-    in microns, and its input pin and output pin connected. The root's
-    input takes the spine spec's root_net, which must already exist in the
-    design (the script says so in a comment; it does not create it). A
-    leaf's output net is the net of its stub.
+    (<inst>_Y), mirrored halves included, and then the nets connect_pin
+    made (<inst>_<pin>, driven by an instance that is no spine cell).
+    Then one step per spine level, from the root: each cell is created,
+    placed at its lower-left corner in microns, and its input pin and
+    output pin connected. The root's input takes the spine spec's
+    root_net, which must already exist in the design (the script says so
+    in a comment; it does not create it). A leaf's output net is the net
+    of its stub.
+
+    The connections are the netlist as it is now: what create_spine
+    -build made, changed by connect_pin and disconnect_pin. A pin taken
+    off its net gets no connect line (the script creates its instance, so
+    there is nothing to disconnect in the design). The net of a port that
+    connect_pin put pins on, or that a buffer of connect_spine drives,
+    must exist in the design, as a root net must: a comment names it.
 
     Orientations are written as Innovus names: N R0, S R180, FN MY, FS MX
     (mirrored spine cells), W R90, E R270, FW MX90, FE MY90.
@@ -30,7 +39,7 @@ DESCRIPTION
     after its place_inst.
 
     Instances that belong to no spine (create_inst) are created and placed
-    in a last step, not connected.
+    in a last step, with the connections connect_pin gave them, if any.
 
     Routing is not in this script; write_def writes it.
 
@@ -63,4 +72,4 @@ ERRORS
     HT4-186  -output cannot be written
 
 SEE ALSO
-    write_def, create_spine, create_inst
+    write_def, create_spine, create_inst, connect_pin, disconnect_pin

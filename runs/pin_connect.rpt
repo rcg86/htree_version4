@@ -1,0 +1,49 @@
+# Task: Power/signal strap stack — spec and height/width calculation
+
+## Context
+I am planning a horizontal routing stack of power and signal straps. All dimensions are in microns (µm).
+Do not assume any value not given here. If something needed is marked <TBD>, ask me before proceeding.
+
+## Track rules
+- Wire width: 0.72 µm (every net, power and signal)
+- Spacing between adjacent wires: 0.72 µm (edge to edge)
+- Track pitch: 1.44 µm (width + spacing)
+- Same width/spacing applies in X and Y
+- Metal layer: <TBD, e.g. M7 horizontal>
+- Tool / PDK: <TBD, e.g. Innovus / ICC2, node>
+
+## Stack order (top to bottom), 7 tracks
+1. VSS        (added extra)
+2. VDD_SOC
+3. SIGNAL
+4. VSS
+5. SIGNAL
+6. VDD_SOC
+7. VDD_SOC    (added extra)
+
+## Height requirement
+- Edge-to-edge height = 7 × 0.72 + 6 × 0.72 = 9.36 µm
+- Tileable height (half spacing, 0.36 µm, above and below) = 7 × 1.44 = 10.08 µm
+- Use 10.08 µm if the stack repeats or abuts other routing; 9.36 µm if it is isolated.
+
+## Width requirement
+- Straps run horizontally, so width = strap length.
+- Strap length / span: <TBD, e.g. full macro width, X µm, or N repetitions>
+- If the same 7-track pattern is also used vertically on the orthogonal layer,
+  width = 9.36 µm edge to edge / 10.08 µm tileable.
+
+## Open items to flag (do not silently resolve)
+1. Tracks 6 and 7 are both VDD_SOC and adjacent. Either keep as two straps
+   or merge into one 2.16 µm strap (0.72 + 0.72 + 0.72). Ask me which.
+   If merged, check the PDK wide-metal spacing rule, which may exceed 0.72 µm.
+2. Confirm 0.72 µm spacing is legal for 0.72 µm wide power straps on this layer
+   (wide-metal / PRL spacing rules).
+3. Confirm the stack aligns to the routing track grid / manufacturing grid.
+
+## What I want from you
+1. Restate the spec back to me and list any assumptions.
+2. Compute the height (both edge-to-edge and tileable) and the width once the span is known,
+   showing the arithmetic.
+3. Produce: <TBD — e.g. a table of each net's y-offset (bottom and top edge),
+   and/or tool commands (addStripe / create_pg_strap) to create the straps>.
+4. List any rule checks I should run afterward (DRC spacing, grid alignment).
