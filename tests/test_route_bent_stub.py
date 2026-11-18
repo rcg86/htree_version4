@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("scipy")
 
 from test_move_spine import MOVES, build
-from test_route_net import _floats, out_of
+from test_route_net import _floats, def_block, def_rect, out_of
 
 # The fixture of test_move_spine: signal tracks at 1.8 + 2.88 k on IA and IB,
 # the stub line at x 78.64 (nearest signal track 79.56, then 76.68).
@@ -22,7 +22,7 @@ def bent(s, moves=MOVES, width=0.36):
 
 def stub_wires(s, net, kind="stub"):
     """[(layer, [x1, y1, x2, y2])] of a net's route_final_stub rows of a kind."""
-    return [(r["layer"], _floats(r["rect"])) for r in s.db.net_wire_rows(net)
+    return [(r["layer"], _floats(r["rect"])) for r in s.db.stub_wire_rows(net)
             if r["kind"] == kind]
 
 
@@ -55,7 +55,7 @@ def test_l_shaped_stub_is_a_wire_a_piece_and_a_box_at_the_bend(tech_session, wri
     assert "HT4-192" in text and "route_net -net sp_L3_inv2_Y first" in text
     # the view draws every row: the wires filled, the box as an outline on its first layer
     from core.gui.layout_data import load_layout
-    drawn = [w for w in load_layout(s.db).net_wires if w.net == "sp_L3_inv2_Y"]
+    drawn = [w for w in load_layout(s.db).net_wires if w.net == "sp_L3_inv2_Y_stub"]
     assert sorted((w.layer, w.outline) for w in drawn) == [("IA", False), ("IA", True),
                                                            ("IB", False)]
 
@@ -98,7 +98,7 @@ def test_every_piece_gets_its_shields(tech_session, write_lef):
     same(stub_wires(s, "sp_L3_inv2_Y"), [("IA", [68.88, 30.24, 79.92, 30.96]),
                                          ("IB", [79.2, 30.24, 79.92, 39.84])])
     shields = [(r["layer"], r["shield_net"], _floats(r["rect"]))
-               for r in s.db.net_wire_rows("sp_L3_inv2_Y") if r["kind"] == "stub_shield"]
+               for r in s.db.stub_wire_rows("sp_L3_inv2_Y") if r["kind"] == "stub_shield"]
     # one each side of each piece, a track of its net 1.44 (width + spacing) away
     at = sorted((layer, net, round((r[1] + r[3]) / 2 if layer == "IA" else (r[0] + r[2]) / 2, 6))
                 for layer, net, r in shields)
@@ -109,7 +109,7 @@ def test_every_piece_gets_its_shields(tech_session, write_lef):
     assert "shield VDD: 2 wire(s)" in text and "shield VSS: 2 wire(s)" in text
     # routed again without -shield: the shields go with the old wires
     s.eval("route_final_stub -rule r -stub stub2")
-    assert not [r for r in s.db.net_wire_rows("sp_L3_inv2_Y") if r["kind"] == "stub_shield"]
+    assert not [r for r in s.db.stub_wire_rows("sp_L3_inv2_Y") if r["kind"] == "stub_shield"]
     assert len(stub_wires(s, "sp_L3_inv2_Y")) == 2
 
 
@@ -171,10 +171,9 @@ def test_leaf_routes_meet_the_bent_stubs(tech_session, write_lef, tmp_path, move
     path = tmp_path / "s.def"
     s.eval(f"write_def -output {path}")
     for net in leaves:
-        block = path.read_text().split(f"- {net} ")[1].split("\n  ;")[0]
+        block = def_block(path.read_text(), net)
         for layer, r in after[net]:
-            x1, y1, x2, y2 = (round(v * 1000) for v in r)
-            assert f"{layer} ( {x1} {y1} ) RECT ( 0 0 {x2 - x1} {y2 - y1} )" in block
+            assert def_rect("FIXED", layer, " ".join(map(str, r))) in block
     # delete_route of the stubs removes their wires and boxes, the leaf routes stay
     s.eval("delete_route -nets [get_db stubs]")
     for net in leaves:

@@ -85,8 +85,12 @@ DESCRIPTION
             get_db layers          -> same
             get_db head.layers     -> same
             get_db layers.name     -> H1 H2 ...
-        An optional second word filters objects by name (glob):
+        An optional second word filters objects by name (glob): an
+        object's own name, or its whole name after the type, with the
+        names it lies in (a stub's spine, a pin's instance):
             get_db layers G*       -> layer:G1 layer:G2
+            get_db stub sp*        -> the stubs of the spines named sp...
+            get_db stub sp/stub1   -> stub:sp/stub1
 
     get_db <objects> .<attr>
         Returns the attribute for each object. One object returns a single
@@ -128,8 +132,9 @@ OBJECT ATTRIBUTES
     tech
         obj_type, file, lef_version, db_units, manufacturing_grid,
         min_layer, max_layer (the layer range of read_tech; empty when
-        not given), layer (handles), layers (same), extra (unmodeled
-        top-level LEF text)
+        not given), removed_layers (the names remove_layer took out and
+        add_layer has not put back), layer (handles), layers (same),
+        extra (unmodeled top-level LEF text)
     layer
         obj_type, name, type, direction, pitch_x, pitch_y, offset_x,
         offset_y, width, min_width, max_width, area, min_enclosed_area,
@@ -155,13 +160,15 @@ OBJECT ATTRIBUTES
         obj_type, name, driver (handle of the instance), loads (names:
         instances, or the stub of a leaf's net), pins (handles: the
         instance pins on it), group, length, detour, route, route_rule
-        (handle), net_wires (handles), vias (handles), spine (handle)
+        (handle), route_status (fixed | routed | unrouted; set_db),
+        net_wires (handles), vias (handles), spine (handle)
     net (net:<net>, a net that is no spine's: the net of a port, such as
     the root net of a spine, or a net connect_pin made)
         obj_type, name, driver (the handle of the output pin or input
         port that drives it, empty when nothing does), pins (handles:
         the instance pins on it), ports (handle: the port of the design
-        whose net it is), route_rule (handle), net_wires (handles), vias
+        whose net it is), route_rule (handle), route_status, net_wires
+        (handles), vias
         (handles): its routing, as for a spine_net (route_net)
         'get_db nets' lists the spine nets and stubs, not these.
     Distances are microns. type and direction are lowercase.
@@ -177,8 +184,14 @@ TAB COMPLETION
         get_db layers -if {.<tab>     attributes usable in the expression
     Lists show only the last path segment. The aliases head, layers and
     layer are completed once their first letter is typed. After a nested
-    command (get_db [get_db layers] .<tab>) the object type cannot be
-    known, so attributes of every object type are offered.
+    get_db the type is the one it yields: get_db [get_db spine sp] .<tab>
+    lists spine attributes, get_db [get_db spine:sp .insts] .<tab>
+    instance attributes; get_db [get_db selected] .<tab> the attributes of
+    the types selected now. set_db [get_db selected] .<tab> lists only
+    the attributes set_db can set on every selected type, and after one
+    its values (route_status: fixed routed). After a variable or another
+    command (get_db $objs .<tab>) the type cannot be known, so attributes
+    of every object type are offered.
 
 RETURN VALUE
     A handle list, a value, or a list of values, as described above.
@@ -218,4 +231,4 @@ ERRORS
 
 SEE ALSO
     read_tech, read_lef, read_spine_spec, read_def, write_db, read_db,
-    assign_via_for_route, get_obj_in_area, connect_pin
+    assign_via_for_route, get_obj_in_area, connect_pin, remove_layer

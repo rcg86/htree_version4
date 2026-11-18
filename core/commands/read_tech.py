@@ -102,9 +102,9 @@ def _keep_range(tech, lo, hi):
     return names[:first] + names[last + 1:], out_vias
 
 
-def _warn_in_use(db, out_layers, out):
-    """Warn of layers the range leaves out that stored data is on: they are
-    no tech layers now, for any command."""
+def layers_in_use(db):
+    """{layer: [what is on it]} for the layers that route rules, track
+    assignments or route wires of the database are on."""
     used = {}
     for what, sql in (("route rule(s)", "SELECT DISTINCT layer FROM route_rule"),
                       ("track assignment(s)", "SELECT layer FROM track_assignment"),
@@ -112,10 +112,18 @@ def _warn_in_use(db, out_layers, out):
                                         "pin_wire UNION SELECT layer FROM net_wire")):
         for row in db.conn.execute(sql):
             for name in (row["layer"] or "").split("/"):     # a crossing box: IA/IB
-                used.setdefault(name, []).append(what)
+                if what not in used.setdefault(name, []):
+                    used[name].append(what)
+    return used
+
+
+def _warn_in_use(db, out_layers, out):
+    """Warn of layers the range leaves out that stored data is on: they are
+    no tech layers now, for any command."""
+    used = layers_in_use(db)
     for name in out_layers:
         if name in used:
             warn(LAYER_IN_USE, f"layer {name} is left out by the layer range, and "
-                 f"{', '.join(dict.fromkeys(used[name]))} of the database are on it: it is "
+                 f"{', '.join(used[name])} of the database are on it: it is "
                  f"no tech layer now. Read the tech LEF again with a range that has it",
                  out)

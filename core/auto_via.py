@@ -10,6 +10,10 @@ it as an outline, like the route_net crossing boxes, and it is a via object
 of kind auto (core/vias.py). It goes when its wire is stretched off it, moved, or
 rebuilt (route_pin, route_net), and moves with its wire's instance or
 spine.
+
+The vias of insert_vias are kept the same way (kind insert_via, a via object
+of kind insert, under the upper of the two wires they join), and so live and
+go as auto vias do.
 """
 
 from core import objects, root_attrs, vias
@@ -74,7 +78,7 @@ def after_stretch(db, handle, old, new):
     for r in db.net_wire_rows(mine):
         box = tuple(float(c) for c in r["rect"].split())
         if _box(box, new) == box:
-            kept.append((r["kind"], r["layer"], r["rect"], r["shield_net"]))
+            kept.append((r["kind"], r["layer"], r["rect"], r["shield_net"], r["via_def"]))
         else:
             dropped.append(f"{r['layer']} {{{r['rect']}}}")
     depth = root_attrs.get(db, ATTR)

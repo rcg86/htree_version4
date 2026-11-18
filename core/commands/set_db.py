@@ -4,6 +4,7 @@ set_db <root_attr> <value>: set a root attribute (a setting of the commands).
     set_db [get_db nets *L4*] .route_rule rule1
     set_db spine_net:sp1/sp1_L1_1_Y .route_rule default
     set_db [get_db insts] .place_status fixed
+    set_db [get_db nets sp_L1*] .route_status fixed
     set_db ignore_shield_less_than_routing_length 20
 
 Only the attributes in SETTABLE can be set; every object is checked before
@@ -45,6 +46,45 @@ def _set_net_route_rule(db, handle, rule):
         db.set_net_route_rule(objects.name_of(handle), rule)
 
 
+ROUTE_STATUSES = ("fixed", "routed")
+
+
+def _route_status_value(db, value):
+    """True to fix; routed frees (the status then follows the wires)."""
+    status = value.lower()
+    if status not in ROUTE_STATUSES:
+        raise HtreeError(BAD_VALUE, f"set_db: .route_status must be fixed (no routing command "
+                         f"changes the net's routes) or routed (frees them), got '{value}'; "
+                         f"unrouted comes from removing the routes: delete_route")
+    return status == "fixed"
+
+
+def _wire_row(db, handle):
+    net, _, seq = handle.partition(":")[2].rpartition("/")
+    return db.net_wire_row(net, int(seq)) if seq.isdigit() else None
+
+
+def _fixable_wire(db, handle):
+    """A wire alone: a route_net wire (kind wire) of a net."""
+    row = _wire_row(db, handle)
+    if row is None or row["kind"] != "wire":
+        kind = "no such wire" if row is None else f"a {row['kind']}"
+        raise HtreeError(BAD_VALUE, f"set_db: {handle} is {kind}: .route_status is set on "
+                         f"route_net wires (kind wire) one by one; the shields, extensions and "
+                         f"crossing boxes are made again round them. Select the wires alone, "
+                         f"e.g. [get_db selected -if {{.kind == wire}}], or fix the whole net")
+
+
+def _set_route_status(db, handle, fixed):
+    if objects.obj_type(handle) == "net_wire":
+        db.set_wire_fixed(_wire_row(db, handle)["id"], fixed)
+    elif objects.obj_type(handle) == "stub":     # stubs are nets too, keyed apart
+        spine, _, stub = handle.partition(":")[2].partition("/")
+        db.set_net_fixed(objects.stub_key(spine, stub), fixed)
+    else:
+        db.set_net_fixed(objects.name_of(handle), fixed)
+
+
 PLACE_STATUSES = ("placed", "fixed", "cover")
 
 
@@ -64,8 +104,16 @@ def _set_inst_status(db, handle, status):
 SETTABLE = {("spine_net", "route_rule"): (_route_rule_value, _set_net_route_rule),
             ("net", "route_rule"): (_route_rule_value, _set_net_route_rule),
             ("stub", "route_rule"): (_route_rule_value, _set_net_route_rule),
+            ("spine_net", "route_status"): (_route_status_value, _set_route_status),
+            ("net", "route_status"): (_route_status_value, _set_route_status),
+            ("stub", "route_status"): (_route_status_value, _set_route_status),
+            ("net_wire", "route_status"): (_route_status_value, _set_route_status),
             ("inst", "place_status"): (_place_status_value, _set_inst_status),
             ("inst", "status"): (_place_status_value, _set_inst_status)}
+
+
+# (object type, attr) -> a check of each object before any is set
+OBJECT_CHECKS = {("net_wire", "route_status"): _fixable_wire}
 
 
 def run(session, argv):
@@ -95,6 +143,10 @@ def run(session, argv):
             settable = " ".join(f"{k}.{a}" for k, a in SETTABLE)
             raise HtreeError(NOT_SETTABLE, f"set_db: '{attr}' cannot be set on {kind} "
                              f"objects ({handle}). Settable: {settable}")
+    for handle in handles:                    # each object, before any is changed
+        check = OBJECT_CHECKS.get((objects.obj_type(handle), attr))
+        if check is not None:
+            check(db, handle)
     checked = {}
     for handle in handles:
         key = (objects.obj_type(handle), attr)

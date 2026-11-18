@@ -6,7 +6,7 @@ import pytest
 pytest.importorskip("scipy")
 
 from core.commands import legalize_placement
-from test_route_net import DEF, SPEC, err, out_of
+from test_route_net import DEF, SPEC, def_block, def_rect, err, out_of
 from test_route_pin import CELL_LEF
 
 # clk is on a layer below the rule's; clk2 on IB, over a track crossing; edge
@@ -134,9 +134,9 @@ def test_no_driver(tech_session, write_lef):
     s.eval("create_route_rule -name r -layer IB -width 0.36 -spacing 0.36 -append")
     out_of(s)
     # the root net of the spine: the input of the root is on it, nothing drives it
-    assert s.eval("route_net -net net -rule r") == ""
+    assert s.eval("route_net -net sp_primary_input -rule r") == ""
     text = out_of(s)
-    assert "HT4-265" in text and "net net is not routed: it has no driver" in text
+    assert "HT4-265" in text and "net sp_primary_input is not routed: it has no driver" in text
     # by a pattern the spine nets are routed and this one is left, as before
     assert all(h.startswith("spine_net:sp/") for h in lst(s, "route_net -net * -rule r"))
     assert "HT4-265" not in out_of(s)
@@ -234,19 +234,23 @@ def test_write_def(routed, tmp_path):
     s.eval(f"write_def -output {{{tmp_path / 'o.def'}}}")
     text = (tmp_path / "o.def").read_text()
     special = text.split("SPECIALNETS")[1]
-    nets = text.split("END SPECIALNETS")[1]
-    # the straps route_net named after these nets are theirs, not a power net's
-    assert [line.split()[1] for line in special.splitlines() if line.startswith("  - ")] \
-        == ["VSS", "VDD_SOC"]
-    assert "NETS 8 ;" in nets                                    # 4 of the spine, 4 of none
-    assert "  - clk_in ( b1 A ) ( PIN clk ) + USE CLOCK\n    + ROUTED IB " in nets
-    b1_y = next(line for line in nets.splitlines() if line.startswith("  - b1_Y "))
-    assert all(f"( {pin} )" in b1_y for pin in ("b1 Y", "sp_L1_inv1 A", "d3 B")) and "PIN" not in b1_y
+    # the straps route_net named after these nets are theirs, not a power net's: the
+    # routed signal nets first (FIXED), then the power nets (ROUTED, + USE)
+    names = [line.split()[1] for line in special.splitlines() if line.startswith("- ")]
+    assert names[-2:] == ["VSS", "VDD_SOC"] and "clk_in" in names and "b1_Y" in names
+    assert "\nNETS " not in text
+    clk = def_block(text, "clk_in")
+    assert clk[0] == "- clk_in" and clk[1].startswith("  + FIXED + RECT IB ")
     # the strap of b1/A, once: under its net
-    x1, y1, x2, y2 = (int(round(float(v) * 1000))
-                      for v in s.eval("get_db strap:b1/5 .rect").split())
-    assert text.count(f"IA ( {x1} {y1} ) RECT ( 0 0 {x2 - x1} {y2 - y1} )") == 1
-    assert f"IA ( {x1} {y1} ) RECT" in nets.split("  - clk_in")[1].split("  ;")[0]
+    strap = def_rect("FIXED", "IA", s.eval("get_db strap:b1/5 .rect"))
+    assert text.count(strap.split("RECT")[1]) == 1 and strap in clk
+    # the connections, when asked for
+    s.eval(f"write_def -output {{{tmp_path / 'n.def'}}} -sections nets")
+    nets = (tmp_path / "n.def").read_text()
+    assert "NETS 8 ;" in nets                                    # 4 of the spine, 4 of none
+    assert "- clk_in ( b1 A ) ( PIN clk ) + USE CLOCK ;" in nets
+    b1_y = next(line for line in nets.splitlines() if line.startswith("- b1_Y "))
+    assert all(f"( {pin} )" in b1_y for pin in ("b1 Y", "sp_L1_inv1 A", "d3 B")) and "PIN" not in b1_y
 
 
 def test_check_drc(routed):

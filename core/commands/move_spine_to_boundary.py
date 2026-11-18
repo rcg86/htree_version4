@@ -18,6 +18,7 @@ legal sites (legalize_placement). A move that would run the spine into its
 own body is an error and nothing changes.
 """
 
+from core import route_status
 from core.db import _num
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
@@ -50,6 +51,17 @@ def run(session, argv):
     if db.spine_row(name) is None:
         raise HtreeError(NO_SPINE, f"move_spine_to_boundary: no built spine '{name}' "
                          f"(create_spine -build; get_db spines lists them)")
+    spine = db.spine_row(name)
+    fixed = db.fixed_nets()              # the move removes the spine's routing
+    held = [r["name"] for r in db.spine_net_rows(spine["id"]) if r["name"] in fixed] + \
+        [f"stub:{name}/{s['name']}" for s in db.spine_stub_rows(spine["id"])
+         if route_status.stub_key(name, s["name"]) in fixed]
+    if held:
+        raise HtreeError(route_status.SKIPPED, f"move_spine_to_boundary: spine {name} has "
+                         f"{len(held)} net(s) with route_status fixed, whose routes the move "
+                         f"would remove: {' '.join(held[:10])}"
+                         f"{' ...' if len(held) > 10 else ''}; nothing changed (set_db "
+                         f".route_status routed frees them)")
     clearance = _clearance(session, opts.get("-clearance"))
     try:
         snake = Snake(db, name, clearance)

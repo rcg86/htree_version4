@@ -17,7 +17,7 @@ The wires of each delete_wire are kept, in this session only, so -undo can put
 them back as they were (same handles); again for the delete before it.
 """
 
-from core import auto_via, objects
+from core import auto_via, objects, route_status
 from core.commands.move_wire import USAGE, wire_rows
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
@@ -41,6 +41,11 @@ def run(session, argv):
         return _undo(session)
     db = session.db
     given = wire_rows(session, opts["-wires"], NAME)
+    held = route_status.fixed_shapes(db, given)
+    route_status.skip(NAME, "wire(s) of fixed nets", [h for h, _, _ in held], session.out)
+    given = [item for item in given if item not in held]
+    if not given:
+        return ()
     rows = targets(db, given)
     db.delete_wires([(table, row["id"]) for _, table, row in rows])
     db.deleted_wires.append([(handle, table, dict(row)) for handle, table, row in rows])

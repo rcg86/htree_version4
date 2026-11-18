@@ -581,7 +581,16 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   its driver's position + location along the spine: + up (vertical) or
   right (horizontal), - down or left. Claude's calls: it is hard (an
   equality in the LP, so the cell follows a movable driver); it may leave
-  the span; not allowed on the root or a leaf (HT4-151); a dummy with a
+  the span; not allowed on the root (HT4-151); a leaf is placed by it
+  too (driver + location), and with leaf locations the leaves give the
+  stubs: each centred on its leaf, all of one length = the distance of
+  the two closest leaves - stubs.gap (user 2026-11-15: build the stubs
+  with the gap between them and report the length); create_spine prints
+  a "Stub spacing" table (stub length, room between neighbouring stubs,
+  leaf distances) for the user to judge the spine by. Claude's calls:
+  one length for all stubs (balanced leaf nets), the mirror does not
+  count for the length, stubs of a spine and its mirror that overlap
+  are a warning (HT4-278); a dummy with a
   location goes there instead of at its driver; the same-column spacing
   is not applied to it; stored in spine_cell.location (schema 11),
   get_db .location.
@@ -595,7 +604,11 @@ Run: `.venv/bin/python core/htree_builder.py [-init script.tcl] [-batch]`.
   (counted in the net); a dummy sits at its driver's position; a cell
   driven from its own column is kept one cell length further along (soft,
   weighted above everything else); same-column trunk with no column step
-  for same-column loads; groups are by driver level, plus L4-stubs.
+  for same-column loads; one trunk per net, shared by its loads of every
+  column, plus level_pitch per column crossed between the trunk and the
+  driver or a load (user 2026-11-15: two loads at one height in
+  neighbouring columns are one route, not a trunk in each column; route_net
+  grows its tree the same way); groups are by driver level, plus L4-stubs.
   Extra warnings beyond the user's: different inverter counts to stubs
   (delay, polarity), overlapping cells (incl. neighbouring columns since
   2.88 < 3.12 cell width), cells that drive nothing, cells or stubs

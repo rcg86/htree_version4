@@ -48,7 +48,7 @@ NO_DESIGN = 28
 
 # Ordered attribute names per object type. Relation attrs return handles.
 TECH_ATTRS = ["obj_type", "file", "lef_version", "db_units", "manufacturing_grid",
-              "min_layer", "max_layer", "layer", "layers", "extra"]
+              "min_layer", "max_layer", "removed_layers", "layer", "layers", "extra"]
 LAYER_ATTRS = ["obj_type", "name", "type", "direction", "pitch_x", "pitch_y",
                "offset_x", "offset_y", "width", "min_width", "max_width", "area",
                "min_enclosed_area", "min_step", "min_step_max_edges", "min_spacing",
@@ -67,7 +67,8 @@ SPINE_SPEC_ATTRS = ["obj_type", "name", "type", "units", "point", "root_net",
                     "stub_order",
                     "spine_levels", "file", "extra", "yaml_text"]
 SPINE_LEVEL_ATTRS = ["obj_type", "name", "spine_cells", "spine_spec"]
-SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "location", "extra", "spine_level"]
+SPINE_CELL_ATTRS = ["obj_type", "name", "input", "output", "location", "track_input",
+                    "track_output", "extra", "spine_level"]
 DESIGN_ATTRS = ["obj_type", "name", "file", "def_version", "units", "boundary", "bbox",
                 "area", "ports", "track_patterns"]
 TRACK_PATTERN_ATTRS = ["obj_type", "name", "direction", "start", "num_tracks", "step", "end",
@@ -85,18 +86,18 @@ STRAP_ATTRS = ["obj_type", "name", "net", "layer", "rect", "width", "length", "m
 PIN_WIRE_ATTRS = ["obj_type", "name", "net", "layer", "rect", "width", "length", "strap",
                   "pin", "inst"]
 NET_WIRE_ATTRS = ["obj_type", "name", "kind", "layer", "rect", "width", "length",
-                  "shield_net", "net"]
+                  "shield_net", "net", "route_status"]
 PIN_ATTRS = ["obj_type", "name", "inst", "lib_pin", "direction", "use", "net", "layers",
              "rect"]
 SPINE_ATTRS = ["obj_type", "name", "spine_spec", "orientation", "build_direction", "location",
                "origin", "mirror", "ref_cell", "level_pitch", "deviation", "max_drive_length", "stub_length",
-               "path", "insts", "stubs", "spine_nets"]
+               "path", "insts", "stubs", "spine_nets", "spine_input", "spine_output", "root_net"]
 STUB_ATTRS = ["obj_type", "name", "driver", "points", "length", "tap", "orientation", "net",
-              "route_rule", "net_wires", "vias", "spine"]
+              "route_rule", "route_status", "net_wires", "vias", "spine"]
 SPINE_NET_ATTRS = ["obj_type", "name", "driver", "loads", "pins", "group", "length", "detour",
-                   "route", "route_rule", "net_wires", "vias", "spine"]
-NET_ATTRS = ["obj_type", "name", "driver", "pins", "ports", "route_rule", "net_wires",
-             "vias"]
+                   "route", "route_rule", "route_status", "net_wires", "vias", "spine"]
+NET_ATTRS = ["obj_type", "name", "driver", "pins", "ports", "route_rule", "route_status",
+             "net_wires", "vias"]
 VIA_DEF_ATTRS = ["obj_type", "name", "source", "default", "via_rule", "bottom_layer",
                  "cut_layer", "top_layer", "layers", "cuts", "rect", "shapes", "extra", "text"]
 VIA_ATTRS = ["obj_type", "name", "net", "kind", "via_def", "bottom_layer", "cut_layer",
@@ -146,6 +147,8 @@ RELATIONS = {("tech", "layer"): "layer", ("tech", "layers"): "layer",
              ("net", "net_wires"): "net_wire", ("net", "vias"): "via",
              ("net", "route_rule"): "route_rule",
              ("spine", "spine_spec"): "spine_spec", ("spine", "insts"): "inst",
+             ("spine", "spine_input"): "pin", ("spine", "spine_output"): "pin",
+             ("spine", "root_net"): "net",
              ("spine", "stubs"): "stub", ("spine", "spine_nets"): "spine_net",
              ("stub", "driver"): "inst", ("stub", "spine"): "spine",
              ("stub", "net"): "spine_net", ("stub", "net_wires"): "net_wire",
@@ -322,6 +325,8 @@ def get_attr(db, handle: str, attr: str):
             return [r["text"] for r in db.tech_extra()]
         if attr in ("min_layer", "max_layer"):       # the range of read_tech, if any
             return db.tech_layer_range()[attr == "max_layer"]
+        if attr == "removed_layers":                 # remove_layer, not added back
+            return db.removed_layers()
         return db.tech_row()[attr]
     if kind == "library_physical":
         require_library(db)
@@ -455,6 +460,8 @@ def _spine_attr(db, handle, kind, attr):
         return db.spine_extra("spine_cell", row["id"])
     if attr == "spine_level":
         return f"spine_level:{parent}"
+    if attr in ("track_input", "track_output"):
+        return row["track_in" if attr == "track_input" else "track_out"]
     return row[attr]
 
 
@@ -664,13 +671,21 @@ def _net_wire_attr(db, handle, attr):
         return str(row["seq"])
     if attr == "net":                     # a spine's, or a net of no spine with pins
         from core import netlist
-        net = netlist.net_handle(db, row["net"])
-        return net if net.startswith("spine_net:") or netlist.ends(db, row["net"]) else None
+        from core.db import STUB
+        name = row["net"]                 # a stub's rows (<leaf net>_stub): the leaf's net
+        if row["kind"].startswith("stub") and name.endswith(STUB):
+            name = name[:-len(STUB)]
+        net = netlist.net_handle(db, name)
+        return net if net.startswith("spine_net:") or netlist.ends(db, name) else None
     if attr in ("width", "length"):        # across and along a wire; a box: x and y
         dx, dy = round(x2 - x1, 6), round(y2 - y1, 6)
         if row["kind"] == "cross":
             return dx if attr == "width" else dy
         return min(dx, dy) if attr == "width" else max(dx, dy)
+    if attr == "route_status":            # fixed alone, or with its net or stub
+        from core import route_status
+        held = route_status.fixed_shapes(db, [(handle, "net_wire", row)])
+        return route_status.FIXED if held else "routed"
     return row[attr]                       # kind, layer, rect
 
 
@@ -832,6 +847,8 @@ def _net_attr(db, handle, attr):
         return [vias.handle(r) for r in vias.rows(db, name)]
     if attr == "route_rule":              # no rule set: the built-in default
         return f"route_rule:{db.net_route_rule(name) or 'default'}"
+    if attr == "route_status":            # fixed | routed | unrouted
+        return _route_status(db, name, name, stub=False)
     return [e.handle for e in ends if e.kind == attr[:-1]]    # pins, ports
 
 
@@ -923,6 +940,30 @@ def _built_spine_row(db, handle):
     return None if row is None else (spine, row)
 
 
+def _spine_ends(db, spine, output):
+    """The pins where a built spine starts and ends: the signal input of each
+    root cell (L1_inv1; with -mirror the mirrored one's too), or the signal
+    output of each leaf cell (the cells that drive the stubs)."""
+    from core import netlist
+    if output:
+        stubs = {s["name"] for s in db.spine_stub_rows(spine["id"])}
+        cells = [r["driver"] for r in db.spine_net_rows(spine["id"])
+                 if stubs & set(r["loads"].split())]
+    else:
+        cells = [m["inst"] for m in db.spine_members(spine["id"]) if not m["driver"]]
+    pins = [(inst, netlist.signal_pin(db, inst, "out" if output else "in"))
+            for inst in dict.fromkeys(cells)]
+    return [f"pin:{inst}/{pin}" for inst, pin in pins if pin is not None]
+
+
+def _route_status(db, key, net, stub):
+    """fixed (set_db .route_status), routed (it has wires: route_net's, or a
+    stub's route_final_stub wire) or unrouted."""
+    from core import route_status
+    rows = (db.stub_wire_rows(net) if stub else db.net_wire_rows(net)) if net else []
+    return route_status.status(db, key, any(r["kind"].startswith("stub") == stub for r in rows))
+
+
 def stub_key(spine, stub):
     """The name a stub's route rule is kept under (stub names repeat across
     spines, net names do not)."""
@@ -957,6 +998,11 @@ def _built_spine_attr(db, handle, kind, attr):
         if attr == "spine_nets":
             return [f"spine_net:{spine['name']}/{r['name']}"
                     for r in db.spine_net_rows(spine["id"])]
+        if attr in ("spine_input", "spine_output"):
+            return _spine_ends(db, spine, attr == "spine_output")
+        if attr == "root_net":            # the net on the root's input (netlist.root_net)
+            from core import netlist
+            return f"net:{netlist.root_net(db, spine)}"
         return spine[attr]
     if attr == "name":
         return row["name"]
@@ -964,27 +1010,33 @@ def _built_spine_attr(db, handle, kind, attr):
         return f"spine:{spine['name']}"
     if attr == "driver":
         return f"inst:{row['driver']}"
-    if kind == "stub" and attr in ("orientation", "net", "net_wires", "vias", "route_rule"):
+    if kind == "stub" and attr in ("orientation", "net", "net_wires", "vias", "route_rule",
+                                   "route_status"):
         leaf = next((r["name"] for r in db.spine_net_rows(spine["id"])
                      if r["loads"] == row["name"]), None)
         if attr == "orientation":
             return spine["orientation"]
         if attr == "net":                  # the leaf's net, which drives the stub
             return None if leaf is None else f"spine_net:{spine['name']}/{leaf}"
-        if attr == "net_wires":            # its route_final_stub wire and crossings
-            return [f"net_wire:{leaf}/{r['seq']}" for r in db.net_wire_rows(leaf)
-                    if r["kind"].startswith("stub")] if leaf else []
+        if attr == "net_wires":            # its route_final_stub wire, crossings, shields
+            return [f"net_wire:{r['net']}/{r['seq']}" for r in db.stub_wire_rows(leaf)] \
+                if leaf else []
         if attr == "vias":                 # the vias of its net that land on its wire
             from core import vias
             return [vias.handle(r) for r in vias.on_wires(
-                db, leaf, [r for r in db.net_wire_rows(leaf) if r["kind"] == "stub"])] \
+                db, leaf, [r for r in db.stub_wire_rows(leaf) if r["kind"] == "stub"])] \
                 if leaf else []
+        if attr == "route_status":
+            return _route_status(db, stub_key(spine["name"], row["name"]), leaf, stub=True)
         return f"route_rule:{db.net_route_rule(stub_key(spine['name'], row['name'])) or 'default'}"
+    if kind == "spine_net" and attr == "route_status":
+        return _route_status(db, row["name"], row["name"], stub=False)
     if kind == "spine_net" and attr == "pins":    # the instance pins on it (not a stub)
         from core import netlist
         return [f"pin:{inst}/{pin}" for inst, pin in netlist.by_net(db).get(row["name"], [])]
     if attr == "net_wires":
-        return [f"net_wire:{row['name']}/{r['seq']}" for r in db.net_wire_rows(row["name"])]
+        return [f"net_wire:{r['net']}/{r['seq']}"          # its stub's wires too
+                for r in db.net_wire_rows(row["name"]) + db.stub_wire_rows(row["name"])]
     if attr == "vias":                    # every via that carries the net, pin stacks too
         from core import vias
         return [vias.handle(r) for r in vias.rows(db, row["name"])]

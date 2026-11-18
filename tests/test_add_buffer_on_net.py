@@ -10,6 +10,7 @@ import pytest
 pytest.importorskip("scipy")
 
 from core.commands.add_buffer_on_net import _check_place, _pin_centre, split, tree
+from core.db import _num as _n
 from core.htree_builder import Session
 from test_move_spine import build
 from test_route_net import DEF, SPEC, _floats
@@ -461,7 +462,7 @@ def test_write_logical_and_write_def(long, tmp_path):
     assert "spine sp level buffer" in text
     for k in (1, 2, 3, 4):
         assert f"sp_L2_inv1_buf{k}" in text
-    s.eval(f"write_def -output {{{tmp_path / 'o.def'}}}")
+    s.eval(f"write_def -output {{{tmp_path / 'o.def'}}} -sections {{components nets}}")
     text = (tmp_path / "o.def").read_text()
     assert "- sp_L2_inv1_buf1 INV_RP + PLACED ( 4200 125731 ) N ;" in text
     assert "- sp_L2_inv1_Y ( sp_L2_inv1 Y ) ( sp_L3_inv1 A ) ( sp_L2_inv1_buf1 A )" in text
@@ -688,7 +689,8 @@ def test_port_net_buffers_are_routed(ported):
     assert "load d1/A (strap 5): connected across the strap" in text
     for n in nets:
         assert lst(s, f"get_db net:{n} .net_wires")
-    assert "HT4-258" in err(s, PORT_ADD)                             # routed now
+    # routed now: buffers go along the wires, but not with -last_distance yet
+    assert "-last_distance is not taken on routed nets yet (clk_in)" in err(s, PORT_ADD)
 
 
 def test_again_on_the_net_of_a_port_and_by_its_handle(ported):
@@ -743,10 +745,10 @@ def test_nets_of_no_spine_that_are_left_as_they_are(ported):
 
 
 def test_a_net_without_a_driver_is_left_as_it_is(long):
-    s = long                             # the root net of the spec: no port drives it
-    assert s.eval("add_buffer_on_net -net net -ref_cell INV_RP -distance 10") == ""
+    s = long                             # the root net of the spine: no port drives it
+    assert s.eval("add_buffer_on_net -net sp_primary_input -ref_cell INV_RP -distance 10") == ""
     text = out_of(s)
-    assert "HT4-259" in text and "net net left as it is: it has no driver" in text
+    assert "HT4-259" in text and "net sp_primary_input left as it is: it has no driver" in text
 
 
 def test_port_net_buffers_in_write_logical_and_write_db(ported, tmp_path):
@@ -765,3 +767,100 @@ def test_port_net_buffers_in_write_logical_and_write_db(ported, tmp_path):
     t.eval(f"read_db -file {{{tmp_path / 'o.db'}}}")
     assert (lst(t, "get_db insts"), t.eval("get_db insts .bbox"),
             t.eval("get_db insts .pins.net")) == want
+
+
+# -- on a routed net: along its wires, cut there ---------------------------------------------
+
+ROUTED_ADD = "add_buffer_on_net -net clk_in -ref_cell INV_RP -first_distance 100 " \
+             "-distance 100 -name rep"
+
+
+@pytest.fixture
+def routed_port(ported):
+    """clk_in routed: from the port at {3 400} down the IB track x 1.44 to the
+    root of the spine, with a branch on IA y 15.12 to d1 at {40 20}."""
+    s = ported
+    s.eval("route_pin -inst [get_db insts]")
+    s.eval("create_route_rule -name r -layer {IA IB} -width 0.36 -spacing 0.36")
+    s.eval("route_net -net clk_in -rule r")
+    out_of(s)
+    return s
+
+
+def drc_counts(s):
+    s.eval("check_drc")
+    return [l for l in out_of(s).splitlines() if l.startswith(("  short", "  open", "  Total"))]
+
+
+def test_buffers_along_a_routed_net(routed_port):
+    s = routed_port
+    before = drc_counts(s)
+    assert lst(s, ROUTED_ADD) == [f"inst:rep_{k}" for k in (1, 2, 3, 4)]
+    text = out_of(s)
+    # every 100 um from the port; two moved 10.08 um off the spine cells under the route,
+    # the one 400 um down to the root of the spine has no room on its branch
+    assert "clk_in: buffers moved along the route, off the cells under it (um, + is away " \
+           "from the driver): rep_1 -10.08, rep_3 -10.08" in text
+    assert "(HT4-261): add_buffer_on_net: clk_in: 1 buffer(s) not made: no place within 50 um " \
+           "along that branch of the route clear of the cells under it and their pin routes, " \
+           "at 400 um ({1.44 1.76}) from the driver" in text
+    for row in ("rep_1        89.92  {1.44 311.84}        clk_in -> rep_1_Y",
+                "rep_2          200  {1.44 201.76}        rep_1_Y -> rep_2_Y",
+                "rep_3       289.92  {1.44 111.84}        rep_2_Y -> rep_3_Y",
+                "rep_4          400  {14.8 15.12}         rep_3_Y -> rep_4_Y",
+                "load sp_L1_inv1/A: on rep_3_Y, behind rep_3",
+                "load d1/A: on rep_4_Y, behind rep_4"):
+        assert row in text
+    assert "clk_in: 4 buffer(s) along its route, its 4 wire(s) cut into" in text
+    # the netlist
+    assert lst(s, "get_db net:clk_in .pins") == ["pin:rep_1/A"]
+    assert set(lst(s, "get_db net:rep_3_Y .pins")) == \
+        {"pin:rep_3/Y", "pin:rep_4/A", "pin:sp_L1_inv1/A"}
+    assert set(lst(s, "get_db net:rep_4_Y .pins")) == {"pin:rep_4/Y", "pin:d1/A"}
+    # every piece kept where it was and joined to the pins: no new short or open
+    assert drc_counts(s) == before
+    for net in ("clk_in", "rep_1_Y", "rep_2_Y", "rep_3_Y", "rep_4_Y"):
+        rows = s.db.net_wire_rows(net)
+        assert [r for r in rows if r["kind"] == "wire"]
+        assert not [r for r in rows if r["status"] == "fixed"]    # none was fixed before
+    assert "route_pin" in text and "route_net: rule r" in text
+
+
+def test_the_cut_wires_keep_their_place(routed_port):
+    """Every piece is a part of a wire the net had: the route is not routed
+    again, only joined to the pins of the buffers."""
+    s = routed_port
+    trunk = next(r for r in s.db.net_wire_rows("clk_in")
+                 if r["kind"] == "wire" and r["layer"] == "IB" and float(r["rect"].split()[3]) > 300)
+    x1, y1, x2, y2 = (float(c) for c in trunk["rect"].split())
+    s.eval(ROUTED_ADD)
+    out_of(s)
+    on_track = sorted((float(r["rect"].split()[1]), float(r["rect"].split()[3]), r["net"])
+                      for n in ("clk_in", "rep_1_Y", "rep_2_Y", "rep_3_Y")
+                      for r in s.db.net_wire_rows(n) if r["kind"] == "wire" and r["layer"] == "IB"
+                      and r["rect"].split()[0] == _n(x1))
+    assert on_track[-1][2] == "clk_in" and on_track[-1][1] == pytest.approx(y2)
+    # the gaps: each piece of the trunk ends short of the next buffer's cell
+    for k, centre_y in ((1, 311.84), (2, 201.76)):
+        above = [p for p in on_track if p[0] > centre_y]
+        assert min(p[0] for p in above) > centre_y + 0.889            # past the cell
+
+
+def test_a_fixed_wire_is_cut_and_its_pieces_stay_fixed(routed_port):
+    s = routed_port
+    trunk = next(r for r in s.db.net_wire_rows("clk_in")
+                 if r["kind"] == "wire" and r["layer"] == "IB" and float(r["rect"].split()[3]) > 300)
+    s.eval(f"set_db net_wire:clk_in/{trunk['seq']} .route_status fixed")
+    s.eval(ROUTED_ADD)
+    out_of(s)
+    for net in ("clk_in", "rep_1_Y", "rep_2_Y"):
+        fixed = [r for r in s.db.net_wire_rows(net) if r["status"] == "fixed"]
+        assert len(fixed) == 1 and fixed[0]["layer"] == "IB"
+
+
+def test_last_distance_on_a_routed_net_changes_nothing(routed_port):
+    s = routed_port
+    wires = [tuple(r) for r in s.db.net_wire_rows()]
+    assert "HT4-001" in err(s, ROUTED_ADD + " -last_distance 20")
+    assert [tuple(r) for r in s.db.net_wire_rows()] == wires
+    assert not [n for n in s.db.inst_names() if n.startswith("rep_")]

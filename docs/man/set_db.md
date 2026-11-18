@@ -19,6 +19,15 @@ DESCRIPTION
                               or 'default' to go back to the built-in
                               rule (tech minimum width and its spacing on
                               every routing layer)
+      spine_net .route_status, net .route_status, stub .route_status
+                              fixed: no routing command changes the net's
+                              routes; routed: frees them again (see
+                              below)
+      net_wire .route_status  fixed or routed, on a wire alone (kind
+                              wire; not shields, extensions or crossing
+                              boxes): route_net keeps it and joins the
+                              rest of the net to it (man route_net,
+                              FIXED WIRES)
       inst .place_status      placed (default), fixed or cover (any case);
                               .status is the same attribute. write_def
                               writes it as + PLACED / + FIXED / + COVER,
@@ -27,6 +36,22 @@ DESCRIPTION
     A net without a rule set uses route_rule:default. The rule is kept
     by net name, so a net rebuilt with the same name keeps it; write_db
     saves it. route_net sets it to the rule it routes with.
+
+    .route_status reads fixed, routed (the net has wires) or unrouted.
+    A fixed net's routes are left as they are by every command that
+    makes, edits or removes route shapes: route_net, route_track,
+    route_final_stub, delete_route, delete_wire, move_wire,
+    stretch_wire, insert_vias, route_pin (instances with straps or pin
+    wires on the net) and move_spine_to_boundary (refused: it would
+    remove them). They skip what is fixed, say so (HT4-286) and do the
+    rest. The routes of a net are its route_net wires, strap
+    extensions, crossing boxes and shields, the straps and pin wires
+    named after it, and the auto vias on these. A stub is fixed apart
+    from the net of its leaf: its route_final_stub wires. Placement
+    commands (move_obj, legalize_placement) and copy_obj are not held:
+    they move a spine's routes with its cells. The status is kept by
+    net name (stub:<spine>/<stub> for a stub); write_db saves it and
+    copy_obj copies it.
 
     Root attributes (two arguments) are settings that change how the
     commands work. get_db <root_attr> reads one; get_db root_attributes
@@ -64,6 +89,9 @@ RETURN VALUE
 EXAMPLES
     htree> set_db [get_db nets *L4*] .route_rule rule1
     htree> get_db nets .route_rule.name
+    htree> set_db [get_db nets sp_L1*] .route_status fixed
+    htree> set_db stub:sp/stub1 .route_status routed
+    htree> set_db [get_db selected -if {.kind == wire}] .route_status fixed
     htree> set_db [get_db nets *L4*] .route_rule default
     htree> set_db [get_db insts] .place_status fixed
     htree> set_db ignore_shield_less_than_routing_length 20

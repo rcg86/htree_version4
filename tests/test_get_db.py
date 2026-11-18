@@ -131,3 +131,16 @@ def test_no_tech_loaded(session):
 def test_error_is_catchable(tech_session):
     assert ev(tech_session, "catch {get_db layer:XX .name} m; set m") == \
         "**ERROR: (HT4-022): object 'layer:XX' does not exist"
+
+
+def test_a_name_pattern_takes_the_whole_name_too(tech_session, write_lef):
+    """A stub's own name is stub1; its whole one sp/stub1: either matches."""
+    from test_move_spine import build
+    s = build(tech_session, write_lef, mirror=True)
+    every = s.split_list(s.eval("get_db stub"))
+    assert len(every) == 4
+    assert list(s.split_list(s.eval("get_db stub sp*"))) == list(every)
+    assert s.eval("get_db stub sp/stub1") == "stub:sp/stub1"
+    assert s.eval("get_db stub stub1") == "stub:sp/stub1"              # its own name still
+    assert s.eval("get_db stub nope*") == ""
+    assert s.eval("get_db nets sp/sp_L1*") == s.eval("get_db nets sp_L1*")

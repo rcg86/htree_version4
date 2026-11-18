@@ -14,7 +14,7 @@ stub's wire, and a stub keeps its leaf net's route: each is deleted on its own.
 
 import fnmatch
 
-from core import netlist
+from core import netlist, route_status
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -37,10 +37,22 @@ def run(session, argv):
     db = session.db
     nets, stubs = _targets(session, opts["-nets"])
     out = session.out
+    fixed = db.fixed_nets()
+    held = [f"spine_net:{spine}/{name}" if spine else f"net:{name}"
+            for spine, name in nets if name in fixed]
+    held += [f"stub:{spine}/{stub}" for spine, stub, _ in stubs
+             if route_status.stub_key(spine, stub) in fixed]
+    route_status.skip(NAME, "fixed net(s)", held, out)
+    nets = [(spine, name) for spine, name in nets if name not in fixed]
+    stubs = [e for e in stubs if route_status.stub_key(e[0], e[1]) not in fixed]
     done = []
     for spine, name in nets:
         wires = db.set_net_wires(name, [], stub=False)
-        pins = db.unname_pins(name, SIGNAL)
+        kept = db.fixed_wire_rows(name)
+        if kept:
+            route_status.skip(NAME, f"fixed wire(s) of {name}",
+                              [f"net_wire:{name}/{r['seq']}" for r in kept], out)
+        pins = 0 if kept else db.unname_pins(name, SIGNAL)
         info(f"  {name}: {wires} wire(s), extension(s), crossing box(es) and shield(s) "
              f"removed" + (f"; {pins} strap(s) and pin wire(s) back on {SIGNAL}"
                            if pins else ""), out)
@@ -52,10 +64,11 @@ def run(session, argv):
              f"{f' (from net {leaf})' if leaf else ''}", out)
         if wires:
             done.append(f"stub:{spine}/{stub}")
-    if not done:
+    if not done and not held:
         warn(NOTHING, "delete_route: the nets given have no routing; nothing removed", out)
-    info(f"delete_route: routing removed from {len(done)} of {len(nets) + len(stubs)} "
-         f"net(s); the nets stay", out)
+    given = len(nets) + len(stubs) + len(held)
+    info(f"delete_route: routing removed from {len(done)} of {given} net(s); the nets stay",
+         out)
     return tuple(done)
 
 

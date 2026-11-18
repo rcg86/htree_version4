@@ -11,15 +11,19 @@ has changed:
     cross, stub_cross, pg_cross   a crossing box of route_net, route_final_stub,
                                   optimize_pg_connection
     auto                          a via stretch_wire added (kind via)
-    pin                           a pin wire over the pin shape it starts from
+    insert                        a via insert_vias added (kind insert_via)
+    pin                           a pin wire over a pin shape it starts from: one
+                                  per rectangle of the pin under the wire
     strap                         a pin wire under the strap it reaches
 
 A change between two layers that are more than one cut apart is a stack: one
 via per cut layer at the same point, bottom first. The cut layers between two
 layers come from the via definitions (their bottom, cut and top layers), not
 from the tech layer order. With no definitions to go by, the change is one
-via with no cut layer. Which definition a via uses is the user's choice
-(assign_via_for_route); a via without one keeps the box as its shape.
+via with no cut layer. Which definition a via uses is set by
+assign_via_for_route; route_pin, route_net, route_track and route_final_stub
+give each net the best fitting definition of each layer pair it has none
+for (auto_assign). A via without one keeps the box as its shape.
 """
 
 from collections import Counter, deque
@@ -28,6 +32,8 @@ from core.db import _num
 
 TOL = 1e-6
 UNKNOWN = (None, None, None)
+# net_wire kinds of the vias added to the routing after it was made -> their via kind.
+ADDED = {"via": "auto", "insert_via": "insert"}
 
 
 def tech_layers(db):
@@ -156,52 +162,56 @@ def compute(db):
                 for r in db.via_assignment_rows()}
     rows, count, seen = [], Counter(), set()
 
-    def add(net, kind, a, b, box, source):
+    def add(net, kind, a, b, box, source, given=""):
         x, y = round((box[0] + box[2]) / 2, 6), round((box[1] + box[3]) / 2, 6)
         text = " ".join(_num(round(c, 6)) for c in box)
         hops = chain(up, tech, a, b)
         if (net, hops[0][0], hops[-1][2], text) in seen:
             return                          # one layer change, written twice
         seen.add((net, hops[0][0], hops[-1][2], text))
+        # The definitions the box names itself (insert_vias -via_ref) come first.
+        own = {stacks[n][::2]: n for n in (given or "").split() if n in stacks}
         for bottom, cut, top in hops:
-            name = assigned.get((bottom, top, net)) or assigned.get((bottom, top, ""))
+            name = own.get((bottom, top)) or assigned.get((bottom, top, net)) or \
+                assigned.get((bottom, top, ""))
             if stacks.get(name) != (bottom, cut, top):
                 name = None                 # none assigned, or its definition is gone
             count[net] += 1
             rows.append((net, count[net], kind, name, bottom, cut, top, x, y, text, source))
 
-    def boxes_of(auto):
+    def boxes_of(added):
         for r in db.net_wire_rows():
-            if "/" in r["layer"] and (r["kind"] == "via") == auto:
+            if "/" in r["layer"] and (r["kind"] in ADDED) == added:
                 a, b = r["layer"].split("/", 1)
-                add(r["shield_net"] or r["net"], "auto" if auto else r["kind"],
-                    a, b, _rect(r["rect"]), f"net_wire:{r['net']}/{r['seq']}")
+                add(r["shield_net"] or r["net"], ADDED.get(r["kind"], r["kind"]),
+                    a, b, _rect(r["rect"]), f"net_wire:{r['net']}/{r['seq']}", r["via_def"])
 
-    boxes_of(auto=False)
+    boxes_of(added=False)
     straps = {(r["inst"], r["seq"]): r for r in db.strap_rows()}
     boxes = _pin_boxes(db)
     for r in db.pin_wire_rows():
         net, wire, source = r["net"] or "SIGNAL", _rect(r["rect"]), \
             f"pin_wire:{r['inst']}/{r['pin']}"
-        found = _pin_overlap(boxes(r["inst"], r["pin"]), r["layer"], wire, tech)
-        if found is not None:
-            add(net, "pin", found[0], r["layer"], found[1], source)
+        for layer, box in _pin_overlaps(boxes(r["inst"], r["pin"]), r["layer"], wire, tech):
+            add(net, "pin", layer, r["layer"], box, source)
         strap = straps.get((r["inst"], r["strap"]))
         box = _overlap(wire, _rect(strap["rect"])) if strap is not None else None
         if box is not None and strap["layer"] != r["layer"]:
             add(net, "strap", r["layer"], strap["layer"], box, source)
-    boxes_of(auto=True)                     # last: one on a pin wire's own strap is that via
+    boxes_of(added=True)                    # last: one on a pin wire's own strap is that via
     return rows
 
 
-def _pin_overlap(shapes, layer, wire, tech):
-    """(pin layer, box) where a pin wire on layer lies over its pin: the
-    largest overlap with a pin shape on the highest tech layer below the
-    wire's (on any layer when the tech has none of the pin's). None when
-    the pin has a shape on the wire's own layer under it: no via is needed."""
+def _pin_overlaps(shapes, layer, wire, tech):
+    """[(pin layer, box)] where a pin wire on layer lies over its pin: its
+    overlap with every pin shape on the highest tech layer below the wire's,
+    so a pin of two rectangles is connected at both. When the tech has none
+    of the pin's layers the layer is the one of the largest overlap. Empty
+    when the pin has a shape on the wire's own layer under it: no via is
+    needed."""
     over = [(l, box) for l, bbox in shapes if (box := _overlap(wire, bbox)) is not None]
     if not over or any(l == layer for l, _ in over):
-        return None
+        return []
     if layer in tech:
         below = [l for l, _ in over if l in tech and tech[l][0] < tech[layer][0]]
         if below:
@@ -210,8 +220,9 @@ def _pin_overlap(shapes, layer, wire, tech):
         else:
             over = [o for o in over if o[0] not in tech]
     if not over:
-        return None
-    return max(over, key=lambda o: (o[1][2] - o[1][0]) * (o[1][3] - o[1][1]))
+        return []
+    best = max(over, key=lambda o: (o[1][2] - o[1][0]) * (o[1][3] - o[1][1]))[0]
+    return [o for o in over if o[0] == best]
 
 
 def sync(db):
@@ -301,3 +312,149 @@ def extents(db):
         return (round(box[0] + r["x"], 6), round(box[1] + r["y"], 6),
                 round(box[2] + r["x"], 6), round(box[3] + r["y"], 6))
     return of
+
+
+# -- the definitions the routing commands give the vias -----------------------------
+
+def net_shapes(db):
+    """{net: {layer: [rect]}}: the metal of every net, as the vias see it:
+    its wires (a shield's, a power link's: its power net; a stub's: its leaf
+    net), the route_pin straps and pin wires on it, and the pin shapes
+    (bounding boxes) of the pin wires on it."""
+    found = {}
+
+    def add(net, layer, rect):
+        found.setdefault(net, {}).setdefault(layer, []).append(rect)
+    for r in db.net_wire_rows():
+        if "/" not in r["layer"]:            # a crossing box: the wires are there
+            add(r["shield_net"] or r["net"], r["layer"], _rect(r["rect"]))
+    for r in db.strap_rows():
+        add(r["net"], r["layer"], _rect(r["rect"]))
+    boxes = _pin_boxes(db)
+    for r in db.pin_wire_rows():
+        add(r["net"], r["layer"], _rect(r["rect"]))
+        for layer, box in boxes(r["inst"], r["pin"]):
+            add(r["net"], layer, box)
+    return found
+
+
+def _covered(rect, shapes):
+    """Is rect inside the union of shapes; None when no shape touches it."""
+    near = [s for s in shapes if s[0] < rect[2] - TOL and s[2] > rect[0] + TOL
+            and s[1] < rect[3] - TOL and s[3] > rect[1] + TOL]
+    if not near:
+        return None
+    xs = sorted({rect[0], rect[2]} | {c for s in near for c in (s[0], s[2])
+                                      if rect[0] < c < rect[2]})
+    ys = sorted({rect[1], rect[3]} | {c for s in near for c in (s[1], s[3])
+                                      if rect[1] < c < rect[3]})
+    for x0, x1 in zip(xs, xs[1:]):
+        for y0, y1 in zip(ys, ys[1:]):
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            if not any(s[0] - TOL <= cx <= s[2] + TOL and s[1] - TOL <= cy <= s[3] + TOL
+                       for s in near):
+                return False
+    return True
+
+
+def fits(shapes, metal, bottom, cut, top, x, y):
+    """Does a definition (its shapes about its origin) placed at (x, y) lie
+    on the metal of its net (net_shapes: {layer: [rect]}): each pad on the
+    bottom and top layer inside that layer's shapes, each cut inside both.
+    A layer where the net has no metal under the shape is the inside of a
+    stack (a pin wire down to a strap two layers below): not looked at."""
+    for layer, _, pts in shapes:
+        box = (min(pts[0::2]) + x, min(pts[1::2]) + y, max(pts[0::2]) + x, max(pts[1::2]) + y)
+        for on in ((bottom, top) if layer == cut else (layer,) if layer in (bottom, top) else ()):
+            if _covered(box, metal.get(on, [])) is False:
+                return False
+    return True
+
+
+def _along(shapes, dirs):
+    """How many pads of a definition run the way their layer does."""
+    n = 0
+    for layer, _, pts in shapes:
+        w, h = max(pts[0::2]) - min(pts[0::2]), max(pts[1::2]) - min(pts[1::2])
+        n += (dirs.get(layer) == "horizontal" and w > h + TOL) or \
+            (dirs.get(layer) == "vertical" and h > w + TOL)
+    return n
+
+
+def _directions(db):
+    """{layer: 'horizontal' | 'vertical' | ''} of the tech layers."""
+    return {r["name"]: (r["direction"] or "").lower()
+            for r in db.conn.execute("SELECT name, direction FROM layer")}
+
+
+def auto_assign(db):
+    """Give the vias with no definition one: for each net and layer pair
+    that has no assignment (assign_via_for_route), neither of its own nor
+    for every net, the definition of those layers that fits the most of its
+    vias (fits); a DEFAULT one of the tech LEF before another (a DEF's
+    generated power via is not for a signal route); of those that fit them
+    all the one with the most cuts; then the one whose pads run the way
+    their layers do, the smallest pads, by name. Vias of net SIGNAL (straps no route_net
+    connected yet) are left. Returns [(net, bottom, top, definition, vias
+    it fits, vias)] of the assignments made."""
+    tech = tech_layers(db)
+    stacks = definition_layers(db, tech)
+    have = {(r["bottom"], r["top"], r["net"]) for r in db.via_assignment_rows()}
+    groups = {}
+    for r in rows(db):
+        if r["via_def"] is None and r["cut"] is not None and r["net"] != "SIGNAL" and \
+                (r["bottom"], r["top"], r["net"]) not in have and \
+                (r["bottom"], r["top"], "") not in have:
+            groups.setdefault((r["net"], r["bottom"], r["cut"], r["top"]), []).append(r)
+    if not groups:
+        return []
+    dirs = _directions(db)
+    metal = net_shapes(db)
+    shapes, rank = {}, {}
+    for name, stack in stacks.items():
+        if stack != UNKNOWN:
+            shapes[name] = definition_shapes(db, name)
+            pads = [pts for layer, _, pts in shapes[name] if layer in (stack[0], stack[2])]
+            area = sum((max(p[0::2]) - min(p[0::2])) * (max(p[1::2]) - min(p[1::2]))
+                       for p in pads)
+            cuts = sum(1 for layer, _, _ in shapes[name] if layer == stack[1])
+            default = (db.via_def_row(name)["is_default"] or "").lower() == "true"
+            rank[name] = (cuts, _along(shapes[name], dirs), -round(area, 9), default)
+    made = []
+    for (net, bottom, cut, top), vs in groups.items():
+        names = [n for n, st in stacks.items() if st == (bottom, cut, top) and n in shapes]
+        if not names:
+            continue
+        mine = metal.get(net, {})
+
+        def score(name):
+            n = sum(1 for v in vs if fits(shapes[name], mine, bottom, cut, top, v["x"], v["y"]))
+            cuts, along, area, default = rank[name]
+            return (n, default, cuts if n == len(vs) else 0, along, area)
+        best = max(sorted(names), key=score)
+        db.set_via_assignment(bottom, cut, top, net, best)
+        made.append((net, bottom, top, best, score(best)[0], len(vs)))
+    return made
+
+
+def report_assigned(made, cmd, out):
+    """The lines a routing command prints for auto_assign: per layer pair
+    and definition the nets given it, and the vias it does not fit."""
+    from core.messages import info, warn
+    if not made:
+        return
+    by = {}
+    for net, bottom, top, name, fit, total in made:
+        k = by.setdefault((bottom, top, name), [0, 0, 0])
+        k[0], k[1], k[2] = k[0] + 1, k[1] + fit, k[2] + total
+    info(f"{cmd}: via definitions given to {len({m[0] for m in made})} net(s) "
+         f"(assign_via_for_route lists them, and changes them):", out)
+    for (bottom, top, name), (nets, fit, total) in sorted(by.items()):
+        info(f"  {bottom}/{top}  {name}  {nets} net(s), {total} via(s)", out)
+        if fit < total:
+            warn(VIA_TOO_BIG, f"{cmd}: {total - fit} {bottom}/{top} via(s) larger than the "
+                 f"wires they join: no {bottom}/{top} definition fits them ({name} given)",
+                 out)
+
+
+VIA_TOO_BIG = 297

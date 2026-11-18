@@ -66,6 +66,9 @@ ERRORS
     HT4-220  the handle is not a route wire
     HT4-221  the edge would reach or pass its opposite edge
     HT4-222  WARN: the wire is off the tracks of its layer
+    HT4-286  WARN: a wire of a fixed net is not stretched (set_db
+             .route_status fixed)
 
 SEE ALSO
-    move_wire, delete_wire, set_db, route_net, route_pin, gui_show
+    move_wire, delete_wire, insert_vias, set_db, route_net, route_pin,
+    gui_show

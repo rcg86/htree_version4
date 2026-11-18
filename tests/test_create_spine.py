@@ -7,7 +7,8 @@ pytest.importorskip("scipy")
 
 from conftest import ROOT
 from core.htree_builder import Session
-from core.spine_build import SpecCell, SpecData, SpineError, mirror_overlaps, mirrored, plan
+from core.spine_build import (SpecCell, SpecData, SpineError, mirror_overlaps, mirrored, plan,
+                              stub_overlaps, stub_spacing)
 
 CELLS_LEF = ROOT / "tests" / "data" / "cells.lef"
 SMALL_DEF = ROOT / "tests" / "data" / "small.def"
@@ -97,6 +98,25 @@ def test_net_length_counts_shared_wire_once():
     assert (leaf.length, leaf.group) == (pytest.approx(2.88 + 95), "L2-stubs")
 
 
+def test_loads_in_two_columns_share_one_trunk():
+    # the root drives L1/inv2 in its own column and L2/inv1 in the next, both 100 above
+    # it: one wire of 100 and one column across, not 100 in each column
+    def root_net(location):
+        cells = [("L1", "inv1", "net", None), ("L1", "inv2", "L1/inv1/Y", None, 100.0),
+                 ("L2", "inv1", "L1/inv1/Y", None, location),
+                 ("L3", "inv1", "L1/inv2/Y", "stub1"), ("L3", "inv2", "L2/inv1/Y", "stub2")]
+        net = plan(spec(cells), "sp", (0, 0)).net_of("L1/inv1")
+        return net.length, net.detour, net.segments
+
+    assert root_net(100.0) == (pytest.approx(100 + 2.88), 0,
+                               [(0, 0, 0, 100), (0, 100, 1, 100)])
+    # a load lower down branches off the same trunk, straight across
+    assert root_net(60.0) == (pytest.approx(100 + 2.88), 0, [(0, 0, 0, 100), (0, 60, 1, 60)])
+    # a load on the other side of the driver lengthens the trunk
+    assert root_net(-50.0) == (pytest.approx(150 + 2.88), 0,
+                               [(0, -50, 0, 100), (0, -50, 1, -50)])
+
+
 def test_build_direction_and_orientation():
     p = plan(spec(TWO), "sp", (100, 1000), "-x")
     assert p.point(1, 50) == (97.12, 1050)
@@ -140,6 +160,87 @@ def test_location_may_leave_the_span_and_moves_a_dummy():
     assert p.cells["L2/dum"].s == pytest.approx(-40)            # below the location
     dummy = next(t for k, t in p.warnings if k == "dummy")
     assert "placed -40 um from its driver" in dummy
+
+
+def test_leaf_locations_give_the_stubs():
+    # by the span the stubs are 95 long, 0..95 and 105..200 (taps 47.5 and 152.5).
+    # The root drives both leaves: L2/inv1 is put at 152.5 and L2/inv2 at 40
+    cells = [TWO[0], TWO[1] + (152.5,), TWO[2] + (40.0,)]
+    p = plan(spec(cells), "sp", (0, 0))
+    assert (p.cells["L2/inv1"].s, p.cells["L2/inv2"].s) == (152.5, 40)   # driver + location
+    # the leaves are 112.5 apart: the stubs are 112.5 - gap 10 long, each centred on its
+    # leaf (51.25 on each side), so they are the gap apart; bottom first
+    assert p.stub_length == 102.5
+    assert p.stub_fit == ("stub2", "stub1", 112.5, 95)
+    assert [(s.name, s.lo, s.hi) for s in p.stubs] == [("stub2", -11.25, 91.25),
+                                                       ("stub1", 101.25, 203.75)]
+    assert all(s.tap == p.cells[s.driver].s for s in p.stubs)
+    assert stub_spacing([p]) == [("stub2", "stub1", 10, 112.5)]
+    # a leaf net is level_pitch + its stub, of the new length
+    assert [p.net_of(k).length for k in ("L2/inv1", "L2/inv2")] == [pytest.approx(105.38)] * 2
+    assert p.net_of("L2/inv2").segments == [(1, 40, 2, 40)]
+    stub_overlaps(p, stub_spacing([p]))
+    assert not p.warnings
+    # without leaf locations the span gives them: no stub_fit, the gap everywhere
+    by_span = plan(spec(TWO), "sp", (0, 0))
+    assert (by_span.stub_length, by_span.stub_fit) == (95, None)
+    assert stub_spacing([by_span]) == [("stub1", "stub2", 10, 105)]
+    # a leaf may leave the span, as any cell with a location; the leaf without a
+    # location keeps a place of the span (its middle), and the stubs fill the room
+    far = plan(spec([TWO[0], TWO[1] + (-500.0,), TWO[2]]), "sp", (0, 0))
+    assert (far.cells["L2/inv1"].s, far.cells["L2/inv2"].s) == (-500, 47.5)
+    assert [(s.name, s.lo, s.hi) for s in far.stubs] == [("stub1", -768.75, -231.25),
+                                                         ("stub2", -221.25, 316.25)]
+    assert stub_spacing([far]) == [("stub1", "stub2", 10, 547.5)]
+    over = [t for k, t in far.warnings if k == "over"]         # the nets are checked
+    assert any("sp_L1_inv1_Y" in t for t in over) and any("sp_L2_inv1_Y" in t for t in over)
+
+
+def test_leaves_closer_than_the_gap_have_no_room_for_stubs():
+    with pytest.raises(SpineError, match=r"L2/inv1 \(stub1\) and L2/inv2 \(stub2\) are 7.5 "
+                       r"apart along the spine: no room for their stubs with gap 10"):
+        plan(spec([TWO[0], TWO[1] + (47.5,), TWO[2] + (55.0,)]), "sp", (0, 0))
+    # three leaves: the closest two give the length, the third has more room
+    cells = TWO + [("L2", "inv3", "L1/inv1/Y", "stub3")]
+    cells = [cells[0], cells[1] + (20.0,), cells[2] + (60.0,), cells[3] + (150.0,)]
+    p = plan(spec(cells), "sp", (0, 0))
+    assert p.stub_fit == ("stub1", "stub2", 40, pytest.approx(60))
+    assert [(s.name, s.lo, s.hi) for s in p.stubs] == [("stub1", 5, 35), ("stub2", 45, 75),
+                                                       ("stub3", 135, 165)]
+    assert stub_spacing([p]) == [("stub1", "stub2", 10, 40), ("stub2", "stub3", 60, 90)]
+
+
+def test_stubs_of_a_spine_and_its_mirror_may_overlap():
+    # stub1 is centred on its leaf at 40 and reaches 11.25 under the root; with origin
+    # 5 it reaches 6.25 past -location, onto the mirror's stub
+    low = plan(spec([TWO[0], TWO[1] + (40.0,), TWO[2]], origin=5), "sp", (0, 0))
+    assert [(s.name, s.lo, s.hi) for s in low.stubs] == [("stub1", -11.25, 91.25),
+                                                         ("stub2", 101.25, 203.75)]
+    spacing = stub_spacing([low, mirrored(low)])
+    assert spacing == [("stub2_mirror", "stub1_mirror", 10, 112.5),
+                       ("stub1_mirror", "stub1", -12.5, 90), ("stub1", "stub2", 10, 112.5)]
+    stub_overlaps(low, spacing)
+    assert [t for k, t in low.warnings if k == "stubs"] == [
+        "1 pair(s) of stubs of the spine and its mirror overlap along the spine (um): "
+        "stub1_mirror-stub1 (12.5); placement.origin moves the two apart"]
+
+
+def test_a_leaf_with_a_location_follows_a_movable_driver():
+    # L2/inv1 has no location (the solver places it); its leaf L3/inv1 stays 5 above it
+    cells = [("L1", "inv1", "net", None), ("L2", "inv1", "L1/inv1/Y", None),
+             ("L3", "inv1", "L2/inv1/Y", "stub1", 5.0), ("L3", "inv2", "L2/inv1/Y", "stub2")]
+    p = plan(spec(cells), "sp", (0, 0))
+    stub = {s.name: s for s in p.stubs}
+    leaf, other = p.cells["L3/inv1"], p.cells["L3/inv2"]
+    assert leaf.s == pytest.approx(p.cells["L2/inv1"].s + 5)
+    assert other.s in (47.5, 152.5)             # no location: a place of the span
+    apart = abs(leaf.s - other.s)
+    assert p.stub_length == pytest.approx(apart - 10) and p.stub_fit[2] == pytest.approx(apart)
+    for s in p.stubs:
+        assert (s.lo, s.hi) == pytest.approx((p.cells[s.driver].s - p.stub_length / 2,
+                                              p.cells[s.driver].s + p.stub_length / 2))
+    assert p.net_of("L3/inv1").length == pytest.approx(2.88 + p.stub_length)
+    assert [row[2] for row in stub_spacing([p])] == [pytest.approx(10)]
 
 
 # -- warnings ----------------------------------------------------------------------------
@@ -201,8 +302,6 @@ def test_depth_dummy_and_overlap_warnings():
     ([("L1", "inv1", "net", None)], {}, "no cell drives a stub"),
     ([("L1", "inv1", "net", None, 5.0), ("L2", "inv1", "L1/inv1/Y", "s1")], {},
      "is the root: it sits at -location"),
-    ([("L1", "inv1", "net", None), ("L2", "inv1", "L1/inv1/Y", "s1", 5.0)], {},
-     "sits at the middle of its stub"),
 ])
 def test_spec_errors(cells, kwargs, text):
     with pytest.raises(SpineError) as e:
@@ -300,6 +399,54 @@ def test_validate_warnings(lib):
     assert lib.eval("create_spine -name tight -spec_name tight -location {10 5} -validate") == "3"
     out = lib.out.getvalue()
     assert out.count("HT4-154") == 3 and out.count("OVER") == 3    # root + 2 leaves
+
+
+def test_leaf_locations_give_the_stubs_and_the_spacing_is_reported(lib, write_lef):
+    # sp1 has 19 um stubs by the span, gap 2. Here L2/inv1 is 20 above the root,
+    # L3/inv1 10.5 above it (at 30.5) and L3/inv2 12 below it (at 8): 22.5 apart, so
+    # the stubs are 20.5 long: stub2 -2.25..18.25 and stub1 20.25..40.75
+    text = (SPEC_YAML.split("---")[0].replace("name: sp1", "name: leaf")
+            .replace("inv1: {input: L1/inv1/Y}", "inv1: {input: L1/inv1/Y, location: 20}")
+            .replace("output: stub1}", "output: stub1, location: 10.5}")
+            .replace("output: stub2}", "output: stub2, location: -12}"))
+    lib.eval(f"read_spine_spec -file {{{write_lef(text, 'leaf.yaml')}}}")
+    assert lib.eval(VALIDATE) == "0"
+    assert ("Stub spacing (um, bottom to top; stubs.gap 2):\n"
+            "  stub length   : 19 (9.5 on each side of its leaf), by the span\n"
+            "  stub1 - stub2 : 2  leaves 21 apart\n") in lib.out.getvalue()
+    lib.out.seek(0)
+    lib.out.truncate()
+    assert lib.eval("create_spine -name lf -spec_name leaf -location {10 5} -validate") == "0"
+    out = lib.out.getvalue()
+    assert "HT4-" not in out
+    assert "-> stub2  location -12 from L2/inv1\n" in out
+    assert "Stubs   : 2 x 20.500 um, gap 2, from {18.64 2.75} to {18.64 45.75}" in out
+    table = ("Stub spacing (um, bottom to top; stubs.gap 2):\n"
+             "  stub length   : 20.5 (10.25 on each side of its leaf) = 22.5 between the "
+             "closest leaves (stub2, stub1) - stubs.gap 2; 19 by the span\n"
+             "  stub2 - stub1 : 2  leaves 22.5 apart\n")
+    assert table in out
+    assert "lf_L3_inv2_Y  L3-stubs      23.380" in out          # 2.88 + the 20.5 um stub
+    # mirrored, stub2 reaches 2.25 under -location and meets its mirror
+    lib.out.seek(0)
+    lib.out.truncate()
+    count = lib.eval("create_spine -name lf -spec_name leaf -location {10 5} -validate -mirror")
+    out = lib.out.getvalue()
+    assert ("**WARN: (HT4-278): 1 pair(s) of stubs of the spine and its mirror overlap along "
+            "the spine (um): stub2_mirror-stub2 (4.5); placement.origin moves the two apart") in out
+    assert "  stub2_mirror - stub2        : -4.5  leaves 16 apart  OVERLAP\n" in out
+    assert out.count("**WARN") == int(count)
+    lib.out.seek(0)
+    lib.out.truncate()
+    lib.eval("create_spine -name lf -spec_name leaf -location {10 5} -build -ref_cell INV_D1")
+    out = lib.out.getvalue()
+    assert table in out and "2 stubs of 20.500 um" in out
+    assert lib.eval("get_db spine:lf .stub_length") == "20.5"
+    assert lib.eval("get_db stub:lf/stub2 .points") == "18.64 2.75 18.64 23.25"
+    assert len(lib.eval("get_db insts").split()) == 4
+    y = lambda inst: float(lib.eval(f"get_db inst:{inst} .location").split()[1])
+    assert y("lf_L3_inv1") - y("lf_L2_inv1") == pytest.approx(10.5)     # driver + location
+    assert y("lf_L3_inv2") - y("lf_L2_inv1") == pytest.approx(-12)
 
 
 CS = "create_spine -name sp1 -spec_name sp1"
@@ -415,3 +562,26 @@ def test_name_is_the_spine_and_spec_name_the_spec(lib):
     lib.out.truncate()
     lib.eval("create_spine -name clk_c -spec_name sp1 -location {10 5} -validate")
     assert "Spine clk_c (spec sp1): vertical" in lib.out.getvalue()
+
+
+@pytest.mark.parametrize("mirror", [False, True])
+def test_spine_input_and_output_pins(tech_session, write_lef, mirror):
+    """spine_input: the input of the root (both roots with -mirror);
+    spine_output: the outputs of the leaves, which drive the stubs."""
+    from test_move_spine import build
+    s = build(tech_session, write_lef, mirror=mirror)
+    s.out.seek(0)
+    s.out.truncate()
+    s.eval("get_db spine:sp .*")
+    listed = s.out.getvalue()
+    assert "spine_input" in listed and "spine_output" in listed and "sp_L1_inv1/A" in listed
+    ins = ["pin:sp_L1_inv1/A"] + (["pin:sp_mirror_L1_inv1/A"] if mirror else [])
+    outs = ["pin:sp_L3_inv1/Y", "pin:sp_L3_inv2/Y"]
+    outs += [o.replace("sp_", "sp_mirror_") for o in outs] if mirror else []
+    assert list(s.split_list(s.eval("get_db spine:sp .spine_input"))) == ins
+    assert sorted(s.split_list(s.eval("get_db spine:sp .spine_output"))) == sorted(outs)
+    leaves = {s.eval(f"get_db {stub} .driver") for stub in s.split_list(s.eval("get_db spine:sp .stubs"))}
+    assert {o.rpartition("/")[0].replace("pin:", "inst:") for o in outs} == leaves
+    assert s.eval("get_db [get_db spine:sp .spine_input] .direction") == \
+        " ".join(["in"] * len(ins))
+    assert s.eval("get_db [get_db spine:sp .spine_output] .net").count("spine_net:") == len(outs)

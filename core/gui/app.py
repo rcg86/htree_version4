@@ -56,6 +56,8 @@ def show(session):
     if _window is None:
         _window = MainWindow(session)
         _window.refresh()                     # before the hook: see _refresh_if_changed
+        if session.db.drc is not None:        # check_drc ran before the window opened
+            _window.show_drc()
         session.after_command.append(_refresh_if_changed(session))
     _window.show()
     _window.raise_()
@@ -81,19 +83,33 @@ def close():
 
 def _refresh_if_changed(session):
     """After each command, reload the view if the database changed, or just
-    the highlight if only the selection changed (select_obj, deselect_obj)."""
-    state = {"key": _db_key(session), "sel": list(session.db.selection)}
+    the highlight if only the selection changed (select_obj, deselect_obj),
+    and the display filter if show_only changed it. A check_drc run opens the
+    DRC Violations table."""
+    state = {"key": _db_key(session), "sel": list(session.db.selection),
+             "only": list(session.db.show_only), "drc": session.db.drc,
+             "colours": list(session.db.highlights)}
 
     def hook():
         if _db_key(session) != state["key"]:
             if _window is not None:
-                _window.refresh()                # also re-applies the selection
+                _window.refresh()                # also re-applies the selection and the filter
             # After it: the reload brings the via table in step with the routing
             # (core/vias.py), a change of the database that needs no reload.
             state["key"] = _db_key(session)
-        elif session.db.selection != state["sel"] and _window is not None:
-            _window.show_selection()
+        elif _window is not None:
+            if session.db.selection != state["sel"]:
+                _window.show_selection()
+            if session.db.show_only != state["only"]:
+                _window.show_only()
+            if session.db.highlights != state["colours"]:
+                _window.highlighter.reloaded()   # highlight: the colours
+        if _window is not None and session.db.drc is not state["drc"]:
+            _window.show_drc()                   # a new run, or none after read_db
         state["sel"] = list(session.db.selection)
+        state["only"] = list(session.db.show_only)
+        state["drc"] = session.db.drc
+        state["colours"] = list(session.db.highlights)
         if _app is not None:
             _app.processEvents()
     hook.gui_hook = True

@@ -17,7 +17,9 @@ DESCRIPTION
     Prints what the database holds. The file is opened read-only and is
     not changed. Its schema version must match this tool's: a database
     written by an older version of the tool is rejected and has to be
-    rebuilt from the source files. Two older versions are read:
+    rebuilt from the source files. Three older versions are read:
+      22  the last without the via definitions of insert_vias -via_ref.
+          Nothing is missing: it has no insert_vias vias.
       21  the last without the connections of connect_pin. Nothing is
           missing: it has the connections of its spines, and none made
           by hand.

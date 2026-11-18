@@ -47,12 +47,12 @@ def run(session, argv):
     return tuple(h for kind in kinds for h in found[kind])
 
 
-def _area(session, text):
+def _area(session, text, cmd=NAME):
     words = session.split_list(text)
     try:
         x1, y1, x2, y2 = (float(w) for w in words)
     except ValueError:
-        raise HtreeError(BAD_AREA, f"get_obj_in_area: -area needs four numbers "
+        raise HtreeError(BAD_AREA, f"{cmd}: -area needs four numbers "
                          f"{{x1 y1 x2 y2}} (microns), got '{text}'")
     return min(x1, x2), min(y1, y2), max(x1, x2), max(y1, y2)
 

@@ -16,12 +16,11 @@ vias are not made.
 """
 
 import fnmatch
-import itertools
 import os
 
 import yaml
 
-from core import objects
+from core import objects, route_status, vias
 from core.commands.create_route_rule import tech_min_width, tech_spacing
 from core.db import _num
 from core.messages import HtreeError, info, warn
@@ -57,6 +56,12 @@ TOL = 1e-6
 
 
 def run(session, argv):
+    result = _route(session, argv)
+    vias.report_assigned(vias.auto_assign(session.db), NAME, session.out)
+    return result
+
+
+def _route(session, argv):
     opts, _ = parse_options(NAME, argv, OPTIONS)
     spec = load_spec(opts["-spec"]) if "-spec" in opts else DEFAULTS
     spec = dict(spec, pins=dict(spec["pins"]))
@@ -84,9 +89,14 @@ def run(session, argv):
         if objects.inst_bbox(db, row) is None:
             raise HtreeError(NO_INST, f"route_pin: cell {row['ref_cell']} of {name} has no "
                              f"SIZE")
+    fixed = db.fixed_nets()            # their straps and pin wires are routes of a fixed net
+    held = [n for n in names if fixed and any(
+        r["net"] in fixed for r in db.strap_rows(n) + db.pin_wire_rows(n))]
+    route_status.skip(NAME, "instance(s) with pin routes on fixed nets", held, session.out)
     handles = []
     for name in names:
-        handles += _route_inst(session, name, spec, opts)
+        if name not in held:
+            handles += _route_inst(session, name, spec, opts)
     if len(names) > 1:
         info(f"route_pin: {len(names)} instances routed", session.out)
     return tuple(handles)
@@ -150,6 +160,10 @@ def _route_inst(session, name, spec, opts):
                               for p, n, r, k in wires], ext)
     if replaced:
         warn(REPLACED, f"replaced the {replaced} straps {name} had, and its pin wires", out)
+    if db.dropped_stretches:     # their routes reached the old straps: not these
+        warn(REPLACED, f"the old straps of {name} were lengthened by the routes of "
+             f"{' '.join(db.dropped_stretches)}: route them again (route_net -net "
+             f"{{{' '.join(db.dropped_stretches)}}})", out)
     return ([f"strap:{name}/{k}" for k in range(1, len(straps) + 1)]
             + [f"pin_wire:{name}/{p}" for p, _, _, _ in wires])
 
@@ -360,6 +374,11 @@ def _route_pins(db, row, straps, pin_spec, vrow, out):
     x span, and covers all the pin's shapes. Each wire is also given the strap
     of its net it is to connect to, the nearest one; pins of SIGNAL each need
     a strap of their own (they are different nets), the other nets share.
+    The SIGNAL straps go by where the pins lie in the placed cell: the
+    higher pin (the centre of its shapes) takes the higher strap; of pins
+    as high, the input first. Flipping the cell about the x axis (N to FS)
+    so swaps their straps (legalize_placement picks the orientation that
+    puts the input on the side its net comes from).
     Returns (pin, net, rect, strap seq) per wire."""
     cell = db.lib_cell_row(row["ref_cell"])
     pins = db.lib_pin_names(cell["id"])
@@ -407,9 +426,12 @@ def _route_pins(db, row, straps, pin_spec, vrow, out):
                  f"{len(ks)} {SIGNAL} straps: each signal pin needs its own; "
                  f"{' '.join(signal_pins[len(ks):])} not routed", out)
             signal_pins = signal_pins[:len(ks)]
-        best = min(itertools.permutations(ks, len(signal_pins)),
-                   key=lambda pick: sum(wire(p, k)[1] for p, k in zip(signal_pins, pick)))
-        choice.update(zip(signal_pins, best))
+        def height(p):                           # the centre of its shapes, placed
+            shapes = found[p][1]
+            return round((min(s[1] for s in shapes) + max(s[3] for s in shapes)) / 2, 6)
+        order = sorted(signal_pins, key=lambda p: (-height(p),
+                                                   _direction_rank(db, row["ref_cell"], p)))
+        choice.update(zip(order, sorted(ks)[:len(order)]))     # strap 1 is the top
 
     wires = []
     for pin, (net, shapes) in found.items():
@@ -430,6 +452,13 @@ def _route_pins(db, row, straps, pin_spec, vrow, out):
                  f"the {vlayer} wire (it takes the widest shape's x span)", out)
     _check_wires(db, vrow, wires, out)
     return wires
+
+
+def _direction_rank(db, ref_cell, pin):
+    """0 for an input pin, 1 for an output, 2 for any other."""
+    lp = db.lib_pin_row(ref_cell, pin)
+    direction = (lp["direction"] or "").lower() if lp is not None else ""
+    return 0 if direction.startswith("in") else 1 if direction.startswith("out") else 2
 
 
 def _bbox(pts):

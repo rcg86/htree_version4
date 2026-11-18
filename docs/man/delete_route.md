@@ -14,8 +14,10 @@ DESCRIPTION
         boxes are removed. Its leaf net keeps its route.
       - A spine net, or a net of no spine (net:<name>: a port's,
         connect_pin's, add_buffer_on_net's): what route_net made for it
-        is removed: wires, strap
-        extensions, crossing boxes, shields and shield extensions. The
+        is removed: wires, crossing boxes, shields, and the strap
+        stretches of the net (its
+        straps and the power straps it joined go back to route_pin's
+        size). The
         route_pin straps and pin wires route_net had named after the net
         go back to SIGNAL, as they connect to nothing now (the straps keep
         their size; route_pin made them). A leaf net keeps its stub's wire.
@@ -46,6 +48,9 @@ ERRORS
     HT4-001  missing -nets
     HT4-195  no net or stub matches a -nets word
     HT4-196  WARN: none of the nets had routing; nothing removed
+    HT4-286  WARN: the routes of a fixed net or stub stay, and so do
+             wires fixed alone (their net keeps its straps and pin
+             wires) (set_db .route_status fixed)
 
 SEE ALSO
     route_net, route_final_stub, delete_wire, get_db, write_def

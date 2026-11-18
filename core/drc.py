@@ -27,7 +27,7 @@ import itertools
 from collections import namedtuple
 
 from core import netlist, objects, vias
-from core.db import _num
+from core.db import CARRIED, STUB, _num
 
 TOL = 1e-6
 SIGNAL = "SIGNAL"
@@ -38,7 +38,14 @@ SHORT, SPACING, WIDTH, OPEN = "short", "spacing", "width", "open"
 TECH, CUSTOM = "tech", "custom"
 
 # source: tech | custom for spacing and width, signal | power for an open.
-Violation = namedtuple("Violation", "check source layer bbox text")
+# nets: the nets of the violation (two of a short or a spacing violation);
+# handles: its shapes (of an open: the shapes and vias of the part cut off).
+Violation = namedtuple("Violation", "check source layer bbox text nets handles",
+                       defaults=((), ()))
+# What a check_drc run found, kept for the table of the GUI (db.drc): the lines
+# of what was checked and of the summary, and (section title, Violation) of
+# every violation in the order of the report.
+Report = namedtuple("Report", "head summary rows")
 Via = namedtuple("Via", "handle net bottom top rect")
 Net = namedtuple("Net", "name driver loads stubs")      # pins are (inst, pin)
 
@@ -145,13 +152,16 @@ def collect(db):
     for r in db.net_wire_rows():
         if "/" in r["layer"]:                # a crossing box: its vias stand for it
             continue
-        if r["shield_net"]:
+        if r["shield_net"] and r["kind"] not in CARRIED:     # a stub's: its signal net
             d.power.add(r["shield_net"])
-        if r["net"] not in rules:
-            rules[r["net"]] = db.net_route_rule(r["net"])
+        base = r["net"]                      # a stub's rows: under <leaf net>_stub
+        if r["kind"].startswith("stub") and base.endswith(STUB):
+            base = base[:-len(STUB)]
+        if base not in rules:
+            rules[base] = db.net_route_rule(base)
         whose = RULED.get(r["kind"])
         rule = None if whose is None else \
-            (whose == "stub" and stub_rule.get(r["net"])) or rules[r["net"]]
+            (whose == "stub" and stub_rule.get(base)) or rules[base]
         d.shapes.append(Shape(f"net_wire:{r['net']}/{r['seq']}", r["shield_net"] or r["net"],
                               r["layer"], rect(r["rect"]), "wire", r["kind"], rule))
 
@@ -388,10 +398,11 @@ def check_geometry(design, tech, custom, layers=None, shorts=True, spacing=True)
                        *sorted((max(a.rect[1], b.rect[1]), min(a.rect[3], b.rect[3]))))
             between = (between[0], between[2], between[1], between[3])
             who = f"{a.handle} ({a.net}) and {b.handle} ({b.net})"
+            two = ((a.net, b.net), (a.handle, b.handle))
             if (ox > TOL and oy > -TOL) or (oy > TOL and ox > -TOL):
                 if shorts:
                     how = f"overlap {_n(ox)} x {_n(oy)}" if ox > TOL and oy > TOL else "abut"
-                    found.append(Violation(SHORT, "", layer, between, f"{who} {how}"))
+                    found.append(Violation(SHORT, "", layer, between, f"{who} {how}", *two))
                 continue
             if not spacing:
                 continue
@@ -403,7 +414,7 @@ def check_geometry(design, tech, custom, layers=None, shorts=True, spacing=True)
                 found.append(Violation(
                     SPACING, TECH, layer, between,
                     f"{_n(gap)} < {_n(need)}  {who}  [{source}, widths {_n(a.width)} "
-                    f"and {_n(b.width)}, parallel run {_n(max(prl, 0.0))}]"))
+                    f"and {_n(b.width)}, parallel run {_n(max(prl, 0.0))}]", *two))
             asks = [(r["spacing"], s) for s in (a, b)
                     if (r := custom(s.rule, layer)) is not None]
             if asks:
@@ -412,7 +423,7 @@ def check_geometry(design, tech, custom, layers=None, shorts=True, spacing=True)
                     found.append(Violation(
                         SPACING, CUSTOM, layer, between,
                         f"{_n(gap)} < {_n(need)}  {who}  [route rule {s.rule} of "
-                        f"{s.handle}]"))
+                        f"{s.handle}]", *two))
     return found
 
 
@@ -427,13 +438,14 @@ def _widths(shapes, rule, custom):
         if rule.min_width is not None and s.width < rule.min_width - TOL:
             found.append(Violation(WIDTH, TECH, s.layer, s.rect,
                                    f"{_n(s.width)} < {_n(rule.min_width)}  {s.handle} "
-                                   f"({s.net})  [minimum width]"))
+                                   f"({s.net})  [minimum width]", (s.net,), (s.handle,)))
         asked = custom(s.rule, s.layer)
         across = {"vertical": s.span[0], "horizontal": s.span[1]}.get(rule.direction, s.width)
         if asked is not None and across < asked["width"] - TOL:
             found.append(Violation(WIDTH, CUSTOM, s.layer, s.rect,
                                    f"{_n(across)} < {_n(asked['width'])}  {s.handle} "
-                                   f"({s.net})  [route rule {s.rule}]"))
+                                   f"({s.net})  [route rule {s.rule}]", (s.net,),
+                                   (s.handle,)))
     return found
 
 
@@ -500,6 +512,10 @@ def _piece_text(piece):
     return ", ".join(words)
 
 
+def _handles(piece):
+    return tuple(dict.fromkeys(s.handle for s in piece))
+
+
 def _bbox(piece):
     rects = [s.rect for s in piece]
     return (min(r[0] for r in rects), min(r[1] for r in rects),
@@ -542,7 +558,7 @@ def check_opens(design, order, layers=None):
                     found.append(Violation(
                         OPEN, source, "", _bbox(piece),
                         f"net {name}: no path to {on[-1]} from {_piece_text(piece)} on "
-                        f"{on[0]}"))
+                        f"{on[0]}", (name,), _handles(piece)))
             continue
         if net is None:
             shielded = any(s.kind in SHIELDS for p in pieces for s in shapes_of(p))
@@ -551,11 +567,13 @@ def check_opens(design, order, layers=None):
                 if "strap" not in kinds:
                     found.append(Violation(
                         OPEN, source, "", _bbox(piece),
-                        f"net {name}: no path to a strap from {_piece_text(piece)}"))
+                        f"net {name}: no path to a strap from {_piece_text(piece)}",
+                        (name,), _handles(piece)))
                 elif shielded and not kinds & SHIELDS:
                     found.append(Violation(
                         OPEN, source, "", _bbox(piece),
-                        f"net {name}: no path to a shield from {_piece_text(piece)}"))
+                        f"net {name}: no path to a shield from {_piece_text(piece)}",
+                        (name,), _handles(piece)))
             continue
         home = next((p for p in pieces if any(s.pin == net.driver for s in shapes_of(p))),
                     None) if net.driver else None
@@ -566,12 +584,13 @@ def check_opens(design, order, layers=None):
         for piece in pieces:
             if piece is not home:
                 found.append(Violation(OPEN, source, "", _bbox(piece),
-                                       f"net {name}: no path to {to} from {_piece_text(piece)}"))
+                                       f"net {name}: no path to {to} from {_piece_text(piece)}",
+                                       (name,), _handles(piece)))
         wired = any(s.kind == "stub" for p in pieces for s in shapes_of(p))
         for stub in [] if wired else net.stubs:
             pts = [float(c) for c in stub["points"].split()]
             found.append(Violation(
                 OPEN, source, "", (min(pts[0::2]), min(pts[1::2]), max(pts[0::2]),
                                    max(pts[1::2])),
-                f"net {name}: stub {stub['name']} has no wire (route_final_stub)"))
+                f"net {name}: stub {stub['name']} has no wire (route_final_stub)", (name,)))
     return found

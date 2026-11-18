@@ -43,7 +43,8 @@ def outside(s, polygon=None):
 
 
 def wires(s, net, kind="wire"):
-    return sorted((r["layer"], tuple(_floats(r["rect"]))) for r in s.db.net_wire_rows(net)
+    return sorted((r["layer"], tuple(_floats(r["rect"])))        # its stub's rows too
+                  for r in s.db.net_wire_rows(net) + s.db.stub_wire_rows(net)
                   if r["kind"] == kind)
 
 

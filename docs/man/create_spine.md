@@ -13,7 +13,14 @@ DESCRIPTION
     -validate computes the placement and reports every warning without
     changing the design; -build creates it, ignoring the warnings.
 
-    Layout. The root cell (the one whose input is root_net, L1_inv1)
+    Root net. The root's input is on the spine's root net: the spec's
+    root_net, or <spine>_primary_input when that is the placeholder
+    'net' (or not given), so a script write_logical writes does not
+    connect to a net 'net' the design does not have. get_db
+    spine:<name> .root_net gives it; rename_obj -from [get_db
+    spine:<name> .root_net] -to <name> renames it.
+
+    Layout. The root cell (the one whose input is the root net, L1_inv1)
     sits placement.origin (default 0) from -location along the spine:
     above it for a vertical spine, right of it for a horizontal one
     (its centre). Each level of the spec is a column:
@@ -25,14 +32,15 @@ DESCRIPTION
     lie end to end in one line with stubs.gap between them and share
     spine.span equally:
         stub length = (span - (stubs - 1) x gap) / stubs
-    (6000 um, 6 stubs, gap 10: 991.667 um).
+    (6000 um, 6 stubs, gap 10: 991.667 um). When leaves have a location
+    the leaves give the stubs instead (Leaf locations, below).
 
     Mirror. -mirror adds the same spine reflected across -location: a
     vertical spine is mirrored below it (its root placement.origin below
     -location, its stubs running down), a horizontal one left of it (root
     placement.origin to the left, stubs running left). The columns stay
     on the -build_direction side. With origin 10 the two roots are 20 um
-    apart. Both halves are fed by root_net and have the same placement
+    apart. Both halves are fed by the root net and have the same placement
     and net lengths. The mirror's instances are named
     <spine>_mirror_<level>_<cell>, its nets <spine>_mirror_<level>_<cell>_Y
     and its stubs <stub>_mirror; -build places them flipped (FS for a
@@ -40,17 +48,55 @@ DESCRIPTION
     spine. Cells of the two halves closer than the cell size (a small
     origin) are reported as overlaps.
 
-    Placement. Fixed: the root, every leaf (a cell with an output stub)
-    at the middle of its stub, and every cell with a location key. A
+    Placement. Fixed: the root, every cell with a location key, and
+    every other leaf (a cell with an output stub) at the middle of its
+    stub. A
     cell's location is its distance from its driver along the spine, in
     um, centre to centre: + is up (vertical) or right (horizontal), - is
     down or left, whatever the build direction:
         inv2: {input: L1/inv1/Y, location: 1000}    # 1000 um above L1/inv1
         inv2: {input: L1/inv3/Y, location: -500}    # 500 um below L1/inv3
     When the driver moves, the cell moves with it. A location may put a
-    cell outside the span; the root and leaves cannot have one. Limits
-    and balance are still checked, so a location that makes a net too
-    long shows as a warning. Every other cell keeps its column and moves
+    cell outside the span; the root cannot have one. Limits and balance
+    are still checked, so a location that makes a net too long shows as
+    a warning.
+
+    Leaf locations. A leaf with a location is placed by it too, at its
+    driver's position + location. The leaves then decide the stubs, not
+    the span: every stub is centred on its leaf (half below or left of
+    it, half above or right) and all stubs have one length, the longest
+    that leaves stubs.gap between the stubs of the two closest leaves:
+        stub length = distance of the two closest leaves - stubs.gap
+    (leaves 22.5 apart, gap 2: 20.5 um, 10.25 on each side). The stubs
+    of the closest leaves are stubs.gap apart, the others further, and a
+    stub may leave the span. A leaf's net is level_pitch plus this
+    length, so it is checked against max_drive_length. A leaf without a
+    location sits at the middle of a place the span gives it and its
+    stub is centred on it too. With one stub the span gives the length.
+    Leaves closer than stubs.gap have no room for stubs (HT4-151). The
+    mirror is not looked at for the length: see the table.
+
+    Stub spacing. -validate and -build print the table to judge the
+    stubs by: the stub length and where it comes from, then the room
+    between each stub and the next in their order along the spine
+    (bottom to top, or left to right; with -mirror the stubs of both
+    halves in one table), from the end of one stub to the start of the
+    next, with the distance of their leaves:
+        Stub spacing (um, bottom to top; stubs.gap 2):
+          stub length   : 20.5 (10.25 on each side of its leaf) = 22.5
+                          between the closest leaves (stub2, stub1) -
+                          stubs.gap 2; 19 by the span
+          stub2 - stub1 : 2  leaves 22.5 apart
+    (the stub length is printed on one line). Without leaf locations the
+    length is "by the span" and every row is stubs.gap. A room larger
+    than stubs.gap is not a warning: the table is there to decide by. A
+    negative room is two stubs over each other (two stub nets on one
+    line): the row is marked OVERLAP and it is a warning (HT4-278). The
+    stubs of one spine never overlap; those of a spine and its mirror do
+    when a leaf's stub reaches past -location, and a larger
+    placement.origin moves the two apart.
+
+    Every other cell keeps its column and moves
     only along the spine. A linear program places them, using
     the least wire, so that every net is at most max_drive_length +
     deviation and the nets of each level are within deviation of each
@@ -62,10 +108,14 @@ DESCRIPTION
     a cell driven from its own column (and with no location) is kept one
     cell length further along than its driver.
 
-    Net length is the wire drawn once: level_pitch for each column the
-    net crosses, plus, for each column its loads are in, one trunk from
-    the driver's position to its farthest load there (shared wire counted
-    once), plus detour. A leaf's net is level_pitch plus its whole stub.
+    Net length is the wire drawn once: one trunk along the spine, from
+    the lowest to the highest of the driver and its loads, whatever
+    their columns, plus level_pitch for each column crossed between the
+    trunk and the driver or a load, plus detour. Loads in two columns
+    share the trunk: a driver with one load 1200 um up in its own column
+    and one 1200 um up in the next column has a net of 1200 + 2.88, not
+    1200 in each column. The trunk is drawn in the column that needs the
+    fewest crossings. A leaf's net is level_pitch plus its whole stub.
     Nets are grouped by the level of their driver: L1-L2, L2-L3, L3-L4,
     L4-stubs.
 
@@ -80,6 +130,7 @@ DESCRIPTION
       neighbouring columns when level_pitch is under the cell width;
       without -ref_cell only cells at the same position);
       a cell that drives nothing;
+      stubs of the spine and its mirror that overlap (leaf locations);
       cells or stubs outside the design boundary (read_def).
     With -mirror, -validate reports both halves, the spine first; -show
     draws the spine only.
@@ -137,7 +188,14 @@ OBJECTS AND ATTRIBUTES
         (-location), origin, mirror (true/false), ref_cell, level_pitch, deviation, max_drive_length, stub_length,
         path (the line of its stubs, "x y x y ...", bottom or left end
         first: two points as built, more once move_spine_to_boundary has
-        bent it), insts, stubs, spine_nets (handles)
+        bent it), insts, stubs, spine_nets (handles), spine_input (pin
+        handles: the signal input of the root cell, and with -mirror of
+        the mirrored root too: where the spine is driven), spine_output
+        (pin handles: the signal output of every leaf cell, the cells
+        that drive the stubs: where the spine ends), root_net (net handle:
+        the net on spine_input. <spine>_primary_input when the spec's
+        root_net is the placeholder 'net' or none, else the spec's
+        root_net; rename_obj renames it)
     stub:<spine>/<stub>
         a final stub (the class is stub; get_db stubs lists them, get_db
         nets lists them with the nets): obj_type, name, driver (inst),
@@ -188,8 +246,8 @@ ERRORS
              stubs that do not fit, a missing or unknown input, more or
              fewer than one root, a loop, a stub driven twice, a leaf
              that also drives cells, stubs.count not matching, a
-             location on the root or on a leaf, a negative
-             placement.origin
+             location on the root, a negative placement.origin, leaves
+             with a location closer than stubs.gap
     HT4-152  -ref_cell not in the library, or it has no SIZE
     HT4-153  the spine is already built, or its instance names are taken
     HT4-154  WARN: a net over max_drive_length + deviation
@@ -199,6 +257,8 @@ ERRORS
              mirror)
     HT4-158  WARN: a cell that drives nothing
     HT4-159  WARN: cells or stubs outside the design boundary
+    HT4-278  WARN: stubs of the spine and its mirror overlap (leaf
+             locations)
 
 SEE ALSO
     read_spine_spec, create_inst, gui_show, get_db

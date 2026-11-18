@@ -25,9 +25,9 @@ mirrored spine) each end short by half of what the spacing needs. The design
 boundary is a hard limit, as in route_net: a track on which a wire would not
 lie inside it is not taken, and a stub that fits on none is not routed. The
 stub wire belongs
-to its leaf's net (the net driving the stub) and is stored with it (kind
-stub), apart from what route_net stores, so each command replaces only its
-own. Where the leaf's route meets the stub wire on the other layer a crossing
+to its leaf's net (the net driving the stub: its .shield_net) and is stored
+under <leaf net>_stub (kind stub, net_wire:<leaf net>_stub/<n>), apart from
+what route_net stores, so each command replaces only its own. Where the leaf's route meets the stub wire on the other layer a crossing
 box is stored (kind stub_cross).
 
 A bent stub: each straight piece is routed the way it runs, a vertical piece
@@ -51,11 +51,11 @@ import bisect
 import fnmatch
 import math
 
-from core import objects, root_attrs
+from core import objects, root_attrs, route_status, vias
 from core.commands.route_net import (Grid, NO_POWER, OFF_TRACKS, OUTSIDE, SHIELD_NETS, TOL,
                                      _along, _box, _report_fenced, _report_short,
                                      _gap, _ia_shapes, _rule_layers, _shields)
-from core.db import _num
+from core.db import _num, stub_owner
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 from core.spine_snake import stub_points
@@ -74,6 +74,12 @@ SEARCH = 20                  # tracks tried on each side of the nearest one
 
 
 def run(session, argv):
+    result = _route(session, argv)
+    vias.report_assigned(vias.auto_assign(session.db), NAME, session.out)
+    return result
+
+
+def _route(session, argv):
     opts, _ = parse_options(NAME, argv, OPTIONS)
     if "-rule" not in opts:
         raise HtreeError(USAGE, "route_final_stub: -rule is required. Usage: "
@@ -88,6 +94,15 @@ def run(session, argv):
     db = session.db
     objects.require_tech(db)
     stubs = _stubs(session, opts.get("-stub"))
+    fixed = db.fixed_nets()
+    keys = {id(stub): route_status.stub_key(spine["name"], stub["name"])
+            for spine, stub, _ in stubs}
+    route_status.skip(NAME, "fixed stub(s)", [f"stub:{spine['name']}/{stub['name']}"
+                                              for spine, stub, _ in stubs
+                                              if keys[id(stub)] in fixed], session.out)
+    stubs = [e for e in stubs if keys[id(e[1])] not in fixed]
+    if not stubs:
+        return ()
     layers = _rule_layers(db, opts["-rule"].removeprefix("route_rule:"))
     grid = Grid(db, layers)
     out = session.out
@@ -270,12 +285,37 @@ def _stub_end(runs, i, top):
     return k if (k == 0 and i == 0) or (k == 1 and i == len(runs) - 1) else None
 
 
+def _spec_stub_tracks(db, spine, plan, names):
+    """{centre line: coordinate} of the lines whose stubs' leaves the spine
+    spec gives an output track (track: {output: k}, core/spine_tracks.py):
+    track k of the stretch the line lies on."""
+    from core import spine_tracks
+    kout = {inst: k[1] for inst, k in spine_tracks.cell_tracks(db, spine["name"]).items()
+            if k[1]}
+    if not kout:
+        return {}
+    found = spine_tracks.stretches(db, spine["name"])
+    leaf = {s["name"]: s["driver"] for s in db.spine_stub_rows(spine["id"])}
+    lines = {}
+    for name in names:
+        k = kout.get(leaf.get(name))
+        if not k:
+            continue
+        for (vertical, centre, a, b), line in zip(plan.runs[name], plan.line[name]):
+            point = (centre, (a + b) / 2) if vertical else ((a + b) / 2, centre)
+            s = spine_tracks.stretch_at(found, *point)
+            if s is not None and s.vertical == vertical and s.coord(k) is not None:
+                lines.setdefault(line, s.coord(k))
+    return lines
+
+
 def plan_stubs(db, grid, spine, replaced=(), more=()):
     """The tracks of the stubs of a spine (StubPlan), every stub of it. The
     stubs on one centre line take one track: all the stubs of a straight
     spine, the stubs on one stretch of a bent one, so a spine with two bends
     has three. It is the signal track nearest the centre line, else the next
-    ones out on either side (SEARCH each way), on which every piece's wire
+    ones out on either side (SEARCH each way) (when the spine spec gives the
+    leaves an output track, that track only: _spec_stub_tracks), on which every piece's wire
     keeps its layer's spacing to the shapes of other nets and lies inside the
     design boundary. The tracks of all centre lines are chosen together.
     When the stubs cannot all share: one after another, a stub that does not
@@ -301,6 +341,7 @@ def plan_stubs(db, grid, spine, replaced=(), more=()):
     _keep_apart(db, grid, plan, names)
     owner = {name: plan.net[name] or name for name in plan.runs}
     gone = set(owner.values()) | set(replaced)
+    gone |= {stub_owner(n) for n in gone}        # the stubs' rows: under <net>_stub
     rect = lambda text: tuple(float(c) for c in text.split())
     shapes = [(r["layer"], rect(r["rect"]), None) for r in db.strap_rows()]
     shapes += [(r["layer"], rect(r["rect"]), None) for r in db.pin_wire_rows()]
@@ -315,6 +356,8 @@ def plan_stubs(db, grid, spine, replaced=(), more=()):
         k = bisect.bisect_left(tracks, centre)
         cands.append(sorted(tracks[max(0, k - SEARCH):k + SEARCH + 1],
                             key=lambda t: abs(t - centre)))
+    for line, x in _spec_stub_tracks(db, spine, plan, names).items():
+        cands[line] = [x]        # the spine spec's: its leaves' output track, nothing else
     reach = max(abs(t - centre) for (_, centre), found in zip(plan.lines, cands)
                 for t in found) + max(grid.h.width, grid.v.width) + \
         max(grid.h.spacing, grid.v.spacing)
@@ -429,7 +472,7 @@ def _report_stale(db, grid, spine, plan, routed, out):
         if name in routed:
             continue
         have = sorted(tuple(float(c) for c in r["rect"].split())
-                      for r in db.net_wire_rows(plan.net[name] or name) if r["kind"] == "stub")
+                      for r in db.stub_wire_rows(plan.net[name] or name) if r["kind"] == "stub")
         want = sorted(box for _, box in plan.rects(grid, name))
         if have and (len(have) != len(want) or
                      any(not _same(a, b) for a, b in zip(have, want))):
@@ -493,10 +536,10 @@ def _route_stub(db, grid, spine, stub, net, out, shield=None, plan=None):
         x, y = (ts[i], ts[i + 1]) if runs[i][0] else (ts[i + 1], ts[i])
         wires.append(("stub_cross", f"{grid.h.name}/{grid.v.name}",
                       _box(x, y, grid.v.width, grid.h.width)))
-    joins = []                   # the leaf route overlapping the stub wire
-    for r in db.net_wire_rows(net) if net else []:
-        if r["kind"] not in ("wire", "extension"):
-            continue
+    joins = []                   # the leaf route overlapping the stub wire: its wires, and
+    leaf_route = [r for r in db.net_wire_rows(net) if r["kind"] in ("wire", "extension")] + \
+        [r for r in db.strap_rows() if r["net"] == net] if net else []     # its straps
+    for r in leaf_route:         # (a route lengthens a strap: no extension piece)
         w = tuple(float(c) for c in r["rect"].split())
         for lay, rect in pieces:
             box = (max(w[0], rect[0]), max(w[1], rect[1]),
@@ -513,7 +556,8 @@ def _route_stub(db, grid, spine, stub, net, out, shield=None, plan=None):
         rect_of = lambda r: tuple(float(c) for c in r["rect"].split())
         leaf = db.net_wire_rows(net) if net else []
         own = [("own", r["layer"], rect_of(r)) for r in leaf      # the leaf's signal wires
-               if r["kind"] in ("wire", "extension")]
+               if r["kind"] in ("wire", "extension")] + \
+            [("own", layer, r) for layer, r in db.stretch_pieces(net, ("extension",))]
         powered = [(r["shield_net"], r["layer"], rect_of(r)) for r in leaf   # its shields
                    if r["kind"] in ("shield", "shield_ext")]
         found, cut, no_power, short, fenced = _shields(

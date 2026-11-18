@@ -137,6 +137,8 @@ ERRORS
     HT4-233  a move would run the spine into its own body; nothing changed
     HT4-234  WARN: cells or stubs of the spine are outside the boundary
     HT4-235  WARN: no DEF rows; the cells are not on sites
+    HT4-286  a net or stub of the spine is fixed (set_db .route_status
+             fixed): the move would remove its routes
 
 SEE ALSO
     create_spine, move_obj, legalize_placement, route_pin, route_net,

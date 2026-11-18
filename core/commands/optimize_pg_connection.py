@@ -3,10 +3,12 @@ from the cells' power straps to the power grid.
 
     optimize_pg_connection -inst [get_db insts] -extend 1
 
+A command of its own, run after the routing; route_pin does not run it.
+
 For every power strap of the instances (a route_pin strap on a power net:
-not SIGNAL, not a routed net), the strap's reach is the strap with the
-extensions it already has (route_net's to its shields, earlier runs of this
-command). On each side the strap is extended up to -extend um further when
+not SIGNAL, not a routed net), the strap's reach is the strap as it is now,
+already lengthened by route_net to its shields and by earlier runs of this
+command. On each side the strap is lengthened up to -extend um further when
 that reaches more of its power net: vertical power wires of the same net
 crossing its band (route_net and route_final_stub shields), which it then
 covers, or a same-net strap of a neighbouring cell on the same band, which it
@@ -14,10 +16,13 @@ then touches. It goes to the farthest such shape in reach, so it picks up every
 one on the way, and only as far as the tech spacing to other nets' shapes on
 the strap layer allows. Each new crossing gets a crossing box for the via.
 
-The pieces are stored per instance (net_wire rows of net pg:<inst>, kind
-pg_ext / pg_cross, .shield_net the power net): running it again replaces
-them, move_obj moves them with their instance, write_def writes them as
-stripes of the power net.
+The strap itself is lengthened, one shape on its own y with no piece of metal
+beside it (a strap stretch, owner pg:<inst>, kind pg_ext: core/db.py). Its
+crossing boxes are net_wire rows of net pg:<inst> (kind pg_cross,
+.shield_net the power net). Running the command again on an instance replaces
+both; move_obj and legalize_placement move them with the instance; route_pin
+on the instance, which makes its straps again, removes them. write_def writes
+the strap as one RECT of its power net.
 """
 
 from core import netlist

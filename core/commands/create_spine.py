@@ -19,7 +19,8 @@ from core.db import _num
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 from core.placement import rect_in_polygon
-from core.spine_build import SpecCell, SpecData, SpineError, mirror_overlaps, mirrored, plan
+from core.spine_build import (SpecCell, SpecData, SpineError, mirror_overlaps, mirrored, plan,
+                              stub_overlaps, stub_spacing)
 
 NAME = "create_spine"
 SUMMARY = "Validate (and show) or build a spine spec at a location"
@@ -36,7 +37,7 @@ BAD_SPEC = 151
 NO_CELL = 152
 EXISTS = 153
 WARN_CODES = {"over": 154, "spread": 155, "depth": 156, "overlap": 157, "dummy": 158,
-              "outside": 159}
+              "outside": 159, "stubs": 278}
 
 
 def run(session, argv):
@@ -84,14 +85,17 @@ def run(session, argv):
     if opts["-mirror"]:
         plans.append(mirrored(p))
         mirror_overlaps(p, plans[1])
+    spacing = stub_spacing(plans)
+    stub_overlaps(p, spacing)
     for q in plans:
         _check_boundary(db, q, p.warnings)
 
     out = session.out
     if opts["-build"]:
-        return _build(session, plans, cell)
+        return _build(session, plans, cell, spacing)
     for q in plans:
         report(q, cell, out)
+    report_stub_spacing(p, spacing, out)
     for kind, text in p.warnings:
         warn(WARN_CODES[kind], text, out)
     info(f"create_spine: {len(p.warnings)} warning(s); {name} validated, the design is "
@@ -195,7 +199,7 @@ def report(p, cell, out):
             role = f"{role}  location {_num(c.location)} from {c.driver}".lstrip()
         info(f"  {c.inst:<{width}}  {c.level:<4} {x:12.3f} {y:12.3f}  {role}", out)
     nwidth = max(len(n.name) for n in p.nets)
-    info("Nets (length = level_pitch per column crossed + trunks + detour):", out)
+    info("Nets (length = one trunk + level_pitch per column crossed + detour):", out)
     for n in p.nets:
         loads = " ".join(n.loads if n.loads[0] not in p.cells else
                          (p.cells[k].inst for k in n.loads))
@@ -212,7 +216,31 @@ def report(p, cell, out):
              f"  spread {spread:8.3f}  {state}", out)
 
 
-def _build(session, plans, cell):
+def report_stub_spacing(p, spacing, out):
+    """The table to judge the stubs by: their length and where it comes from,
+    then the room between neighbouring stubs in their order along the spine,
+    with the distance of their leaves. By the span every room is stubs.gap;
+    with leaf locations only the closest leaves get stubs.gap."""
+    order = "bottom to top" if p.orientation == "vertical" else "left to right"
+    info(f"Stub spacing (um, {order}; stubs.gap {_num(p.gap)}):", out)
+    length = round(p.stub_length, 6)
+    first = f"{_num(length)} ({_num(round(length / 2, 6))} on each side of its leaf)"
+    if p.stub_fit:
+        a, b, apart, by_span = p.stub_fit
+        first += (f" = {_num(apart)} between the closest leaves ({a}, {b}) - stubs.gap "
+                  f"{_num(p.gap)}; {_num(by_span)} by the span")
+    else:
+        first += ", by the span"
+    rows = [(f"{a} - {b}", _num(d), f"leaves {_num(apart)} apart" + ("  OVERLAP" if d < -1e-3 else ""))
+            for a, b, d, apart in spacing]
+    width = max(len(label) for label, _, _ in rows + [("stub length", "", "")])
+    value = max((len(text) for _, text, _ in rows), default=0)
+    info(f"  {'stub length':<{width}} : {first}", out)
+    for label, text, note in rows:
+        info(f"  {label:<{width}} : {text:<{value}}  {note}", out)
+
+
+def _build(session, plans, cell, spacing):
     """Store the spine, and its mirror when plans has two."""
     db = session.db
     out = session.out
@@ -255,6 +283,7 @@ def _build(session, plans, cell):
     info(f"Built spine:{p.name}: {len(insts)} instances of {cell['name']}, {len(stubs)} stubs "
          f"of {p.stub_length:.3f} um, {len(nets)} nets"
          + (f" (with its mirror {plans[1].name}_*)" if len(plans) > 1 else ""), out)
+    report_stub_spacing(p, spacing, out)
     if p.warnings:
         info(f"  {len(p.warnings)} warning(s) ignored; run create_spine with -validate to see "
              f"them", out)

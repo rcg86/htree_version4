@@ -14,15 +14,25 @@ DESCRIPTION
         place_inst <inst> <x> <y> <orientation>
         connect <inst>/<pin> -net <net>
 
+    The first line of the script is
+        set_db timing_enable_simultaneous_setup_hold_mode false
+    and the last line is
+        set_db timing_enable_simultaneous_setup_hold_mode true
+
     Step 1 creates every spine net: the output net of each spine cell
     (<inst>_Y), mirrored halves included, and then the nets connect_pin
     made (<inst>_<pin>, driven by an instance that is no spine cell).
     Then one step per spine level, from the root: each cell is created,
     placed at its lower-left corner in microns, and its input pin and
-    output pin connected. The root's input takes the spine spec's
-    root_net, which must already exist in the design (the script says so
-    in a comment; it does not create it). A leaf's output net is the net
-    of its stub.
+    output pin connected. The root's input takes the spine's root net
+    (get_db spine:<name> .root_net). One htree named is created in step
+    1: <spine>_primary_input, which a spine gets when its spec's
+    root_net is the placeholder 'net' (or none), or a name rename_obj
+    gave it that is not the net of a port. A root net the spec names
+    must already exist in the design (the script says so in a comment;
+    it does not create it). A root net no pin is on any more (connect_pin
+    moved the root's input) is not written. A leaf's output net is the
+    net of its stub.
 
     The connections are the netlist as it is now: what create_spine
     -build made, changed by connect_pin and disconnect_pin. A pin taken

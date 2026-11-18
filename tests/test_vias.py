@@ -69,6 +69,9 @@ def _route(s, write_lef):
     s.eval("create_route_rule -name r -layer IB -width 0.36 -spacing 0.36 -append")
     s.eval("route_net -net [get_db nets .name] -rule r")
     s.eval("route_final_stub -rule r")
+    # the routing commands gave every net its definitions (vias.auto_assign); these
+    # tests start from vias with none, assigned by hand (test_auto_assign has those)
+    s.eval("assign_via_for_route -reset")
     out_of(s)
     return s
 
@@ -201,13 +204,17 @@ def stack(s, handles):
 def test_vias_of_a_routed_net(routed):
     s = routed
     found = lst(s, "get_db [get_db nets sp_L1*] .vias")
-    assert found == [f"via:sp_L1_inv1_Y/{k}" for k in range(1, 13)]
+    assert found == [f"via:sp_L1_inv1_Y/{k}" for k in range(1, 15)]
     assert lst(s, "get_db spine_net:sp/sp_L1_inv1_Y .vias") == found
     pin = [("pin", "D12", "C1", "H1"), ("pin", "H1", "C2", "H2")]
     strap = [("strap", "H2", "C3", "G1"), ("strap", "G1", "C4", "G2"),
              ("strap", "G2", "C5", "IA")]
-    # the two crossings of the route, then the driver's and the load's stack
-    assert stack(s, found) == [("cross", "IA", "C6", "IB")] * 2 + (pin + strap) * 2
+    # the two crossings of the route, then the driver's and the load's stacks: pin Y
+    # is two D12 rectangles and has a stack on each, pin A is one
+    assert stack(s, found) == [("cross", "IA", "C6", "IB")] * 2 + pin * 2 + strap + pin + strap
+    assert lst(s, "get_db [get_db vias -if {.source == pin_wire:sp_L1_inv1/Y && "
+                  ".bottom_layer == D12}] .box") == \
+        ["-0.56 -0.689 -0.16 -0.189", "-0.56 0.211 -0.16 0.711"]
     one = "via:sp_L1_inv1_Y/1"
     assert [s.eval(f"get_db {one} .{a}") for a in
             ("obj_type", "name", "net", "via_def", "location", "box", "rect", "shapes")] == \
@@ -220,19 +227,20 @@ def test_vias_of_a_routed_net(routed):
     assert s.eval(f"get_db {source} .rect") == s.eval(f"get_db {one} .box")
     assert s.eval("get_db via:sp_L1_inv1_Y/3 .source") == "pin_wire:sp_L1_inv1/Y"
     # a stack: its vias are at one point
-    assert len({s.eval(f"get_db via:sp_L1_inv1_Y/{k} .location") for k in (5, 6, 7)}) == 1
+    assert len({s.eval(f"get_db via:sp_L1_inv1_Y/{k} .location") for k in (7, 8, 9)}) == 1
     assert s.eval("get_db [get_db vias] .net -if {.kind == cross}") != ""
     assert lst(s, "get_db via:sp_L1_inv1_Y/1 .via_def") == []
-    assert "HT4-022" in err(s, "get_db via:sp_L1_inv1_Y/13 .kind")
+    assert "HT4-022" in err(s, "get_db via:sp_L1_inv1_Y/15 .kind")
     assert "HT4-022" in err(s, "get_db via:none/1 .kind")
 
 
 def test_every_net_and_stub_has_its_vias(routed):
     s = routed
     kinds = Counter((r["net"], r["kind"]) for r in vias.rows(s.db))
-    assert len(lst(s, "get_db vias")) == sum(kinds.values()) == 91
-    # 4 instances: each power pin wire has a stack to its pin and to its straps
-    assert kinds["VSS", "pin"] == kinds["VDD_SOC", "pin"] == 8
+    assert len(lst(s, "get_db vias")) == sum(kinds.values()) == 107
+    # 4 instances: each power pin wire has a stack to each rectangle of its pin (VSS
+    # one, VDD two) and to its straps
+    assert kinds["VSS", "pin"] == 8 and kinds["VDD_SOC", "pin"] == 16
     assert kinds["sp_L2_inv1_Y", "cross"] == 3
     assert not any(kind in ("stub_cross", "auto") for _, kind in kinds)
     # a stub joins its leaf net at a crossing the route already has: one via
@@ -245,11 +253,11 @@ def test_every_net_and_stub_has_its_vias(routed):
     # via handles follow the routing. A net that loses its route loses its
     # crossings, and its pin wires and straps are SIGNAL again: so are their vias
     signal = len(vias.rows(s.db, "SIGNAL"))
-    assert len(lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias")) == 18
+    assert len(lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias")) == 20
     s.eval("delete_route -nets sp_L2_inv1_Y")
     assert lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias") == []
-    assert len(vias.rows(s.db, "SIGNAL")) == signal + 15
-    assert len(lst(s, "get_db vias")) == 91 - 3
+    assert len(vias.rows(s.db, "SIGNAL")) == signal + 17
+    assert len(lst(s, "get_db vias")) == 107 - 3
 
 
 def test_vias_without_definitions_have_no_cut_layer(spine):
@@ -258,22 +266,31 @@ def test_vias_without_definitions_have_no_cut_layer(spine):
     s.eval("route_net -net sp_L1_inv1_Y -rule r")
     found = lst(s, "get_db spine_net:sp/sp_L1_inv1_Y .vias")
     assert stack(s, found) == [("cross", "IA", "", "IB")] * 2 + \
-        [("pin", "D12", "", "H2"), ("strap", "H2", "", "IA")] * 2
+        [("pin", "D12", "", "H2")] * 2 + [("strap", "H2", "", "IA")] + \
+        [("pin", "D12", "", "H2"), ("strap", "H2", "", "IA")]    # Y: two rectangles, A: one
     assert lst(s, "get_db via_defs") == []
 
 
-def test_pin_stack_starts_from_the_highest_pin_shape_below_the_wire(via_session):
+def test_pin_stacks_start_from_the_highest_pin_shapes_below_the_wire(via_session):
     tech = vias.tech_layers(via_session.db)
     wire = (0, 0, 0.4, 5)                               # a pin wire on H2
     d12, h1, m1 = ("D12", (0, 0, 0.4, 1)), ("H1", (0.1, 2, 0.3, 2.5)), ("M1", (0, 0, 3, 3))
-    over = lambda shapes: vias._pin_overlap(shapes, "H2", wire, tech)   # noqa: E731
-    assert over([d12]) == ("D12", (0, 0, 0.4, 1))
-    assert over([d12, h1]) == ("H1", (0.1, 2, 0.3, 2.5))
-    assert over([d12, m1]) == ("D12", (0, 0, 0.4, 1))   # M1 is not a layer of the tech
-    assert over([d12, ("D12", (0, 1.5, 0.4, 4))]) == ("D12", (0, 1.5, 0.4, 4))   # the largest
-    assert over([d12, ("H2", (0, 3, 0.4, 4))]) is None  # a shape on the wire's layer: no via
-    assert over([("IA", (0, 0, 0.4, 1))]) is None       # only above the wire
-    assert over([("D12", (1, 0, 2, 1))]) is None        # not under the wire
+    second = ("D12", (0, 1.5, 0.4, 4))
+    over = lambda shapes: vias._pin_overlaps(shapes, "H2", wire, tech)  # noqa: E731
+    assert over([d12]) == [d12]
+    assert over([d12, second]) == [d12, second]         # every rectangle of the pin
+    assert over([d12, second, ("D12", (1, 0, 2, 1))]) == [d12, second]  # ... under the wire
+    assert over([d12, second, h1]) == [h1]              # of the highest layer only
+    assert over([d12, m1]) == [d12]                     # M1 is not a layer of the tech
+    assert over([d12, ("H2", (0, 3, 0.4, 4))]) == []    # a shape on the wire's layer: no via
+    assert over([("IA", (0, 0, 0.4, 1))]) == []         # only above the wire
+    assert over([("D12", (1, 0, 2, 1))]) == []          # not under the wire
+    # no layer of the pin in the tech: the layer of the largest overlap, all its shapes
+    none = {"H2": tech["H2"]}
+    assert vias._pin_overlaps([d12, second, ("M1", (0, 0, 0.4, 2))], "H2", wire, none) == \
+        [d12, second]
+    assert vias._pin_overlaps([d12, ("M1", (0, 0, 0.4, 5))], "H2", wire, none) == \
+        [("M1", (0, 0, 0.4, 5))]
 
 
 # -- assign_via_for_route --------------------------------------------------------
@@ -289,9 +306,9 @@ def test_assign_via_for_route(routed):
     s.eval("assign_via_for_route -via {V_IA_IB via_def:V_G2_IA}")
     text = out_of(s)
     assert "IA/IB" in text and "(every net)" in text and "V_G2_IA  16" in text
-    assert "Vias: 91, with a definition 27, without: D12/H1(16) H1/H2(16) H2/G1(16) " \
+    assert "Vias: 107, with a definition 27, without: D12/H1(24) H1/H2(24) H2/G1(16) " \
            "G1/G2(16)" in text
-    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB": 2, "V_G2_IA": 2, None: 8}
+    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB": 2, "V_G2_IA": 2, None: 10}
     one = "via:sp_L1_inv1_Y/1"
     assert s.eval(f"get_db {one} .via_def") == "via_def:V_IA_IB"
     assert s.eval(f"get_db [get_db {one} .via_def] .cuts") == "1"
@@ -304,7 +321,7 @@ def test_assign_via_for_route(routed):
     s.eval("assign_via_for_route -via V_IA_IB_2 -nets spine_net:sp/sp_L1_inv1_Y")
     text = out_of(s)
     assert "HT4-243" not in text and "sp_L1_inv1_Y" in text
-    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB_2": 2, "V_G2_IA": 2, None: 8}
+    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB_2": 2, "V_G2_IA": 2, None: 10}
     assert defs(s, "sp_L2_inv1_Y")["V_IA_IB"] == 3
     assert s.eval(f"get_db {one} .rect") == "1.24 1.34 1.64 1.54"
     # another for every net: a warning, and the net with its own keeps it
@@ -321,7 +338,7 @@ def test_assign_via_for_route(routed):
     # -reset: of some nets, then all
     s.eval("assign_via_for_route -reset -nets sp_L1_inv1_Y")
     assert "Removed 1 via assignment(s) of sp_L1_inv1_Y" in out_of(s)
-    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB": 2, "V_G2_IA": 2, None: 8}
+    assert defs(s, "sp_L1_inv1_Y") == {"V_IA_IB": 2, "V_G2_IA": 2, None: 10}
     s.eval("assign_via_for_route -reset")
     text = out_of(s)
     assert "Removed 4 via assignment(s)" in text and "No via assignments" in text
@@ -411,7 +428,7 @@ def test_vias_in_a_written_database(routed, tmp_path):
     want, path = table(s), tmp_path / "v.db"
     s.eval(f"write_db {path}")
     con = sqlite3.connect(path)                       # the file has the via table
-    assert con.execute("SELECT count(*) FROM via").fetchone()[0] == 91
+    assert con.execute("SELECT count(*) FROM via").fetchone()[0] == 107
     con.close()
     other = Session(out=io.StringIO())
     other.eval(f"read_db {path}")
@@ -456,16 +473,17 @@ def test_get_obj_in_area(routed):
     # the L1 inverter is 3.12 x 1.778 about {0 0}; its stack is 9.36 tall
     inside = lst(s, "get_obj_in_area -area {-2 -5 2 5}")
     kinds = Counter(h.partition(":")[0] for h in inside)
-    # 4 pin wires with a stack of 5 each, and the first crossing of the L1 route
-    # with the two strap extensions that reach it
-    assert kinds == {"inst": 1, "pin": 6, "strap": 7, "pin_wire": 4, "net_wire": 2, "via": 21}
+    # 4 pin wires with a strap stack of 3 each and a pin stack of 2 on each pin
+    # rectangle (6: Y and VDD have two), and the first crossing of the L1 route; the
+    # route lengthens the strap there, so no wire of it lies inside
+    assert kinds == {"inst": 1, "pin": 6, "strap": 7, "pin_wire": 4, "via": 25}
     assert inside[0] == "inst:sp_L1_inv1" and inside[1].startswith("pin:sp_L1_inv1/")
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -enclosed") == inside
     assert lst(s, "get_obj_in_area -area {2 5 -2 -5}") == inside          # corners either way
     # -type picks the objects and their order
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type inst") == ["inst:sp_L1_inv1"]
     both = lst(s, "get_obj_in_area -area {-2 -5 2 5} -type {vias inst}")
-    assert both[-1] == "inst:sp_L1_inv1" and len(both) == 22
+    assert both[-1] == "inst:sp_L1_inv1" and len(both) == 26
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type {via pins}")[0].startswith("via:")
     # a net is inside when all its wires and vias are: none is here
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type nets") == []
@@ -477,16 +495,16 @@ def test_get_obj_in_area(routed):
 
 def test_get_obj_in_area_touching_and_enclosed(routed):
     s = routed
-    one = "strap:sp_L1_inv1/3"                          # -1.56 1.08 1.56 1.8
-    assert s.eval(f"get_db {one} .rect") == "-1.56 1.08 1.56 1.8"
+    one = "strap:sp_L1_inv1/3"                  # -1.56 .. 1.56, lengthened by its route
+    assert s.eval(f"get_db {one} .rect") == "-1.62 1.08 1.62 1.8"
 
     def got(area, flag="", kind="wires"):
         return lst(s, f"get_obj_in_area -area {{{area}}} -type {kind} {flag}")
-    assert one in got("-1.56 1.08 1.56 1.8")            # its own rect encloses it
-    assert one not in got("-1.5 1.08 1.56 1.8")
-    assert one in got("-1.5 1.08 1.56 1.8", "-touching")
-    assert one in got("1.56 1.8 3 1.9", "-touching")    # a shared corner touches
-    assert one not in got("1.57 1.8 3 1.9", "-touching")
+    assert one in got("-1.62 1.08 1.62 1.8")            # its own rect encloses it
+    assert one not in got("-1.5 1.08 1.62 1.8")
+    assert one in got("-1.5 1.08 1.62 1.8", "-touching")
+    assert one in got("1.62 1.8 3 1.9", "-touching")    # a shared corner touches
+    assert one not in got("1.63 1.8 3 1.9", "-touching")
     assert got("0 1.4 0 1.4") == []                     # a point encloses nothing
     assert one in got("0 1.4 0 1.4", "-touching")
     # instances by their outline, pins by their shapes

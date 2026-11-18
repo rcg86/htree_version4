@@ -52,7 +52,7 @@ def design(tech_session, write_lef):
 
 def test_net_of_a_pin(design):
     s = design
-    assert net(s, "sp_L1_inv1/A") == "net"                    # the spec's root_net
+    assert net(s, "sp_L1_inv1/A") == "sp_primary_input"       # the spec's root_net: net
     assert net(s, "sp_L1_inv1/Y") == net(s, "sp_L2_inv1/A") == "sp_L1_inv1_Y"
     assert net(s, "sp_L3_inv1/A") == net(s, "sp_L3_inv2/A") == "sp_L2_inv1_Y"
     assert net(s, "sp_L3_inv1/Y") == "sp_L3_inv1_Y"           # a leaf's net
@@ -68,7 +68,7 @@ def test_net_of_a_pin_is_an_object(design):
     a spine, a net for one that is no spine's (a port's, connect_pin's)."""
     s = design
     assert s.eval("get_db pin:sp_L2_inv1/A .net") == "spine_net:sp/sp_L1_inv1_Y"
-    assert s.eval("get_db pin:sp_L1_inv1/A .net") == "net:net"
+    assert s.eval("get_db pin:sp_L1_inv1/A .net") == "net:sp_primary_input"
     assert s.eval("get_db pin:buf1/A .net") == s.eval("get_db pin:sp_L1_inv1/VDD .net") == ""
     assert s.eval("get_db [get_db inst:sp_L2_inv1 .pins -if {.name == A}] .net.name") == \
         "sp_L1_inv1_Y"
@@ -85,10 +85,12 @@ def test_net_of_a_pin_is_an_object(design):
         "pin:sp_L2_inv1/Y"
 
     # a net of no spine: the root net of the spec, then connect_pin's and a port's
-    assert s.eval("get_db net:net .*") == ""
-    assert (s.eval("get_db net:net .obj_type"), s.eval("get_db net:net .name")) == ("net", "net")
-    assert s.eval("get_db net:net .pins") == "pin:sp_L1_inv1/A"
-    assert s.eval("get_db net:net .driver") == s.eval("get_db net:net .ports") == ""
+    root = "net:sp_primary_input"
+    assert s.eval(f"get_db {root} .*") == ""
+    assert (s.eval(f"get_db {root} .obj_type"), s.eval(f"get_db {root} .name")) == \
+        ("net", "sp_primary_input")
+    assert s.eval(f"get_db {root} .pins") == "pin:sp_L1_inv1/A"
+    assert s.eval(f"get_db {root} .driver") == s.eval(f"get_db {root} .ports") == ""
     s.eval("connect_pin -from buf1/Y -to {d1/A d2/A}")
     assert s.eval("get_db pin:d1/A .net") == "net:buf1_Y"
     assert s.eval("get_db net:buf1_Y .driver") == "pin:buf1/Y"
@@ -252,7 +254,7 @@ def test_root_input(design):
     s = design
     assert "HT4-253" in err(s, "connect_pin -from buf1/Y -to sp_L1_inv1/A")
     s.eval("disconnect_pin -pin sp_L1_inv1/A")
-    assert "disconnect_pin: net net: sp_L1_inv1/A taken off" in out_of(s)
+    assert "disconnect_pin: net sp_primary_input: sp_L1_inv1/A taken off" in out_of(s)
     assert net(s, "sp_L1_inv1/A") == ""                               # root_net does not come back
     assert [(r["inst"], r["net"]) for r in s.db.connection_rows()] == [("sp_L1_inv1", None)]
     s.eval("connect_pin -from buf1/Y -to sp_L1_inv1/A")
@@ -296,9 +298,14 @@ def test_write_logical(design, tmp_path):
     path = tmp_path / "l.tcl"
     s.eval(f"write_logical -output {path}")
     plain = path.read_text()
+    lines = plain.splitlines()
+    assert lines[0] == "set_db timing_enable_simultaneous_setup_hold_mode false"
+    assert lines[-1] == "set_db timing_enable_simultaneous_setup_hold_mode true"
+    assert plain.count("timing_enable_simultaneous_setup_hold_mode") == 2
     assert "Other instances (create_inst), not connected" in plain
     assert "connect_pin" not in plain and "connect buf1" not in plain
-    assert "4 nets, 7 instances" in out_of(s)
+    assert "5 nets, 7 instances" in out_of(s)               # the spine's 4 and its root net
+    assert "# spine sp: root net\ncreate_net -name sp_primary_input\n" in plain
 
     s.eval("connect_pin -from clk -to buf1/A")
     s.eval("connect_pin -from buf1/Y -to {sp_L1_inv1/A d2/B} -disconnect")
@@ -306,8 +313,9 @@ def test_write_logical(design, tmp_path):
     s.eval("disconnect_pin -pin sp_L3_inv2/A")
     out_of(s)
     s.eval(f"write_logical -output {path} -overwrite")
-    assert "5 nets, 7 instances" in out_of(s)
+    assert "5 nets, 7 instances" in out_of(s)               # buf1_Y; the root is on no pin
     text = path.read_text()
+    assert "sp_primary_input" not in text
     step1 = text.split("Step 2")[0]
     assert "# connect_pin: net clk of port clk must exist in the design" in step1
     assert step1.count("create_net -name buf1_Y\n") == 1
@@ -323,9 +331,12 @@ def test_write_logical(design, tmp_path):
     assert block("d1") == ["connect d1/A -net sp_L2_inv1_Y"]
     assert block("d2") == ["connect d2/B -net buf1_Y"]
     assert "Other instances (create_inst)\n" in text and "not connected" not in text
-    # step 1 is as before, with the connect_pin lines after the spine nets
+    # step 1 is as before, with the connect_pin lines after the spine nets, and
+    # without the root net, which no pin is on now
     assert step1.replace("# connect_pin: net clk of port clk must exist in the design\n"
-                         "create_net -name buf1_Y\n\n", "") == plain.split("Step 2")[0]
+                         "create_net -name buf1_Y\n\n", "") == \
+        plain.split("Step 2")[0].replace("# spine sp: root net\n"
+                                         "create_net -name sp_primary_input\n", "")
 
 
 def test_write_def_nets(design, tmp_path):
@@ -333,7 +344,7 @@ def test_write_def_nets(design, tmp_path):
     s.eval("connect_pin -from sp_L2_inv1/Y -to {d1/A d2/B}")           # a load, a table row
     s.eval("connect_pin -from sp_L3_inv1/Y -to buf1/A")               # on a leaf's net
     s.eval("disconnect_pin -pin sp_L3_inv2/A")
-    s.eval(f"write_def -output {tmp_path}/o.def")
+    s.eval(f"write_def -output {tmp_path}/o.def -sections nets")
     nets = (tmp_path / "o.def").read_text().split("\nNETS")[1]
     assert "- sp_L2_inv1_Y ( sp_L2_inv1 Y ) ( sp_L3_inv1 A ) ( d1 A ) ( d2 B ) + USE CLOCK" in nets
     assert "- sp_L3_inv1_Y ( sp_L3_inv1 Y ) ( buf1 A ) + USE CLOCK" in nets
@@ -365,17 +376,18 @@ def test_read_db_of_schema_21(design, tmp_path):
     con = sqlite3.connect(path)                       # as written before connect_pin
     with con:
         con.execute("DROP TABLE connection")
+        con.execute("DROP TABLE net_route_status")
         con.execute("UPDATE meta SET value = '21' WHERE key = 'schema_version'")
     con.close()
     other = Session(out=io.StringIO())
     other.eval(f"read_db -file {path}")
     assert "Connections" not in out_of(other)
-    assert net(other, "sp_L1_inv1/A") == "net" and net(other, "sp_L2_inv1/A") == "sp_L1_inv1_Y"
+    assert net(other, "sp_L1_inv1/A") == "sp_primary_input" and net(other, "sp_L2_inv1/A") == "sp_L1_inv1_Y"
     other.eval("connect_pin -from buf1/Y -to d1/A")
     assert net(other, "d1/A") == "buf1_Y"
     other.eval(f"write_db -file {tmp_path}/new.db")
     con = sqlite3.connect(tmp_path / "new.db")
-    assert con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == "22"
+    assert con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == "26"
     assert con.execute("SELECT inst, pin, net, driver FROM connection").fetchall() == \
         [("d1", "A", "buf1_Y", "buf1/Y")]
     con.close()

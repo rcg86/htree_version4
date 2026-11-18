@@ -134,16 +134,16 @@ def _in_spine(db, inst):
                for m in db.spine_members(db.spine_row(s)["id"]))
 
 
-def _spine_step(db, spines, axis):
+def _spine_step(db, spines, axis, extra=()):
     """The legal step of a spine move along axis: the least common multiple of
     the track-pattern periods (pitch x pattern length; the pitch alone with no
-    assignment) of the layers its routes use whose tracks run across the move,
-    and of the manufacturing grid."""
+    assignment) of the layers its routes use, and the extra layers, whose
+    tracks run across the move, and of the manufacturing grid."""
     grid = db.tech_row()["manufacturing_grid"] if db.has_tech() else None
     unit = grid or 0.001
     direction = "x" if axis == 0 else "y"
     layers = {r["layer"] for s in spines for n in db.spine_net_rows(db.spine_row(s)["id"])
-              for r in db.net_wire_rows(n["name"]) if "/" not in r["layer"]}
+              for r in db.net_wire_rows(n["name"]) if "/" not in r["layer"]} | set(extra)
     step = 1
     for layer in layers:
         pos = db.track_positions(layer, direction)

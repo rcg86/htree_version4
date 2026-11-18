@@ -8,21 +8,26 @@ location, along the spine. Positions use two coordinates:
          one column beyond the last level. Columns are level_pitch apart, on
          the side given by the build direction.
 
-Fixed: the root (L1_inv1) at s = 0, every leaf at the middle (tap) of its
-stub, and every cell with a location (cell key 'location') at its driver's
-s + location. The stubs lie end to end from s = 0 with stub_gap between
-them and share the span equally. Every other cell keeps its column and
-moves only along the spine. A linear program places them to keep every net within
+Fixed: the root (L1_inv1) at s = 0, every cell with a location (cell key
+'location') at its driver's s + location, and every other leaf at the middle
+(tap) of its stub. The stubs lie end to end from s = 0 with stub_gap between
+them and share the span equally. When leaves have a location, the leaves
+decide the stubs: every stub is centred on its leaf and they are all the
+same length, the longest that leaves stub_gap between the stubs of the two
+closest leaves (Plan.stub_fit; stub_spacing is the room between the others).
+Every other cell keeps its column and moves only along the spine. A linear program places them to keep every net within
 max_drive_length + deviation and the nets of each level within deviation of
 each other, using the least wire; the leftovers become warnings. When the
 cell size is known, a cell driven from its own column sits at least one
 cell length further along than its driver, and overlapping cells are
 reported.
 
-Net length is the wire drawn once: level_pitch per column crossed, plus one
-trunk per load column running from the driver's s to its farthest load in
-that column (shared wire counted once), plus any detour. A leaf's net is
-level_pitch plus its whole stub.
+Net length is the wire drawn once: one trunk along the spine, from the lowest
+to the highest of the driver and its loads whatever their columns (loads in
+two columns share it), plus level_pitch for every column crossed between
+the trunk and the driver and each load (_trunk_col picks the trunk's column
+for the fewest), plus any detour. A leaf's net is level_pitch plus its whole
+stub.
 """
 
 import itertools
@@ -132,6 +137,9 @@ class Plan:
     spec: str = ""                   # the spine spec it was placed from
     origin: float = 0.0              # along the spine from (x0, y0) to the root
     sign: int = 1                    # -1: the mirrored copy, growing down (or left)
+    # set when leaf locations give the stub length: (stub, stub, the distance of
+    # these two closest leaves, the stub length the span would give)
+    stub_fit: Optional[Tuple[str, str, float, float]] = None
 
     @property
     def limit(self):
@@ -200,13 +208,26 @@ def plan(spec: SpecData, prefix: str, location, build_direction: Optional[str] =
     if cell_size is not None:          # (along, across) the spine
         cell_size = (cell_size[1], cell_size[0]) if orientation == "vertical" else cell_size
 
-    best = None
+    best = failed = None
     for order in _leaf_orders(cells, root):
-        candidate = _place(spec, prefix, location, orientation, choices[build_direction],
-                           gap, deviation, cells, order, length, cell_size)
+        try:
+            # leaf locations give the stub length (Plan.stub_fit), and a leaf net is as
+            # long as its stub: solve again with the length found, until it holds
+            used = length
+            for _ in range(3):
+                candidate = _place(spec, prefix, location, orientation, choices[build_direction],
+                                   gap, deviation, cells, order, length, cell_size, used)
+                if abs(candidate[0].stub_length - used) < TOL:
+                    break
+                used = candidate[0].stub_length
+        except SpineError as error:      # this order has no room for its stubs
+            failed = error
+            continue
         key = (round(candidate[1], 3), round(candidate[2], 3))
         if best is None or key < best[0]:
             best = (key, candidate[0])
+    if best is None:
+        raise failed
     result = best[1]
     result.origin = origin
     _check(result)
@@ -237,7 +258,33 @@ def mirrored(p: Plan) -> Plan:
     return Plan(prefix, p.orientation, p.direction, p.x0, p.y0, p.pitch, p.deviation,
                 p.max_drive, p.span, p.gap, p.levels, cells, stubs, nets, p.cell_size, [],
                 [(label, [inst(n) for n in names]) for label, names in p.groups],
-                p.spec, p.origin, -p.sign)
+                p.spec, p.origin, -p.sign, p.stub_fit)
+
+
+def stub_spacing(plans: List[Plan]):
+    """[(stub, next stub, spacing, leaves apart)] of the stubs of a spine, and
+    of its mirror when plans has two, in their order along the spine (bottom
+    or left first). spacing is from the end of one stub to the start of the
+    next, negative when the two overlap; leaves apart is the distance of their
+    middles, where the leaves are. Between stubs placed by the span the
+    spacing is stubs.gap; with leaf locations it is stubs.gap between the
+    closest leaves of a spine and more between the others."""
+    ends = sorted(sorted((p.sign * (p.origin + s.lo), p.sign * (p.origin + s.hi))) + [s.name]
+                  for p in plans for s in p.stubs)
+    return [(a[2], b[2], round(b[0] - a[1], 6), round((b[0] + b[1] - a[0] - a[1]) / 2, 6))
+            for a, b in zip(ends, ends[1:])]
+
+
+def stub_overlaps(p: Plan, spacing, shown=10):
+    """Appends a warning to p for the stubs of stub_spacing that overlap: two
+    stub nets on one line. The stubs of one spine never do; those of a spine
+    and its mirror do when leaves with a location reach past the location."""
+    pairs = [f"{a}-{b} ({_n(-d)})" for a, b, d, _ in spacing if d < -TOL]
+    if pairs:
+        more = f" and {len(pairs) - shown} more" if len(pairs) > shown else ""
+        p.warnings.append(("stubs", f"{len(pairs)} pair(s) of stubs of the spine and its mirror "
+                           f"overlap along the spine (um): {' '.join(pairs[:shown])}{more}; "
+                           f"placement.origin moves the two apart"))
 
 
 def mirror_overlaps(p: Plan, m: Plan, shown=10):
@@ -297,10 +344,6 @@ def _tree(spec, prefix):
     if cells[root].location is not None:
         raise SpineError(f"{root} is the root: it sits at -location, so it cannot have a "
                          f"location")
-    for c in cells.values():
-        if c.location is not None and c.stub is not None:
-            raise SpineError(f"{c.key} drives {c.stub}: it sits at the middle of its stub, "
-                             f"so it cannot have a location")
     stubs = [c.stub for c in cells.values() if c.stub is not None]
     if not stubs:
         raise SpineError("no cell drives a stub (output: <stub name>)")
@@ -355,8 +398,10 @@ def _leaf_orders(cells, root):
 
 
 def _place(spec, prefix, location, orientation, direction, gap, deviation, cells, order,
-           length, cell_size):
-    """Solve one stub order. Returns (Plan, penalty, wire)."""
+           length, cell_size, stub_length):
+    """Solve one stub order. length is the stub length by the span (the places
+    of the leaves without a location), stub_length the one the leaf nets are
+    solved with. Returns (Plan, penalty, wire)."""
     from scipy.optimize import linprog
 
     levels = list(spec.levels)
@@ -371,13 +416,14 @@ def _place(spec, prefix, location, orientation, direction, gap, deviation, cells
              cell_size=cell_size, spec=spec.name)
     stub_col = p.stub_col
 
-    # s of each cell: a constant (root, leaves) or an LP variable; a cell with
-    # a location is its driver's s + location (a constant when the driver is
-    # one); a dummy (no loads, no stub) sits at its driver's s.
+    # s of each cell: a constant (root, leaves at their tap) or an LP variable;
+    # a cell with a location, a leaf too, is its driver's s + location (a
+    # constant when the driver is one); a dummy (no loads, no stub) sits at its
+    # driver's s.
     s_of, tied, bounds = {}, [], []      # tied: (cell, driver, location)
     for key in _top_down(cells):
         c = cells[key]
-        if c.driver is None or c.stub is not None:
+        if c.driver is None or (c.stub is not None and c.location is None):
             s_of[key] = ("const", c.s)
         elif c.location is not None and s_of[c.driver][0] == "const":
             s_of[key] = ("const", s_of[c.driver][1] + c.location)
@@ -427,20 +473,15 @@ def _place(spec, prefix, location, orientation, direction, gap, deviation, cells
         net = Net(f"{c.inst}_Y", key, [c.stub] if c.stub else list(c.loads), group)
         nets.append(net)
         if c.stub is not None:
-            net_len[net.name] = (spec.level_pitch * (stub_col - c.col) + length, [])
+            net_len[net.name] = (spec.level_pitch * (stub_col - c.col) + stub_length, [])
             continue
-        cols = sorted({cells[l].col for l in c.loads})
-        const = spec.level_pitch * max(0, max(cols) - c.col)
-        terms = []
-        for col in cols:
-            hi, lo = new_var(), new_var()
-            for member in [key] + [l for l in c.loads if cells[l].col == col]:
-                t, k = s_term(member, 1.0)              # s - hi <= 0
-                add_row(t + [(-1.0, hi)], k, 0.0)
-                t, k = s_term(member, -1.0)             # lo - s <= 0
-                add_row(t + [(1.0, lo)], k, 0.0)
-            terms += [(1.0, hi), (-1.0, lo)]
-        net_len[net.name] = (const, terms)
+        hi, lo = new_var(), new_var()                   # the trunk: one for all columns
+        for member in [key] + list(c.loads):
+            t, k = s_term(member, 1.0)                  # s - hi <= 0
+            add_row(t + [(-1.0, hi)], k, 0.0)
+            t, k = s_term(member, -1.0)                 # lo - s <= 0
+            add_row(t + [(1.0, lo)], k, 0.0)
+        net_len[net.name] = (spec.level_pitch * _trunk_col(c, cells)[1], [(1.0, hi), (-1.0, lo)])
 
     penalties, spacing, wire = [], [], []
     if cell_size is not None:          # same-column load: one cell further along
@@ -503,6 +544,28 @@ def _place(spec, prefix, location, orientation, direction, gap, deviation, cells
 
     for key, (kind, value) in s_of.items():
         cells[key].s = round(float(value if kind == "const" else x[value]), 6)
+    if any(cells[stub.driver].location is not None for stub in stubs):
+        # leaves with a location: every stub is centred on its leaf, all the same
+        # length, the longest that leaves gap between the stubs of the closest leaves
+        stubs.sort(key=lambda stub: cells[stub.driver].s)
+        fit = length
+        if len(stubs) > 1:
+            a, b = min(zip(stubs, stubs[1:]),
+                       key=lambda pair: cells[pair[1].driver].s - cells[pair[0].driver].s)
+            apart = cells[b.driver].s - cells[a.driver].s
+            fit = round(apart - gap, 6)
+            if fit <= TOL:
+                raise SpineError(f"{a.driver} ({a.name}) and {b.driver} ({b.name}) are "
+                                 f"{_n(round(apart, 6))} apart along the spine: no room for "
+                                 f"their stubs with gap {_n(gap)} between them")
+            p.stub_fit = (a.name, b.name, round(apart, 6), round(length, 6))
+        for stub in stubs:
+            s = cells[stub.driver].s
+            stub.lo, stub.hi = round(s - fit / 2, 6), round(s + fit / 2, 6)
+        for net in nets:
+            c = cells[net.driver]
+            if c.stub is not None:
+                net_len[net.name] = (spec.level_pitch * (stub_col - c.col) + fit, [])
     for net in nets:
         const, terms = net_len[net.name]
         net.length = round(const + sum(coef * x[v] for coef, v in terms), 6)
@@ -527,22 +590,32 @@ def _top_down(cells):
     return order
 
 
+def _trunk_col(c, cells):
+    """(column, columns crossed) of the trunk of a cell's net. The trunk runs
+    along the spine past the driver and every load; the driver and each load
+    of another column reach it straight across. The column is the one with
+    the fewest columns crossed, of equals the one furthest from the root."""
+    cols = [cells[l].col for l in c.loads]
+    best = None
+    for col in range(min(cols + [c.col]), max(cols + [c.col]) + 1):
+        crossed = abs(col - c.col) + sum(abs(k - col) for k in cols)
+        if best is None or crossed <= best[1]:
+            best = (col, crossed)
+    return best
+
+
 def _segments(p, c, cells):
     """Centre lines of a cell's net and their length (detour not drawn)."""
     if c.stub is not None:
         stub = next(s for s in p.stubs if s.name == c.stub)
         return [(c.col, c.s, p.stub_col, c.s)], p.pitch * (p.stub_col - c.col) + stub.hi - stub.lo
-    segs, total = [], 0.0
-    cols = sorted({cells[l].col for l in c.loads})
-    if max(cols) > c.col:
-        segs.append((c.col, c.s, max(cols), c.s))
-        total += p.pitch * (max(cols) - c.col)
-    for col in cols:
-        ss = [c.s] + [cells[l].s for l in c.loads if cells[l].col == col]
-        if max(ss) - min(ss) > 0:
-            segs.append((col, min(ss), col, max(ss)))
-            total += max(ss) - min(ss)
-    return segs, total
+    trunk, crossed = _trunk_col(c, cells)
+    ss = [c.s] + [cells[l].s for l in c.loads]
+    segs = [(c.col, c.s, trunk, c.s)] if trunk != c.col else []
+    if max(ss) - min(ss) > 0:
+        segs.append((trunk, min(ss), trunk, max(ss)))
+    segs += [(trunk, cells[l].s, cells[l].col, cells[l].s) for l in c.loads if cells[l].col != trunk]
+    return segs, p.pitch * crossed + max(ss) - min(ss)
 
 
 def _check(p):

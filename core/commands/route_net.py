@@ -57,10 +57,11 @@ import bisect
 import fnmatch
 import heapq
 import itertools
+from types import SimpleNamespace
 
-from core import netlist, objects, root_attrs
+from core import netlist, objects, root_attrs, route_status, vias
 from core.commands.create_route_rule import DEFAULT, tech_spacing
-from core.db import _num
+from core.db import _num, base_rect, stub_owner
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -83,21 +84,48 @@ OUTSIDE = 178
 SLANTED = 179
 NO_ENDS = 265
 OFF_PORT = 266
+STALE_STUBS = 279
+FIXED_APART = 287
 
 VIA_WEIGHT = 5.0      # um of wire one layer change is worth
 # Shield nets left of / above and right of / below the signal, for a layer
 # with no track assignment; with one, each shield takes its track's net.
 SHIELD_NETS = ("VDD_SOC", "VSS")
 MARGIN = 10           # tracks of room around the terminals
+OUT_WEIGHT = 0.25     # compact: more cost of a wire per track beyond its pins' tracks
+TIE = 0.001           # compact: and per track away from the stub track (equal tracks only)
+BAND_GAP = 2          # track table: empty signal tracks two used ones of a band may have between
+TRUNK = 25.0          # track table: um of wire on a track that make its band worth a row
 TOL = 1e-6
+KEEP = 2              # signal-track pitches a strap's route costs more off the track the
+                      # cell is crossed on: a straight net keeps one track through its cells
 H, V = 0, 1           # grid layers: the rule's horizontal and vertical layer
 
 
 def run(session, argv):
-    opts, _ = parse_options(NAME, argv, OPTIONS)
+    return run_as(session, argv, NAME, OPTIONS)
+
+
+def run_as(session, argv, cmd, options):
+    """route_net, and route_track (the same router, with -compact and a table
+    of the tracks used): cmd is the name its messages carry."""
+    try:
+        result = _run(session, argv, cmd, options)
+        vias.report_assigned(vias.auto_assign(session.db), cmd, session.out)
+        return result
+    except HtreeError as e:
+        if cmd == NAME:
+            raise
+        raise HtreeError(e.msg_id, e.text.replace(NAME, cmd)) from None
+
+
+def _run(session, argv, cmd, options):
+    opts, _ = parse_options(cmd, argv, options)
+    compact = bool(opts.get("-compact"))
     if "-net" not in opts or "-rule" not in opts:
         raise HtreeError(USAGE, "route_net: -net and -rule are required. Usage: route_net "
-                         "-net <nets> -rule <route_rule> [-via_weight <um>]")
+                         "-net <nets> -rule <route_rule> [-via_weight <um>]"
+                         + (" [-compact]" if "-compact" in options else ""))
     try:
         via_weight = float(opts.get("-via_weight", VIA_WEIGHT))
     except ValueError:
@@ -113,14 +141,25 @@ def run(session, argv):
                              f"and right of / below the signal, got '{opts['-shield_nets']}'")
     db = session.db
     objects.require_tech(db)
-    nets = _nets(session, opts["-net"], session.out)
+    nets = _nets(session, opts["-net"], session.out, cmd)
+    fixed = db.fixed_nets()
+    route_status.skip(cmd, "fixed net(s)", [row["name"] for _, row in nets
+                                            if row["name"] in fixed], session.out)
+    nets = [(spine, row) for spine, row in nets if row["name"] not in fixed]
+    if not nets:
+        return ()
     layers = _rule_layers(db, opts["-rule"].removeprefix("route_rule:"))
     grid = Grid(db, layers)
+    grid.cmd = cmd
     out = session.out
     h, v = layers
-    info(f"route_net: rule {layers.rule}: {h.name} horizontal (width {_num(h.width)}, "
+    info(f"{cmd}: rule {layers.rule}: {h.name} horizontal (width {_num(h.width)}, "
          f"spacing {_num(h.spacing)}), {v.name} vertical (width {_num(v.width)}, spacing "
          f"{_num(v.spacing)}); a layer change costs {_num(via_weight)} um", out)
+    if compact:
+        info(f"  compact: every net on the tracks nearest its pins (a wire on a track beyond "
+             f"them costs {_num(OUT_WEIGHT)} of its length more for every track further out); "
+             f"of equal tracks, the one nearest the stubs of its spine", out)
     done = []
     if shield:
         for lay in layers:
@@ -137,11 +176,16 @@ def run(session, argv):
     for _, row in nets:
         db.unname_pins(row["name"])
     if cleared:
-        warn(REPLACED, f"route_net: removed the {cleared} old wires, extensions, crossing "
+        warn(REPLACED, f"{cmd}: removed the {cleared} old wires, extensions, crossing "
              f"boxes and shields of the {len(nets)} net(s) before routing them again", out)
+    nets = _flow_order(nets)             # a net before the nets its loads drive
     pre = _extend_pin_routes(db, grid, nets, out)
+    from core import spine_tracks       # a spine whose spec gives tracks keeps its stubs'
+    spec = [(s, r) for s, r in nets if s is not None and spine_tracks.cell_tracks(db, s["name"])]
+    if compact or spec:
+        pre["reserved"] = _stub_tracks(db, grid, nets if compact else spec, pre, out)
     for spine, row in nets:
-        if route(db, grid, spine, row, via_weight, out, shield, pre):
+        if route(db, grid, spine, row, via_weight, out, shield, pre, compact):
             db.set_net_route_rule(row["name"], layers.rule)
             done.append(f"spine_net:{spine['name']}/{row['name']}" if spine is not None
                         else f"net:{row['name']}")
@@ -154,10 +198,140 @@ def run(session, argv):
         if bad:
             warn(NO_POWER, f"power pins not connected to a shield (their strap reaches no "
                  f"shield of its net within max_strap_extension): {' '.join(bad)}", out)
+    if cmd != NAME:
+        _report_tracks(db, grid, nets, pre.get("reserved", []), cmd, out)
     return tuple(done)
 
 
-def _nets(session, text, out=None):
+def _flow_order(nets):
+    """The nets [(spine, row)] in the order the signal runs: a net of a
+    spine before every net driven by one of its loads (so the next net
+    keeps the track the cell is reached on); otherwise as given."""
+    driven = {}                          # inst -> indices of the nets it drives
+    for k, (spine, row) in enumerate(nets):
+        if spine is not None:
+            driven.setdefault(row["driver"], []).append(k)
+    after = {k: set() for k in range(len(nets))}      # k -> the nets before it
+    for k, (spine, row) in enumerate(nets):
+        if spine is not None:
+            for load in row["loads"].split():
+                for m in driven.get(load, ()):
+                    if m != k:
+                        after[m].add(k)
+    order, done = [], set()
+    while len(order) < len(nets):
+        ready = [k for k in range(len(nets)) if k not in done and after[k] <= done]
+        k = ready[0] if ready else min(k for k in range(len(nets)) if k not in done)   # a loop
+        order.append(k)
+        done.add(k)
+    return [nets[k] for k in order]
+
+
+def _stub_tracks(db, grid, nets, pre, out):
+    """compact: [(net, layer, rect)] of the wires route_final_stub gives the
+    stubs of the nets' spines (_stub_plan, made before any net is routed: the
+    track nearest each centre line). No other net is routed on them, so the
+    stubs keep the track next to the cells. A stub routed before keeps its
+    wires when they are these; else they are removed, with a warning, as the
+    old wires of the nets are: they would take a second track, and
+    route_final_stub routes the stub again."""
+    key = lambda r: tuple(round(c, 6) for c in r)
+    shapes, said, stale, kept, gone = [], {}, [], [], 0
+    pre["anchor"] = {}               # spine id -> {(H | V, the track of a stub wire)}
+    for spine in {s["id"]: s for s, _ in nets if s is not None}.values():
+        plan = _stub_plan(db, grid, spine, pre)
+        for stub in plan.tracks:
+            net = plan.net[stub] or stub
+            rects = plan.rects(grid, stub)
+            for lay, r in rects:
+                shapes.append((net, lay.name, r))
+                at = (r[1] + r[3]) / 2 if lay is grid.h else (r[0] + r[2]) / 2
+                pre["anchor"].setdefault(spine["id"], set()).add((H if lay is grid.h else V, at))
+                said.setdefault((lay.name, "y" if lay is grid.h else "x", round(at, 6)),
+                                []).append(stub)
+            stored = {key(float(c) for c in r["rect"].split())
+                      for r in db.stub_wire_rows(net) if r["kind"] == "stub"}
+            if stored and stored != {key(r) for _, r in rects}:
+                if route_status.is_fixed(db, route_status.stub_key(spine["name"], stub)):
+                    kept.append(f"stub:{spine['name']}/{stub}")     # its wires block
+                    continue
+                stale.append(f"stub:{spine['name']}/{stub}")
+                gone += db.set_net_wires(net, [], stub=True)
+    if said:
+        info("  compact: tracks kept free for the stubs (route_final_stub): "
+             + "; ".join(f"{layer} {axis} {_num(at)} ({len(dict.fromkeys(stubs))} stub(s))"
+                         for (layer, axis, at), stubs in sorted(said.items())), out)
+    if stale:
+        warn(STALE_STUBS, f"{grid.cmd}: removed the {gone} wires, crossing boxes and shields "
+             f"of {len(stale)} stub(s) routed before on another track than the one kept "
+             f"free for them; route_final_stub routes them again: {' '.join(stale)}", out)
+    route_status.skip(grid.cmd, "fixed stub(s) routed on another track than the one kept "
+                      "free for them", kept, out)
+    return shapes
+
+
+def _report_tracks(db, grid, nets, reserved, cmd, out):
+    """The table of route_track: the signal tracks the nets' wires lie on, in
+    bands (used tracks next to each other, at most BAND_GAP empty ones
+    between two), every track of a band with the wire on it. A band with no
+    track of TRUNK um of wire or more (the short hops across the other
+    layer) is left out. reserved: the stub wires to come (_stub_tracks)."""
+    names = {row["name"] for _, row in nets}
+    rect = lambda text: tuple(float(c) for c in text.split())
+    shapes = [(name, r["layer"], rect(r["rect"]), r["kind"] == "stub") for name in names
+              for r in db.net_wire_rows(name) + db.stub_wire_rows(name)
+              if r["kind"] in ("wire", "stub")]
+    shapes += [(net, layer, r, None) for net, layer, r in reserved]
+    lines = []
+    for lay, tracks, axis in ((grid.h, grid.all_ys, 1), (grid.v, grid.all_xs, 0)):
+        use = {}                     # track index -> [(lo, hi, net, stub)]
+        for net, layer, r, stub in shapes:
+            along = (r[2] - r[0], r[3] - r[1])[1 - axis]
+            if layer != lay.name or along < (r[2] - r[0], r[3] - r[1])[axis] - TOL:
+                continue             # of the other layer, or a wire across the tracks
+            k = bisect.bisect_left(tracks, (r[axis] + r[axis + 2]) / 2 - TOL)
+            if k < len(tracks) and abs(tracks[k] - (r[axis] + r[axis + 2]) / 2) < TOL:
+                use.setdefault(k, []).append((r[1 - axis], r[3 - axis], net, stub))
+        bands, band = [], []
+        for k in sorted(use):
+            if band and k - band[-1] > BAND_GAP + 1:
+                bands.append(band)
+                band = []
+            band.append(k)
+        if band:
+            bands.append(band)
+        length = lambda k: sum(hi - lo for lo, hi in _merge([(a, b) for a, b, _, _ in use[k]]))
+        for band in bands:
+            if max(length(k) for k in band) < TRUNK:
+                continue
+            lo = min(a for k in band for a, _, _, _ in use[k])
+            hi = max(b for k in band for _, b, _, _ in use[k])
+            inside = range(band[0], band[-1] + 1)
+            empty = [k for k in inside if k not in use]
+            way = "xy"[axis]
+            lines.append(f"  {lay.name} {way} {_num(tracks[band[0]])} .. {_num(tracks[band[-1]])}"
+                         f" ({'yx'[axis]} {_num(round(lo, 3))} .. {_num(round(hi, 3))}): "
+                         f"{len(inside)} signal track(s), {len(empty)} empty")
+            lines.append(f"    {'Track ' + way:<12} {'Wire um':>10} {'Filled':>7}  Nets")
+            for k in inside:
+                if k not in use:
+                    lines.append(f"    {_num(tracks[k]):<12} {'0':>10} {'0%':>7}  (empty)")
+                    continue
+                who = {}
+                for _, _, net, stub in use[k]:
+                    who[net] = who.get(net) or ("" if stub is False else " (stub)" if stub
+                                                else " (stub, kept free)")
+                lines.append(f"    {_num(tracks[k]):<12} {_num(round(length(k), 3)):>10} "
+                             f"{round(100 * length(k) / (hi - lo)) if hi > lo else 100:>6}%  "
+                             + " ".join(net + note for net, note in who.items()))
+    info(f"{cmd}: signal tracks of the {len(names)} net(s) (bands of tracks next to each "
+         f"other with {_num(TRUNK)} um of wire or more on one; Filled: of the band's "
+         f"length)" + ("" if lines else ": none"), out)
+    for line in lines:
+        info(line, out)
+
+
+def _nets(session, text, out=None, cmd=NAME):
     """[(spine row, spine_net row)] from names, glob patterns or handles; a
     net of no spine (net:<name>) as (None, {"name", "ends"}), see _plain.
     Stubs are nets too (get_db nets lists them), but route_final_stub routes
@@ -195,16 +369,16 @@ def _nets(session, text, out=None):
         found += [h for h in hits if h not in found]
         skipped += [h for h in stub_hits if h not in skipped]
         for name, named in plain:
-            hit = _plain(db, name, out if named else None)
+            hit = _plain(db, name, out if named else None, cmd)
             if hit is not None and all(row["name"] != name for _, row in found):
                 found.append(hit)
     if skipped and out is not None:
-        info(f"route_net: {len(skipped)} stub(s) left to route_final_stub: "
+        info(f"{cmd}: {len(skipped)} stub(s) left to route_final_stub: "
              f"{' '.join(skipped)}", out)
     return found
 
 
-def _plain(db, name, out=None):
+def _plain(db, name, out=None, cmd=NAME):
     """A net of no spine as (None, row): row["ends"] holds its driver (an
     output pin or an input port, netlist.End) and then its input pins. None,
     with a warning when out is given, for a net without one driver, without
@@ -224,7 +398,7 @@ def _plain(db, name, out=None):
     if why is None:
         return None, {"name": name, "ends": drivers + loads}
     if out is not None:
-        warn(NO_ENDS, f"route_net: net {name} is not routed: {why}", out)
+        warn(NO_ENDS, f"{cmd}: net {name} is not routed: {why}", out)
     return None
 
 
@@ -301,6 +475,7 @@ class Grid:
             if row is not None and row["direction"] == direction:
                 self.patterns[lay.name] = row["pattern"].split()
         self.stub_plans = {}     # spine id -> the tracks of its stubs (_stub_plan)
+        self.cmd = NAME          # the command the messages name (route_track: its own)
         self.fence = None        # the design boundary: nothing is routed outside it
         if db.has_design() and db.design_row()["boundary"]:
             self.fence = Fence([float(c) for c in db.design_row()["boundary"].split()])
@@ -465,12 +640,16 @@ def _extend_pin_routes(db, grid, nets, out):
     and right to the nearest signal track of the vertical layer beyond each
     cell edge (the strap covers that track's wire), at most the strap's
     max_extension, keeping the strap layer's tech spacing to other nets'
-    shapes and inside the design boundary. Returns {"pins": {(inst, pin): (net, [pieces], (x1, x2))},
+    shapes and inside the design boundary. A pin of a cell the spine spec
+    gives tracks (core/spine_tracks.py) is extended to its own track
+    instead, the input pin to its input track, the output to its output
+    track (no piece when the strap covers it already). Returns {"pins": {(inst, pin): (net, [pieces], (x1, x2))},
     "shapes": [(net, layer, rect)]} of the pieces."""
     v, xs = grid.v, grid.all_xs
     routing = {row["name"] for _, row in nets}
     others = [(n, layer, r) for n, layer, r in _ia_shapes(db, None) if n not in routing]
     pins, shapes, lines = {}, [], []
+    spec = _spec_pin_tracks(db, nets)
     for spine, row in nets:
         for t in _net_terminals(db, spine, row):
             if t.kind != "strap" or (t.inst, t.pin) in pins:
@@ -481,9 +660,16 @@ def _extend_pin_routes(db, grid, nets, out):
             left = xs[k] if k >= 0 else None
             k = bisect.bisect_right(xs, sx2 - v.width / 2 + TOL)       # first right of it
             right = xs[k] if k < len(xs) else None
+            own = spec.get((t.inst, t.pin))
+            if own is not None:          # the spine spec's track only
+                left, right = (own, None) if own < sx1 + v.width / 2 - TOL else \
+                    (None, own) if own > sx2 - v.width / 2 + TOL else (None, None)
+                if left is None and right is None:
+                    said.append(f"its spine spec track x {_num(own)} is over the strap")
             for side, x in (("left", left), ("right", right)):
                 if x is None:
-                    said.append(f"{side}: no signal track")
+                    if own is None:
+                        said.append(f"{side}: no signal track")
                     continue
                 rect = (x - v.width / 2, sy1, sx1, sy2) if side == "left" else \
                     (sx2, sy1, x + v.width / 2, sy2)
@@ -514,8 +700,29 @@ def _extend_pin_routes(db, grid, nets, out):
     return {"pins": pins, "shapes": shapes}
 
 
-def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
-    """Route one net; store its wires. Returns True when it has wires."""
+def _spec_pin_tracks(db, nets):
+    """{(inst, pin): x} of the signal pins of the nets' spine cells that the
+    spine spec gives a track on a vertical stretch: the input pin its input
+    track, the output pin its output track."""
+    from core import spine_tracks
+    from core.commands.write_def import cell_pin
+    found = {}
+    for spine in {s["name"]: s for s, _ in nets if s is not None}:
+        for inst, (st, cin, cout, _, _) in spine_tracks.placed(db, spine).items():
+            if not st.vertical:
+                continue
+            ref = db.inst_row(inst)["ref_cell"]
+            for direction, x in (("in", cin), ("out", cout)):
+                pin = cell_pin(db, ref, direction)
+                if pin and x is not None:
+                    found[inst, pin] = x
+    return found
+
+
+def route(db, grid, spine, row, via_weight, out, shield=None, pre=None, compact=False):
+    """Route one net; store its wires. Returns True when it has wires.
+    compact (route_track -compact): on the tracks nearest its pins, see
+    _search."""
     name = row["name"]
     h, v = grid.h, grid.v
     pre = pre or {"pins": {}, "shapes": []}
@@ -525,13 +732,6 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
             warn(NOT_PINNED, f"{name}: route_pin is not done on {t.inst} (pin {t.pin}); the "
                  f"route ends at the track crossing nearest the pin, not connected", out)
 
-    # the grid: signal tracks around every terminal, MARGIN tracks more each side
-    x1 = min(t.box[0] for t in terms)
-    y1 = min(t.box[1] for t in terms)
-    x2 = max(t.box[2] for t in terms)
-    y2 = max(t.box[3] for t in terms)
-    xs = _window(grid.all_xs, x1, x2)
-    ys = _window(grid.all_ys, y1, y2)
     for t in terms:              # past the last track (outside the die): snapped to it
         tx1, ty1, tx2, ty2 = t.box
         far = [f"{h.name} y {_num(grid.all_ys[0])} .. {_num(grid.all_ys[-1])}"
@@ -541,53 +741,34 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
         if far:
             warn(OFF_TRACKS, f"{name}: {t.label} is beyond the signal tracks "
                  f"({'; '.join(far)}); its end is taken from the last track", out)
-    shapes = _obstacles(db, name) + [(layer, r) for n, layer, r in pre["shapes"]
-                                      if n != name]
-    blocked = _blocked(shapes, xs, ys, h, v)
-    # the design boundary: a hard limit of every node, step and wire
-    inside = Inside(grid.fence, xs, ys, h, v) if grid.fence is not None else None
-    targets = [t.nodes(xs, ys, h, v, shapes, inside) for t in terms]
-    for t, nodes in zip(terms, targets):
-        if not nodes and inside is not None:
-            warn(OUTSIDE, f"{name}: {t.label} is outside the design boundary (no track "
-                 f"crossing at it holds a wire inside it); not routed", out)
-            return False
-        for n in [n for n in nodes if n in blocked]:
-            del nodes[n]
-        if not nodes:
-            warn(NO_PATH, f"{name}: every track crossing at {t.label} is blocked; not routed",
-                 out)
-            return False
-
-    # Lee: grow the tree from the driver to the nearest unreached terminal
-    tree, edges, reached = None, set(), {0: None}
-    todo = set(range(1, len(terms)))
-    while todo:
-        sources = tree if tree is not None else targets[0]
-        rest = {k: targets[k] for k in todo}
-        found = _lee(sources, rest, xs, ys, blocked, via_weight, inside)
-        if found is None:
-            fenced = inside is not None and \
-                _lee(sources, rest, xs, ys, blocked, via_weight) is not None
-            warn(NO_PATH, f"{name}: no path {'inside the design boundary ' if fenced else ''}"
-                 f"to {', '.join(terms[k].label for k in todo)}; they are not routed", out)
-            break
-        k, path, _ = found
-        todo.discard(k)
-        if tree is None:
-            tree = set()
-            reached[0] = path[0]
-        reached[k] = path[-1]
-        tree.update(path)
-        edges.update(zip(path, path[1:]))
+    fixed = [r for r in db.fixed_wire_rows(name) if r["kind"] == "wire"]
+    terms += [FixedWire(r, name) for r in fixed]     # kept; the rest of the net joins them
+    shapes = _obstacles(db, name) + [(layer, r) for n, layer, r in
+                                     pre["shapes"] + pre.get("reserved", []) if n != name]
+    # the grid: signal tracks around every terminal, MARGIN tracks more each side
+    anchor = pre.get("anchor", {}).get(spine["id"], ()) if spine is not None else ()
+    lanes = _spec_lanes(db, grid, spine, row, pre) if spine is not None else None
+    lee = _search(grid, terms, shapes, via_weight, compact, anchor, lanes)
+    xs, ys = lee.xs, lee.ys
+    tree, edges, reached, taps = lee.tree, lee.edges, lee.reached, lee.taps
+    for k in lee.apart:
+        warn(FIXED_APART, f"{name}: fixed wire {terms[k].label} is not on a signal track of {h.name} or "
+             f"{v.name} (or every track crossing on it is blocked): the route does not join "
+             f"it; it stays as it is", out)
+    if lee.stop is not None:
+        warn(lee.stop[0], f"{name}: {lee.stop[1]}", out)
+        return False
+    if lee.todo:
+        warn(NO_PATH, f"{name}: no path {'inside the design boundary ' if lee.fenced else ''}"
+             f"to {', '.join(terms[k].label for k in lee.todo)}; they are not routed", out)
     if tree is None:
         return False
 
     spans = {H: {}, V: {}}       # layer -> track index -> [(lo, hi)] (extended)
     crosses, extensions = [], []
     for node in tree:            # every node holds a box, so wire ends overlap fully
-        layer, i, j = node
-        _node_span(spans, node, xs, ys, h, v)
+        if node not in lee.fixed_nodes:          # a fixed wire is there already
+            _node_span(spans, node, xs, ys, h, v)
     for a, b in edges:
         if a[0] != b[0]:         # layer change at one crossing: a box of v x h width
             _, i, j = a
@@ -602,15 +783,14 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
             lo, hi = sorted((ys[j], ys[j2]))
             spans[V].setdefault(i, []).append((lo - h.width / 2, hi + h.width / 2))
     for k, t in enumerate(terms):
-        node = reached.get(k)
-        if node is None or t.kind != "strap":
+        if reached.get(k) is None or t.kind != "strap":
             continue
-        _, i, j = node           # a vertical wire from the crossing over the whole strap
         sx1, sy1, sx2, sy2 = t.strap
-        spans[V].setdefault(i, []).append((min(ys[j] - h.width / 2, sy1),
-                                           max(ys[j] + h.width / 2, sy2)))
-        crosses.append((f"{v.name}/{t.strap_layer}",
-                        (xs[i] - v.width / 2, sy1, xs[i] + v.width / 2, sy2)))
+        for _, i, j in sorted(taps[k]):  # a vertical wire from the crossing over the whole strap
+            spans[V].setdefault(i, []).append((min(ys[j] - h.width / 2, sy1),
+                                               max(ys[j] + h.width / 2, sy2)))
+            crosses.append((f"{v.name}/{t.strap_layer}",
+                            (xs[i] - v.width / 2, sy1, xs[i] + v.width / 2, sy2)))
     for t in terms:              # the pin routes' extensions (step a) go with the net
         extensions += [("extension", t.strap_layer, r) for r in t.pieces]
 
@@ -621,10 +801,14 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
     for i, found in sorted(spans[V].items()):
         for lo, hi in _merge(found):
             wires.append(("wire", v.name, (xs[i] - v.width / 2, lo, xs[i] + v.width / 2, hi)))
+    held = [(r["layer"], tuple(float(c) for c in r["rect"].split())) for r in fixed]
+    wires = [w for w in wires if not any(          # a piece on a fixed wire is there already
+        layer == w[1] and _within(w[2], r) for layer, r in held)]
     wires += extensions
     wires += [("cross", layer, r) for layer, r in crosses]
-    drops = sum(abs(ys[reached[k][2]] - (t.strap[1] + t.strap[3]) / 2)
-                for k, t in enumerate(terms) if t.kind == "strap" and reached.get(k))
+    drops = sum(abs(ys[j] - (t.strap[1] + t.strap[3]) / 2)
+                for k, t in enumerate(terms) if t.kind == "strap" and reached.get(k)
+                for _, _, j in taps[k])
     for k, t in enumerate(terms):
         if t.kind != "port" or reached.get(k) is None:
             continue
@@ -638,19 +822,20 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
             warn(OFF_PORT, f"{name}: the route ends at the track crossing nearest {t.label}, "
                  f"{{{_num(xs[i])} {_num(ys[j])}}} on {h.name} and {v.name}, "
                  f"{_num(round(off, 3))} um from the centre of the port (shapes on {where}); "
-                 f"it is not connected to the port: route_net makes no wire or via down to "
+                 f"it is not connected to the port: {grid.cmd} makes no wire or via down to "
                  f"a port", out)
-    _report(name, terms, reached, edges, xs, ys, wires, drops, out)
+    _report(name, terms, reached, edges, xs, ys, wires, drops, out, taps)
     if shield:
         stacks = []              # strap stacks of the cells, so shields cover them
         for inst in dict.fromkeys(t.inst for t in terms if t.kind == "strap"):
-            rects = [tuple(float(c) for c in r["rect"].split()) for r in db.strap_rows(inst)]
+            rects = [base_rect(r) for r in db.strap_rows(inst)]       # as route_pin made them
             reach = max((r["max_extension"] or 0.0) for r in db.strap_rows(inst))
             stacks.append((min(r[0] for r in rects) - reach, max(r[2] for r in rects) + reach,
                            min(r[1] for r in rects), max(r[3] for r in rects)))
         electric = _ia_shapes(db, name) + [s for s in pre["shapes"] if s[0] != name]
+        kept = [("wire", r["layer"], tuple(float(c) for c in r["rect"].split())) for r in fixed]
         shields, cut, no_power, short, fenced = _shields(
-            wires, electric, grid, shield, stacks,
+            wires + kept, electric, grid, shield, stacks,
             root_attrs.get(db, "ignore_shield_less_than_routing_length"))
         wires += shields
         _report_short(short, db, out)
@@ -667,18 +852,200 @@ def route(db, grid, spine, row, via_weight, out, shield=None, pre=None):
         _report_fenced(fenced, out)
         wires += _power_links(db, name, terms, wires, grid, out,
                               [s for s in pre["shapes"] if s[0] != name])
+    renamed = []                 # straps and pin wires now shorted to the net: named
+    for k, t in enumerate(terms):        # first, so the route lengthens its own straps
+        if t.kind == "strap" and reached.get(k) is not None:
+            db.set_pin_net(t.inst, t.pin, t.strap_seq, name)
+            renamed.append(f"strap:{t.inst}/{t.strap_seq} pin_wire:{t.inst}/{t.pin}")
     old = db.set_net_wires(name, [(w[0], w[1], " ".join(_num(round(c, 6)) for c in w[2]))
                                   + tuple(w[3:]) for w in wires])
     if old:
         warn(REPLACED, f"{name}: replaced its {old} old wires and crossings", out)
-    renamed = []                 # straps and pin wires now shorted to the net
-    for k, t in enumerate(terms):
-        if t.kind == "strap" and reached.get(k) is not None:
-            db.set_pin_net(t.inst, t.pin, t.strap_seq, name)
-            renamed.append(f"strap:{t.inst}/{t.strap_seq} pin_wire:{t.inst}/{t.pin}")
     if renamed:
         info(f"    now net {name}: {'  '.join(renamed)}", out)
     return True
+
+
+def _spec_lanes(db, grid, spine, row, pre):
+    """The tracks the spine spec gives this net (track: {input, output},
+    core/spine_tracks.py), or None: SimpleNamespace(stretches, own {stretch
+    index: set of coordinates}, out {stretch index: coordinate}, ks). Its
+    driver's output track and its loads' input tracks, by number: on every
+    stretch of the spine, those tracks."""
+    from core import spine_tracks
+    cache = pre.setdefault("lanes", {})
+    if spine["id"] not in cache:
+        cells = spine_tracks.placed(db, spine["name"])
+        cache[spine["id"]] = (spine_tracks.stretches(db, spine["name"]), cells,
+                              _exits(db, grid, spine, cells))
+    found, cells, exits = cache[spine["id"]]
+    if not found or row["driver"] not in cells:
+        return None
+    kout = cells[row["driver"]][4]
+    kins = {cells[n][3] for n in row["loads"].split() if n in cells and cells[n][3]}
+    ks = ({kout} if kout else set()) | kins
+    if not ks:
+        return None
+    own = {s.index: {c for c in (s.coord(k) for k in ks) if c is not None} for s in found}
+    out = {s.index: s.coord(kout) for s in found} if kout else {}
+    return SimpleNamespace(stretches=found, own=own, out=out, ks=sorted(ks), kout=kout,
+                           exits=[e for e in exits if e[3] != row["name"]])
+
+
+def _exits(db, grid, spine, cells):
+    """[(x, y1, y2, net)]: where a cell's input and output share a spec track,
+    the piece of that track from its input strap (not included) to the
+    crossing on the outer side of its output strap: its output net's, no
+    other net may lie there (the net coming in stops at the input)."""
+    from core.commands.write_def import cell_pin
+    drives = {r["driver"]: r["name"] for r in db.spine_net_rows(spine["id"])}
+    ys = grid.all_ys
+    found = []
+    for inst, (st, cin, cout, _, _) in cells.items():
+        if not st.vertical or cin is None or cout is None or abs(cin - cout) > TOL:
+            continue
+        ref = db.inst_row(inst)["ref_cell"]
+        centre = {}
+        for direction in ("in", "out"):
+            w = db.pin_wire_row(inst, cell_pin(db, ref, direction) or "")
+            s = db.strap_row(inst, w["strap"]) if w is not None else None
+            if s is not None:
+                r = [float(c) for c in s["rect"].split()]
+                centre[direction] = (r[1] + r[3]) / 2
+        if len(centre) < 2 or inst not in drives:
+            continue
+        a, y = centre["in"], centre["out"]
+        up = 1 if y > a else -1
+        beyond = [t for t in ys if (t - y) * up > TOL]
+        outer = min(beyond, key=lambda t: abs(t - y)) if beyond else y
+        found.append((cin, min(a, outer), max(a, outer), drives[inst]))
+    return found
+
+
+def _search(grid, terms, shapes, via_weight, compact=False, anchor=(), lanes=None):
+    """One Lee run for a net, on the signal tracks around its terminals: the
+    tree grown from the driver to the nearest unreached terminal, then the
+    next. Returns xs, ys (the tracks of the run), tree, edges, reached
+    {terminal: its node}, taps {terminal: the nodes its strap is crossed at},
+    todo (the terminals not reached), stop ((message number, text) when a
+    terminal has no crossing to end on) and fenced (only the design boundary
+    keeps the ones in todo away).
+    compact: the net keeps to the tracks of its pins. A wire on a track
+    beyond them costs OUT_WEIGHT more of its length for every track further
+    out, so a long run comes back to the nearest free track after it has
+    passed what blocks it. And the driver's strap is part of the tree: a
+    branch may leave it on any signal track it covers (the other side of the
+    cell), not only where the first branch left it; another place costs one
+    layer change (its crossing box), so it is taken only when it saves wire.
+    anchor ({(H | V, track)}: the stub tracks of the net's spine): of tracks
+    that are equal otherwise, the one nearest a stub track is taken, so the
+    nets lie against the stubs and the free tracks are the outer ones."""
+    h, v = grid.h, grid.v
+    xs = _window(grid.all_xs, min(t.box[0] for t in terms), max(t.box[2] for t in terms))
+    ys = _window(grid.all_ys, min(t.box[1] for t in terms), max(t.box[3] for t in terms))
+    blocked = _blocked(shapes, xs, ys, h, v)
+    # the design boundary: a hard limit of every node, step and wire
+    inside = Inside(grid.fence, xs, ys, h, v) if grid.fence is not None else None
+    found = SimpleNamespace(xs=xs, ys=ys, tree=None, edges=set(),
+                            reached={0: None}, taps={}, todo=set(range(1, len(terms))),
+                            stop=None, fenced=False, fixed_nodes=set(), apart=[])
+    if lanes is not None:        # the spine spec's tracks: none other along the spine
+        blocked = set(blocked) | _off_lanes(lanes, xs, ys, h, v)
+        for x, y1, y2, _ in lanes.exits:     # another cell's way out on its own track
+            blocked |= {(V, i, j) for i, xi in enumerate(xs) if abs(xi - x) < TOL
+                        for j, yj in enumerate(ys) if y1 + TOL < yj <= y2 + TOL}
+    targets = [t.nodes(xs, ys, h, v, shapes, inside) for t in terms]
+    for k, (t, nodes) in enumerate(zip(terms, targets)):
+        if t.kind == "fixed":            # a fixed wire off the tracks is left apart
+            for n in [n for n in nodes if n in blocked]:
+                del nodes[n]
+            if not nodes:
+                found.apart.append(k)
+                found.todo.discard(k)
+            continue
+        if not nodes and inside is not None:
+            found.stop = (OUTSIDE, f"{t.label} is outside the design boundary (no track "
+                          f"crossing at it holds a wire inside it); not routed")
+            return found
+        for n in [n for n in nodes if n in blocked]:
+            del nodes[n]
+        if not nodes:
+            what = f"every track crossing at {t.label} is blocked" if lanes is None else \
+                f"no track crossing at {t.label} on its spine spec track (track " \
+                f"{', '.join(map(str, lanes.ks))}) is free and in reach"
+            found.stop = (NO_PATH, f"{what}; not routed")
+            return found
+
+    weights = None
+    if compact:              # the cost of a micron of wire on each track
+        ends = [n for nodes in targets for n in nodes]
+        weights = (_out_weights(ys, [j for _, _, j in ends], [c for a, c in anchor if a == H]),
+                   _out_weights(xs, [i for _, i, _ in ends], [c for a, c in anchor if a == V]))
+
+    if lanes is not None and lanes.out:      # on the output track as long as it can: the
+        outs = set(lanes.out.values())           # change of track comes near the load
+        weights = ([1.0] * len(ys), [1.0 if any(abs(x - c) < TOL for c in outs if c)
+                                     else 1.01 for x in xs])
+
+    # Lee: grow the tree from the driver to the nearest unreached terminal
+    tree, reached, todo = None, found.reached, found.todo
+    while todo:
+        sources = tree if tree is not None else targets[0]
+        if compact and tree is not None and terms[0].kind == "strap":
+            sources = {n: 0.0 if n in tree else via_weight for n in tree.union(targets[0])}
+        rest = {k: targets[k] for k in todo}
+        hit = _lee(sources, rest, xs, ys, blocked, via_weight, inside, weights)
+        if hit is None:
+            found.fenced = inside is not None and \
+                _lee(sources, rest, xs, ys, blocked, via_weight, None, weights) is not None
+            break
+        k, path, _ = hit
+        todo.discard(k)
+        if tree is None:
+            tree = found.tree = set()
+            reached[0] = path[0]
+        reached[k] = path[-1]
+        tree.update(path)
+        if terms[k].kind == "fixed":     # the whole wire is the net's now: branch anywhere
+            tree.update(targets[k])
+            found.fixed_nodes.update(targets[k])
+        found.edges.update(zip(path, path[1:]))
+        if compact and path[0] in targets[0]:    # where the branch leaves the driver's strap
+            found.taps.setdefault(0, set()).add(path[0])
+    for k, node in reached.items():
+        if node is not None:
+            found.taps.setdefault(k, set()).add(node)
+    return found
+
+
+def _off_lanes(lanes, xs, ys, h, v):
+    """The nodes along the spine off the net's spec tracks: on a vertical
+    stretch the vertical-layer crossings off its tracks, on a horizontal one
+    the horizontal-layer ones (hops across on the other layer stay free)."""
+    from core import spine_tracks
+    off = set()
+    for i, x in enumerate(xs):
+        for j, y in enumerate(ys):
+            s = spine_tracks.stretch_at(lanes.stretches, x, y)
+            if s is None or s.layer not in (h.name, v.name):
+                continue
+            own = lanes.own.get(s.index, ())
+            if s.vertical and not any(abs(x - c) < TOL for c in own):
+                off.add((V, i, j))
+            elif not s.vertical and not any(abs(y - c) < TOL for c in own):
+                off.add((H, i, j))
+    return off
+
+
+def _out_weights(tracks, used, anchor=()):
+    """Per track index: 1 on the tracks from the lowest to the highest of
+    used (the indices of the tracks of the net's pins), OUT_WEIGHT more for
+    every track further out; and TIE more for every track away from the
+    nearest of anchor (track coordinates), to choose between equal tracks."""
+    lo, hi = min(used), max(used)
+    near = [bisect.bisect_left(tracks, c - TOL) for c in anchor]
+    return [1.0 + OUT_WEIGHT * max(lo - k, 0, k - hi)
+            + TIE * min((abs(k - n) for n in near), default=0) for k in range(len(tracks))]
 
 
 def _report_short(short, db, out):
@@ -808,8 +1175,9 @@ def _ia_shapes(db, net):
     rect = lambda text: tuple(float(c) for c in text.split())
     found = [(r["net"], r["layer"], rect(r["rect"])) for r in db.strap_rows()]
     found += [(r["net"], r["layer"], rect(r["rect"])) for r in db.pin_wire_rows()]
+    own = {net, stub_owner(net)} if net else set()     # its stub's are its own
     found += [(r["shield_net"] or r["net"], r["layer"], rect(r["rect"]))
-              for r in db.net_wire_rows() if r["net"] != net and r["kind"] != "cross"]
+              for r in db.net_wire_rows() if r["net"] not in own and r["kind"] != "cross"]
     return found
 
 
@@ -872,7 +1240,7 @@ def _strap_options(strap, shields, others, grid):
     beside it within its max_extension, the extension clear of other nets'
     shapes on its layer by the rule spacing and inside the design boundary."""
     v = grid.v
-    sx1, sy1, sx2, sy2 = (float(c) for c in strap["rect"].split())
+    sx1, sy1, sx2, sy2 = base_rect(strap)    # another net's stretch of it is not this link's
     reach = strap["max_extension"] or 0.0
     spacing = strap["spacing"]
     found = []
@@ -963,13 +1331,13 @@ def power_pins(db, insts, nets):
     return found
 
 
-def _window(values, lo, hi):
-    """values within [lo, hi] plus MARGIN on each side."""
-    a = max(0, bisect.bisect_left(values, lo - TOL) - MARGIN)
-    b = min(len(values), bisect.bisect_right(values, hi + TOL) + MARGIN)
+def _window(values, lo, hi, margin=MARGIN):
+    """values within [lo, hi] plus margin on each side."""
+    a = max(0, bisect.bisect_left(values, lo - TOL) - margin)
+    b = min(len(values), bisect.bisect_right(values, hi + TOL) + margin)
     if a >= b:                   # nothing inside: the nearest ones
         k = min(max(0, a), len(values) - 1)
-        a, b = max(0, k - MARGIN), min(len(values), k + MARGIN + 1)
+        a, b = max(0, k - margin), min(len(values), k + margin + 1)
     return values[a:b]
 
 
@@ -1011,32 +1379,57 @@ class Terminal:
         self.strap_spacing = strap_spacing   # tech spacing an extension keeps
         self.pieces = list(pieces)           # its pin route's extensions (step a)
         self.span = span or (strap and (strap[0], strap[2]))   # x of the extended strap
+        self.outer = 0                       # a strap: the side it is reached from
+        self.keep_x = None                   # ... and the track it is best reached on
 
     def nodes(self, xs, ys, h, v, shapes, inside=None):
         """{grid node: extra cost} of the nodes that reach it. On a strap: the
         vertical-layer crossings at the track nearest the strap centre, on
-        every signal track the extended strap covers. Else the crossing
-        nearest the point, on either layer. With inside (the design boundary
+        every signal track the extended strap covers; for a strap of a
+        cell with another signal strap (_outer_side), also those of the
+        track on its outer side (away from the other) when that is not the
+        nearest, dearer by how much longer its drop to the strap centre is,
+        so a route can leave or reach it there (a straight net then passes
+        the cell on one track); and KEEP signal-track pitches
+        dearer off the track a route already crosses the cell's other
+        signal strap on (worth a jog of up to that much). Else the crossing nearest the point, on either layer. With inside (the design boundary
         on this grid) only crossings whose wire to the terminal stays inside
         it: on a strap the wire from the track over the whole strap, the
         track on the other side of the strap centre when the nearest has
         none; else the nearest of the crossings round the point that is
         inside. Empty when there is none."""
         if self.kind == "strap":
-            sy1, sy2 = self.strap[1], self.strap[3]
-            x1, x2 = self.span
-            c = (sy1 + sy2) / 2
+            c = (self.strap[1] + self.strap[3]) / 2
             k = bisect.bisect_left(ys, c)
-            for j in sorted(range(max(0, k - 1), min(len(ys), k + 1)),
-                            key=lambda j: abs(ys[j] - c)):
-                drop = (min(ys[j] - h.width / 2, sy1), max(ys[j] + h.width / 2, sy2))
-                found = {(V, i, j): 0.0 for i, x in enumerate(xs)
-                         if x1 + v.width / 2 - TOL <= x <= x2 - v.width / 2 + TOL
-                         and (inside is None or (inside.node(i, j) and inside.fence.holds(
-                             (x - v.width / 2, drop[0], x + v.width / 2, drop[1]))))}
+            near = sorted(range(max(0, k - 1), min(len(ys), k + 1)), key=lambda j: abs(ys[j] - c))
+            pitch = min((b - a for a, b in zip(xs, xs[1:])), default=0.0)
+            keep = lambda n: 0.0 if self.keep_x is None or abs(xs[n[1]] - self.keep_x) < TOL \
+                else KEEP * pitch            # off the track the cell is crossed on
+            if self.outer and near:      # the nearest track, and its outer side's if other
+                found, least = {}, abs(ys[near[0]] - c)
+                for j in near:
+                    if j == near[0] or (ys[j] - c) * self.outer > 0:
+                        found.update({n: abs(ys[j] - c) - least + keep(n)
+                                      for n in self._at(j, xs, ys, h, v, inside)})
+                return found
+            for j in near:
+                found = self._at(j, xs, ys, h, v, inside)
                 if found or inside is None:
-                    return found
+                    return {n: keep(n) for n in found}
             return {}
+        return self._point_nodes(xs, ys, inside)
+
+    def _at(self, j, xs, ys, h, v, inside):
+        """{node: 0} of the crossings on horizontal track j over the strap."""
+        sy1, sy2 = self.strap[1], self.strap[3]
+        x1, x2 = self.span
+        drop = (min(ys[j] - h.width / 2, sy1), max(ys[j] + h.width / 2, sy2))
+        return {(V, i, j): 0.0 for i, x in enumerate(xs)
+                if x1 + v.width / 2 - TOL <= x <= x2 - v.width / 2 + TOL
+                and (inside is None or (inside.node(i, j) and inside.fence.holds(
+                    (x - v.width / 2, drop[0], x + v.width / 2, drop[1]))))}
+
+    def _point_nodes(self, xs, ys, inside):
         round_it = lambda values, c: range(max(0, bisect.bisect_left(values, c) - 1),
                                            min(len(values), bisect.bisect_left(values, c) + 1))
         for _, i, j in sorted((abs(xs[i] - self.point[0]) + abs(ys[j] - self.point[1]), i, j)
@@ -1045,6 +1438,40 @@ class Terminal:
             if inside is None or inside.node(i, j):
                 return {(H, i, j): 0.0, (V, i, j): 0.0}
         return {}
+
+
+class FixedWire(Terminal):
+    """A wire of the net fixed alone (set_db <net_wire> .route_status fixed).
+    The route must reach it; then every track crossing on it is part of the
+    tree. It is not drawn again: only the crossing boxes where the route
+    joins it, and its shields (-shield), are made."""
+
+    def __init__(self, row, net):
+        rect = tuple(float(c) for c in row["rect"].split())
+        super().__init__("fixed", f"net_wire:{net}/{row['seq']}", rect)
+        self.layer = row["layer"]
+
+    def nodes(self, xs, ys, h, v, shapes, inside=None):
+        """{node: 0} of the track crossings on the wire's centre line, on its
+        layer (H for the rule's horizontal layer, V for the vertical); empty
+        when the centre line is not on a signal track of this grid."""
+        x1, y1, x2, y2 = self.box
+        if self.layer == h.name:
+            js = [j for j, y in enumerate(ys) if abs(y - (y1 + y2) / 2) < TOL]
+            found = {(H, i, j): 0.0 for j in js for i, x in enumerate(xs)
+                     if x1 + v.width / 2 - TOL <= x <= x2 - v.width / 2 + TOL}
+        elif self.layer == v.name:
+            is_ = [i for i, x in enumerate(xs) if abs(x - (x1 + x2) / 2) < TOL]
+            found = {(V, i, j): 0.0 for i in is_ for j, y in enumerate(ys)
+                     if y1 + h.width / 2 - TOL <= y <= y2 - h.width / 2 + TOL}
+        else:
+            found = {}
+        return {n: c for n, c in found.items() if inside is None or inside.node(n[1], n[2])}
+
+
+def _within(a, b):
+    """True when rect a lies inside rect b."""
+    return b[0] - TOL <= a[0] and b[1] - TOL <= a[1] and a[2] <= b[2] + TOL and a[3] <= b[3] + TOL
 
 
 def _gap(a, b):
@@ -1074,11 +1501,13 @@ def _terminal(db, spine, inst, direction, pre=None, pin=None):
         rect = tuple(float(c) for c in strap["rect"].split())
         _, pieces, span = (pre or {}).get("pins", {}).get((inst, pin), (None, [], None))
         span = span or (rect[0], rect[2])
-        return Terminal("strap", f"{inst}/{pin} (strap {wire['strap']})",
+        term = Terminal("strap", f"{inst}/{pin} (strap {wire['strap']})",
                         (span[0], rect[1], span[1], rect[3]), inst, pin, rect, strap["layer"],
                         max_ext=strap["max_extension"] or 0.0, strap_seq=wire["strap"],
                         strap_spacing=strap_spacing(db, strap["layer"], rect[3] - rect[1]),
                         pieces=pieces, span=span)
+        term.outer, term.keep_x = _outer_side(db, inst, cell, pin, rect)
+        return term
     pts = [c for _, _, p in objects.pin_shapes(db, f"pin:{inst}/{pin}") for c in p]
     if pts:
         box = (min(pts[0::2]), min(pts[1::2]), max(pts[0::2]), max(pts[1::2]))
@@ -1086,6 +1515,33 @@ def _terminal(db, spine, inst, direction, pre=None, pin=None):
         box = objects.inst_bbox(db, row)
     point = ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
     return Terminal("pin", f"{inst}/{pin}", box, inst, pin, point=point)
+
+
+def _outer_side(db, inst, cell, pin, rect):
+    """(side, x): side +1 when the strap of pin lies above the straps of the
+    cell's other signal pins, -1 below them, 0 between them or with no other:
+    the side a route reaches it from, so that the net of the other pin can
+    leave its strap on the same track from the other side; x the track
+    where a route already crosses the strap of the other signal pin (a
+    straight net keeps that track through the cell), or None."""
+    centre = (rect[1] + rect[3]) / 2
+    others, keep = [], None
+    for w in db.pin_wire_rows(inst):
+        lp = db.lib_pin_row(cell["name"], w["pin"])
+        if w["pin"] == pin or lp is None or (lp["use"] or "signal").lower() != "signal" or \
+                not (lp["direction"] or "").lower().startswith(("in", "out")):
+            continue
+        s = db.strap_row(inst, w["strap"])
+        if s is not None:
+            r = [float(c) for c in s["rect"].split()]
+            others.append((r[1] + r[3]) / 2)
+            for c in db.net_wire_rows(s["net"]) if keep is None else ():
+                b = [float(v) for v in c["rect"].split()]
+                if c["kind"] == "cross" and abs(b[1] - r[1]) < TOL and abs(b[3] - r[3]) < TOL:
+                    keep = round((b[0] + b[2]) / 2, 6)      # its crossing box on the strap
+    if not others:
+        return 0, keep
+    return (1 if centre > max(others) + TOL else -1 if centre < min(others) - TOL else 0), keep
 
 
 def _port_terminal(db, port):
@@ -1104,7 +1560,7 @@ def _port_terminal(db, port):
 
 def _stub_terminal(db, stub, net=None, grid=None, plan=None):
     """The tap of a stub: half way along it. Once the stub is routed
-    (route_final_stub, wires of kind stub stored with its leaf net) the point
+    (route_final_stub, wires of kind stub stored under <leaf net>_stub) the point
     of those wires' centre lines nearest the tap, so the route ends on the
     wire also when it took another track than the nearest. Before that, with
     a plan (_stub_plan), the point nearest the tap of the wires the stub will
@@ -1123,7 +1579,7 @@ def _stub_terminal(db, stub, net=None, grid=None, plan=None):
         return on_wire and on_wire[1]
 
     at = nearest(tuple(float(c) for c in r["rect"].split())
-                 for r in (db.net_wire_rows(net) if net else []) if r["kind"] == "stub")
+                 for r in (db.stub_wire_rows(net) if net else []) if r["kind"] == "stub")
     if at:
         return Terminal("stub", f"stub {stub['name']} (tap, on its wire)", at * 2,
                         point=at, routed=True)
@@ -1138,8 +1594,9 @@ def _obstacles(db, net):
     rect = lambda text: tuple(float(c) for c in text.split())
     shapes = [(r["layer"], rect(r["rect"])) for r in db.strap_rows()]
     shapes += [(r["layer"], rect(r["rect"])) for r in db.pin_wire_rows()]
+    own = {net, stub_owner(net)} if net else set()     # its stub's are its own
     shapes += [(r["layer"], rect(r["rect"])) for r in db.net_wire_rows()
-               if r["net"] != net and r["kind"] != "cross"]
+               if r["net"] not in own and r["kind"] != "cross"]
     return shapes
 
 
@@ -1162,13 +1619,15 @@ def _blocked(shapes, xs, ys, h, v):
     return blocked
 
 
-def _lee(sources, targets, xs, ys, blocked, via_weight, inside=None):
+def _lee(sources, targets, xs, ys, blocked, via_weight, inside=None, weights=None):
     """Cheapest path from any source node to any target: (target key, [nodes],
     cost) or None. sources and each target set map nodes to an extra cost
     there (a set: none). Steps cost their length, a layer change via_weight;
     ordered by cost + distance to the targets' bounding box (A*). inside (the
     design boundary on this grid): a hard limit, no step along a track is
-    taken unless its wire stays inside; the sources are inside already."""
+    taken unless its wire stays inside; the sources are inside already.
+    weights ([per horizontal track], [per vertical track], each 1 or more):
+    a step along a track costs its length times the track's weight."""
     goal = {}
     for k, nodes in targets.items():
         for n in nodes:
@@ -1191,6 +1650,7 @@ def _lee(sources, targets, xs, ys, blocked, via_weight, inside=None):
             cost[n] = sources[n] if isinstance(sources, dict) else 0.0
             heapq.heappush(heap, (cost[n] + guess(n), next(count), n, False))
     nx, ny = len(xs), len(ys)
+    hw, vw = weights or ([1.0] * ny, [1.0] * nx)
     done = set()
     while heap:
         f, _, node, final = heapq.heappop(heap)
@@ -1208,10 +1668,10 @@ def _lee(sources, targets, xs, ys, blocked, via_weight, inside=None):
         layer, i, j = node
         steps = [((1 - layer, i, j), via_weight)]
         if layer == H:
-            steps += [((H, i + d, j), abs(xs[i + d] - xs[i])) for d in (-1, 1)
+            steps += [((H, i + d, j), abs(xs[i + d] - xs[i]) * hw[j]) for d in (-1, 1)
                       if 0 <= i + d < nx]
         else:
-            steps += [((V, i, j + d), abs(ys[j + d] - ys[j])) for d in (-1, 1)
+            steps += [((V, i, j + d), abs(ys[j + d] - ys[j]) * vw[i]) for d in (-1, 1)
                       if 0 <= j + d < ny]
         for nxt, step in steps:
             if nxt in blocked:
@@ -1226,7 +1686,7 @@ def _lee(sources, targets, xs, ys, blocked, via_weight, inside=None):
     return None
 
 
-def _report(name, terms, reached, edges, xs, ys, wires, drops, out):
+def _report(name, terms, reached, edges, xs, ys, wires, drops, out, taps=None):
     length = sum(abs(xs[a[1]] - xs[b[1]]) + abs(ys[a[2]] - ys[b[2]])
                  for a, b in edges if a[0] == b[0])
     vias = sum(1 for a, b in edges if a[0] != b[0])
@@ -1237,7 +1697,7 @@ def _report(name, terms, reached, edges, xs, ys, wires, drops, out):
          f"change(s), {len(crosses)} crossing box(es)", out)
     for k, t in enumerate(terms):
         node = reached.get(k)
-        role = "driver" if k == 0 else "load"
+        role = "driver" if k == 0 else "fixed wire" if t.kind == "fixed" else "load"
         if node is None:
             info(f"    {role} {t.label}: not routed", out)
             continue
@@ -1246,9 +1706,12 @@ def _report(name, terms, reached, edges, xs, ys, wires, drops, out):
                "stub": "ends on the stub wire" if t.routed
                else "ends at the stub (the stub is not routed)",
                "port": f"connected on {t.joined}" if t.joined
-               else "ends near the port, not connected"}[t.kind]
+               else "ends near the port, not connected",
+               "fixed": "kept; the route joins it"}[t.kind]
         if t.kind == "strap" and t.pieces:
             how += " (its pin route, extended " + " and ".join(
                 f"{_num(round(r[2] - r[0], 6))} {'left' if r[2] == t.strap[0] else 'right'}"
                 for r in t.pieces) + ")"
-        info(f"    {role} {t.label}: {how} at {{{_num(xs[i])} {_num(ys[j])}}}", out)
+        more = "".join(f" and {{{_num(xs[i2])} {_num(ys[j2])}}}"
+                       for _, i2, j2 in sorted((taps or {}).get(k, ())) if (i2, j2) != (i, j))
+        info(f"    {role} {t.label}: {how} at {{{_num(xs[i])} {_num(ys[j])}}}{more}", out)

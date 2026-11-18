@@ -4,7 +4,8 @@ Scene coordinates are microns with y negated (scene y = -model y), so the
 layout shows y up. model() and scene() are the only conversions.
 
 Mouse: left drag draws a box and zooms to it; Shift+drag selects every object
-with a shape inside the box (Ctrl+Shift+drag adds); right drag selects every
+with a shape inside the box (Ctrl+Shift+drag adds); Ctrl+drag only reports the
+box drawn (boxDrawn: no zoom, no selection); right drag selects every
 object with a shape touching the box (Ctrl+right drag adds). Click selects the
 object under the cursor, Ctrl+click adds or removes it, click on empty space
 clears. Selectable: ports, instances, instance pins, spine nets and stubs,
@@ -51,6 +52,8 @@ OWNER_KEY = 1             # ... and the selectable object it belongs to (port, n
 LABEL_KEY = 2             # ... and the pin name written on it when labels are on
 CLASS_KEY = 3             # ... and its net class: signal, power or ground
 LAYER_KEY = 4             # ... and, for a route shape, its layer
+NET_KEY = 5               # ... and the net a route shape or a via is on
+SOURCE_KEY = 6            # ... and, for a via, the wire it is derived from
 # Route shapes the Tools > Stretch and Move edit modes change (move_wire, stretch_wire).
 EDITABLE = ("net_wire:", "strap:", "pin_wire:")
 EDGE_PIXELS = 5           # Stretch: an edge this close to the cursor is picked
@@ -60,6 +63,7 @@ INST_COLOR = "#26c6da"        # instance outline
 SPINE_STUB_COLOR = "#b388ff"  # built spine: stubs (3 px) and net centre lines (1 px)
 SPINE_NET_COLOR = "#7bd88f"
 BLINK_COLOR = "#ff00ff"
+PAINT_ALPHA = 150             # Edit > Highlight: the fill of a coloured shape
 BLINK_TIMES = 4           # on/off cycles
 BLINK_MS = 200            # per half cycle
 BLINK_MIN_PIXELS = 30     # the blink marker is at least this big on screen
@@ -69,6 +73,9 @@ FLY_COLOR = "#ff80ab"         # flylines of the selection (Objects > Flyline)
 MOVE_COLOR = "#ffb300"        # Move Spine: the preview of the moved spine
 HEAD_COLOR = "#ff5252"        # ... and the arrow at its head
 HEAD_PIXELS = 16              # the arrow's length on screen
+MARKER_COLOR = "#ffffff"      # violation markers (check_drc): a box with a cross
+MARKER_MIN_PIXELS = 12        # a marker is at least this big on screen
+MARKER_WIDE = 3               # pen of the marker of the violation being debugged (others 1)
 ARROWS = {Qt.Key_Left: "left", Qt.Key_Right: "right", Qt.Key_Up: "up", Qt.Key_Down: "down"}
 SNAP_PIXELS = 10          # the ruler snaps to a drawn edge this close to the cursor
 
@@ -145,6 +152,7 @@ class LayoutCanvas(QGraphicsView):
     # "add". An empty list with "replace" clears the selection.
     selectRequested = Signal(list, str)
     rulerPlaced = Signal(str, tuple, tuple)  # label, start, end (model coordinates)
+    boxDrawn = Signal(tuple)                 # Ctrl+drag: the box (x1, y1, x2, y2), model
     # Tools > Move: wires dragged by (dx, dy); Tools > Stretch: an edge of a wire
     # dragged from one coordinate to another (handle, edge, to, from).
     wiresMoved = Signal(list, float, float)
@@ -169,14 +177,19 @@ class LayoutCanvas(QGraphicsView):
         self.visible_layers = set()
         self.show = {"boundary": True, "ports": True, "tracks": False, "cells": True,
                      "pins": True, "labels": False, "spine": True, "routes": True,
-                     "vias": True, "rows": False, "flylines": False}
+                     "vias": True, "rows": False, "flylines": False,
+                     "violation_marker": True}
         self.rows_hidden = set()             # sites whose rows are not drawn
         self.assign_hidden = set()           # (layer, net) of assigned tracks not drawn
         self.class_hidden = set()            # (layer, signal|power|ground) not drawn
+        # show_only: the Scope (core/commands/show_only.py) of the instances and net
+        # routing drawn alone, the others hidden; None: all of them.
+        self.only = None
         self.highlighted = {}                # item -> (pen, z) before highlighting
         self.owner_items = {}                # owner handle (port) -> [items]
         self._press = None
-        self._band_mode = None               # "zoom" or "select" while a box is drawn
+        self._band_mode = None               # while a box is drawn: zoom, select or report
+        self._report_owner = None            # Ctrl+press in an edit tool: the wire under it
         self._pan_from = None                # last point of a middle-button pan
         self._band = QRectF()                # last rubber band, scene coordinates
         self._rband = QRubberBand(QRubberBand.Rectangle, self.viewport())
@@ -200,6 +213,14 @@ class LayoutCanvas(QGraphicsView):
         self.shift_arrow = None
         self.move_items = []
         self.fly_items = []                  # flylines of the selection
+        # Violation markers: the box of each violation of the last check_drc (model
+        # coordinates), and the one being debugged. Painted, not scene items.
+        self.markers = []
+        self.marker_current = None
+        # Edit > Highlight: marks [(covers, colour or None)], see set_paint, and the
+        # items they colour -> (pen, brush) before.
+        self.paint = []
+        self.painted = {}
 
     # -- content ----------------------------------------------------------------
     def set_layout(self, layout, visible_layers):
@@ -211,6 +232,7 @@ class LayoutCanvas(QGraphicsView):
         self._ruler_start = None
         self.layout, self.boundary_item = layout, None
         self.shape_items, self.owner_items, self.highlighted = {}, {}, {}
+        self.painted = {}                    # the items are gone; the window paints again
         self.inst_items, self.inst_pin_items = [], {}       # outlines; layer -> pin items
         self.spine_items = []
         self.move_items = []                 # deleted by clear(); Move Spine draws it again
@@ -398,6 +420,7 @@ class LayoutCanvas(QGraphicsView):
             item.setData(LABEL_KEY, st.label or st.net)
             item.setData(CLASS_KEY, st.cls)
             item.setData(LAYER_KEY, st.layer)
+            item.setData(NET_KEY, st.net)
             item.setZValue(7 if st.outline else 6 if st.handle.startswith("net_wire:")
                            else 5 if st.label else 4)
             self.strap_items.setdefault(st.layer, []).append(item)
@@ -430,6 +453,8 @@ class LayoutCanvas(QGraphicsView):
             item.setData(OWNER_KEY, v.handle)
             item.setData(CLASS_KEY, v.cls)
             item.setData(LAYER_KEY, v.layer)
+            item.setData(NET_KEY, v.net)
+            item.setData(SOURCE_KEY, v.source)
             item.setZValue(6.6 if v.cut else 6.5)
             self.via_items.setdefault(v.layer, []).append(item)
             self.owner_items.setdefault(v.handle, []).append(item)
@@ -441,18 +466,20 @@ class LayoutCanvas(QGraphicsView):
         for items in self.via_items.values():
             for item in items:
                 self.highlighted.pop(item, None)
+                self.painted.pop(item, None)
                 self.owner_items.pop(item.data(HANDLE_KEY), None)
                 self.scene().removeItem(item)
         self.via_items = {}
         self._add_vias(shapes, {l.name: l.color for l in self.layout.layers})
         self._show_vias()
+        self._apply_paint()
         self.viewport().update()
 
     def _show_vias(self):
         for layer, items in self.via_items.items():
             on = self.show["vias"] and layer in self.visible_layers
             for item in items:
-                item.setVisible(on and self._class_shown(layer, item))
+                item.setVisible(on and self._class_shown(layer, item) and self._only(item))
 
     def _content_rect(self):
         lay = self.layout
@@ -469,17 +496,17 @@ class LayoutCanvas(QGraphicsView):
             for item in items:
                 item.setVisible(on and self._class_shown(layer, item))
         for item in self.inst_items:
-            item.setVisible(self.show["cells"])
+            item.setVisible(self.show["cells"] and self._only(item))
         for item in self.spine_items:
-            item.setVisible(self.show["spine"])
+            item.setVisible(self.show["spine"] and self._only(item))
         for layer, items in self.inst_pin_items.items():
             on = self.show["pins"] and layer in self.visible_layers
             for item in items:
-                item.setVisible(on and self._class_shown(layer, item))
+                item.setVisible(on and self._class_shown(layer, item) and self._only(item))
         for layer, items in self.strap_items.items():
             on = self.show["routes"] and layer in self.visible_layers
             for item in items:
-                item.setVisible(on and self._class_shown(layer, item))
+                item.setVisible(on and self._class_shown(layer, item) and self._only(item))
         self._show_vias()
         for item in self.fly_items:
             item.setVisible(self.show["flylines"])
@@ -488,9 +515,33 @@ class LayoutCanvas(QGraphicsView):
     def _class_shown(self, layer, item):
         return (layer, item.data(CLASS_KEY) or "signal") not in self.class_hidden
 
+    def _only(self, item):
+        """Is an instance or route item within the show_only filter (none:
+        every item is)."""
+        return self.only is None or self.only.shows(
+            item.data(OWNER_KEY), item.data(NET_KEY), item.data(SOURCE_KEY))
+
+    def set_only(self, scope):
+        """show_only: draw only the instances and net routing of scope (see
+        _only); None draws all again."""
+        self.only = scope
+        self.apply_visibility()
+
     def set_show(self, key, on):
         self.show[key] = on
         self.apply_visibility()                   # also repaints (labels, tracks)
+
+    def set_markers(self, boxes):
+        """The violation markers: one at each box (x1, y1, x2, y2), drawn while
+        Objects > Violation markers is ticked. None of them is the current one."""
+        self.markers = [tuple(b) for b in boxes]
+        self.marker_current = None
+        self.viewport().update()
+
+    def set_marker_current(self, box):
+        """Draw the marker at this box wide: the violation being debugged."""
+        self.marker_current = tuple(box) if box is not None else None
+        self.viewport().update()
 
     def set_assigned_net_visible(self, layer, net, on):
         (self.assign_hidden.discard if on else self.assign_hidden.add)((layer, net))
@@ -543,6 +594,50 @@ class LayoutCanvas(QGraphicsView):
                     item.setPen(pen)
                     item.setZValue(10)
         self.viewport().update()
+
+    # -- Edit > Highlight ------------------------------------------------------------
+    def set_paint(self, marks):
+        """Colour drawn objects: marks [(covers, colour)], covers(handle,
+        owner, net, source) telling whether a mark takes an item. The last
+        mark that takes an item gives its colour; a colour None, its own."""
+        self.paint = list(marks)
+        self._apply_paint()
+
+    def _apply_paint(self):
+        for item, (pen, brush) in self.painted.items():
+            self._set_look(item, pen, brush)
+        self.painted = {}
+        for item in self.scene().items() if self.paint else []:
+            owner = item.data(OWNER_KEY)
+            if owner is None:
+                continue
+            color = None
+            for covers, c in self.paint:
+                if covers(item.data(HANDLE_KEY), owner, item.data(NET_KEY),
+                          item.data(SOURCE_KEY)):
+                    color = c
+            if color is None:
+                continue
+            pen = self.highlighted[item][0] if item in self.highlighted else item.pen()
+            brush = item.brush() if hasattr(item, "brush") else None    # a line has none
+            self.painted[item] = (QPen(pen), QBrush(brush) if brush is not None else None)
+            new_pen = QPen(pen)
+            new_pen.setColor(QColor(color))
+            new_brush = None
+            if brush is not None and brush.style() != Qt.NoBrush:     # an outline stays one
+                fill = QColor(color)
+                fill.setAlpha(PAINT_ALPHA)
+                new_brush = QBrush(fill)
+            self._set_look(item, new_pen, new_brush)
+        self.viewport().update()
+
+    def _set_look(self, item, pen, brush):
+        if item in self.highlighted:          # selected: its pen comes back on deselect
+            self.highlighted[item] = (pen, self.highlighted[item][1])
+        else:
+            item.setPen(pen)
+        if brush is not None:
+            item.setBrush(brush)
 
     def selection_rect(self):
         """Scene rect around the highlighted (selected) shapes, or an empty rect."""
@@ -673,14 +768,24 @@ class LayoutCanvas(QGraphicsView):
                 lines += max(0, k2 - k1 + 1)
                 painter.setPen(QPen(color, 0))
 
-    # -- pin labels: painted in screen pixels, only for shapes in view -------------
+    # -- violation markers and pin labels: painted in screen pixels, only in view ---
     def drawForeground(self, painter, rect):
         super().drawForeground(painter, rect)
+        marks = self.marker_boxes(rect)
         labels = self.label_positions(rect)
-        if not labels:
+        if not (marks or labels):
             return
         painter.save()
         painter.resetTransform()                  # draw in viewport pixels: fixed size
+        painter.setBrush(Qt.NoBrush)
+        # A box with a cross, under the labels; all of a kind in one call (thousands).
+        for wide in (False, True):
+            boxes = [box for box, current in marks if current == wide]
+            if boxes:
+                painter.setPen(QPen(QColor(MARKER_COLOR), MARKER_WIDE if wide else 1))
+                painter.drawRects(boxes)
+                painter.drawLines([line for x1, y1, x2, y2 in (b.getCoords() for b in boxes)
+                                   for line in (QLineF(x1, y1, x2, y2), QLineF(x1, y2, x2, y1))])
         font = QFont()
         font.setPointSize(8)
         painter.setFont(font)
@@ -695,6 +800,31 @@ class LayoutCanvas(QGraphicsView):
             painter.setPen(QColor("#ffffff"))
             painter.drawText(QPointF(x, y), name)
         painter.restore()
+
+    def marker_boxes(self, rect):
+        """(box in viewport pixels, is it the current one) for each violation
+        marker drawn in the scene rect, the current one last (on top); [] when
+        Violation markers is unticked. A box smaller than MARKER_MIN_PIXELS on
+        screen is grown about its centre, so a marker is seen zoomed out."""
+        if not (self.show["violation_marker"] and self.markers):
+            return []
+        t = self.viewportTransform()              # scale and shift only: no rotation
+        sx, sy, dx, dy = t.m11(), t.m22(), t.dx(), t.dy()
+        grow = MARKER_MIN_PIXELS / 2
+        left, right = rect.left() * sx + dx - grow, rect.right() * sx + dx + grow
+        top, bottom = rect.top() * sy + dy - grow, rect.bottom() * sy + dy + grow
+        out = []
+        for box in self.markers:
+            x1, y1, x2, y2 = box
+            cx, cy = (x1 + x2) / 2 * sx + dx, -(y1 + y2) / 2 * sy + dy
+            w = max((x2 - x1) * sx, MARKER_MIN_PIXELS)
+            h = max((y2 - y1) * sy, MARKER_MIN_PIXELS)
+            if cx + w / 2 < left or cx - w / 2 > right or cy + h / 2 < top or cy - h / 2 > bottom:
+                continue
+            # Whole pixels: a 1 pixel pen then draws the same line at every zoom.
+            px = QRectF(round(cx - w / 2), round(cy - h / 2), round(w), round(h))
+            out.append((px, box == self.marker_current))
+        return sorted(out, key=lambda m: m[1])
 
     def label_positions(self, rect):
         """(pin name, scene center) for each shown pin shape in rect, when
@@ -949,8 +1079,8 @@ class LayoutCanvas(QGraphicsView):
         for layer, items in self.strap_items.items():     # the new ones only: as apply_visibility
             on = self.show["routes"] and layer in self.visible_layers
             for item in items[drawn.get(layer, 0):]:
-                item.setVisible(on and self._class_shown(layer, item))
-        self.viewport().update()
+                item.setVisible(on and self._class_shown(layer, item) and self._only(item))
+        self._apply_paint()
 
     def _drop_route_items(self, gone):
         for layer, items in self.strap_items.items():
@@ -958,6 +1088,7 @@ class LayoutCanvas(QGraphicsView):
             for item in items:
                 if gone(item.data(HANDLE_KEY) or ""):
                     self.highlighted.pop(item, None)
+                    self.painted.pop(item, None)
                     self.owner_items.pop(item.data(HANDLE_KEY), None)
                     self.scene().removeItem(item)
                 else:
@@ -1030,7 +1161,7 @@ class LayoutCanvas(QGraphicsView):
         return True
 
     def _grid(self, v):
-        g = self.layout.grid or 0.001
+        g = (self.layout.grid if self.layout is not None else 0) or 0.001
         return round(round(v / g) * g, 6)
 
     def _edit_move(self, view_point):
@@ -1109,10 +1240,21 @@ class LayoutCanvas(QGraphicsView):
 
     def mousePressEvent(self, ev):
         self._press = ev.position().toPoint()
+        mods = ev.modifiers()
+        # Ctrl+left drag: a box that is only reported, in every tool but the ruler
+        report = ev.button() == Qt.LeftButton and not self.ruler["on"] and \
+            bool(mods & Qt.ControlModifier) and not mods & Qt.ShiftModifier
+        self._report_owner = None
         if self.edit["mode"] and ev.button() == Qt.LeftButton and \
                 self._edit_press(self._press):
-            ev.accept()
-            return
+            if not report:
+                ev.accept()
+                return
+            # no edit: a Ctrl+click still picks the wire the tool would take
+            self._report_owner = self._edit_drag["item"].data(OWNER_KEY)
+            self.cancel_edit()
+            if self.edit["mode"] == "move":
+                self.viewport().setCursor(Qt.OpenHandCursor)
         if self.ruler["on"] and ev.button() in (Qt.LeftButton, Qt.RightButton):
             if ev.button() == Qt.LeftButton:      # ruler: click start, click end
                 self._ruler_click(self.mapToScene(self._press))
@@ -1134,7 +1276,8 @@ class LayoutCanvas(QGraphicsView):
             return
         if ev.button() == Qt.LeftButton:                      # left drag: draw a box
             self._band = QRectF()
-            self._band_mode = "select" if ev.modifiers() & Qt.ShiftModifier else "zoom"
+            self._band_mode = "report" if report else \
+                "select" if mods & Qt.ShiftModifier else "zoom"
             self.setDragMode(QGraphicsView.RubberBandDrag)
         super().mousePressEvent(ev)
 
@@ -1178,8 +1321,17 @@ class LayoutCanvas(QGraphicsView):
         if ev.button() != Qt.LeftButton or self._press is None:
             return
         mods = ev.modifiers()
-        dragged = (ev.position().toPoint() - self._press).manhattanLength() >= 4
-        self._press = None
+        press, self._press = self._press, None
+        dragged = (ev.position().toPoint() - press).manhattanLength() >= 4
+        if dragged and mode == "report":
+            # From the press to the release point: the rubber band Qt reports is one
+            # mouse move behind. Scene y is down: the top left is x1, y2.
+            box = QRectF(self.mapToScene(press),
+                         self.mapToScene(ev.position().toPoint())).normalized()
+            if not box.isEmpty():
+                (x1, y2), (x2, y1) = model(box.topLeft()), model(box.bottomRight())
+                self.boxDrawn.emit(tuple(self._grid(v) for v in (x1, y1, x2, y2)))
+            return
         if dragged and not self._band.isEmpty():
             if mode == "zoom":
                 self.fitInView(self._band, Qt.KeepAspectRatio)
@@ -1187,7 +1339,7 @@ class LayoutCanvas(QGraphicsView):
                 self.selectRequested.emit(self.owners_in(self._band),
                                           "add" if mods & Qt.ControlModifier else "replace")
             return
-        owner = self.owner_at(ev.position().toPoint())        # a click: select
+        owner = self._report_owner or self.owner_at(ev.position().toPoint())   # a click: select
         if mods & Qt.ControlModifier:
             if owner:
                 self.selectRequested.emit([owner], "toggle")

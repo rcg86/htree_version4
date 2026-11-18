@@ -193,7 +193,8 @@ def test_next_track_group_rules(placed):
                             ("shield", "IA", wire_at(-6.48), "VSS"),
                             ("wire", "IA", wire_at(3.6, 20, 30)),      # not beside any shield
                             ("extension", "IA", wire_at(9.36))])       # not a wire with shields
-    names = [f"net_wire:n1/{r['seq']}" for r in db.net_wire_rows("n1")]
+    names = [f"net_wire:{r['net']}/{r['seq']}"                 # the stub's under n1_stub
+             for r in db.stub_wire_rows("n1") + db.net_wire_rows("n1")]
     stub, stub_shields, first, second = names[0], names[1:3], names[3:6], names[6:9]
     placed.eval("assign_track_for_route -net {VDD_SOC NA - NA VSS NA - NA} -layer IA")
     before = lines(placed, *names)
@@ -396,14 +397,14 @@ def _at(w, x, y):
     return w.canvas.mapFromScene(scene(x, y))
 
 
-def _drag(w, a, b):
+def _drag(w, a, b, mods=None):
     from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QMouseEvent
     from PySide6.QtWidgets import QApplication
     a, b = QPointF(a), QPointF(b)
     vp = w.canvas.viewport()
     send = lambda t, p, btn, btns: QApplication.sendEvent(
-        vp, QMouseEvent(t, p, p, btn, btns, Qt.NoModifier))
+        vp, QMouseEvent(t, p, p, btn, btns, mods if mods is not None else Qt.NoModifier))
     send(QEvent.MouseButtonPress, a, Qt.LeftButton, Qt.LeftButton)
     for i in range(1, 9):
         send(QEvent.MouseMove, a + (b - a) * (i / 8), Qt.NoButton, Qt.LeftButton)
@@ -432,6 +433,30 @@ def test_tools_move_drags_a_wire_onto_a_track(window):
     w.act_undo_edit.trigger()                                 # Undo Edit: back again
     assert rect(s, "strap:u1/1") == pytest.approx((x1, y1, x2, y2))
     assert not w.act_undo_edit.isEnabled()
+
+
+def test_ctrl_drag_in_a_tool_only_prints_the_box(window):
+    from PySide6.QtCore import Qt
+    s, w = window
+    x1, y1, x2, y2 = rect(s, "strap:u1/1")
+    cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+    for act in (w.act_tool_move, w.act_tool_stretch):
+        act.setChecked(True)
+        s.out.seek(0)
+        s.out.truncate()
+        # from the middle of the wire (Move) and from its right edge (Stretch)
+        start = (cx, cy) if act is w.act_tool_move else (x2, cy)
+        _drag(w, _at(w, *start), _at(w, start[0] + 1.0, cy - 1.5), mods=Qt.ControlModifier)
+        assert rect(s, "strap:u1/1") == pytest.approx((x1, y1, x2, y2))     # not edited
+        assert not w.canvas.editing() and not w.undo_edits
+        lines = s.out.getvalue().splitlines()
+        assert len(lines) == 1
+        box = [float(v) for v in lines[0][1:-1].split()]
+        assert box == pytest.approx([start[0], cy - 1.5, start[0] + 1.0, cy], abs=0.05)
+        assert s.eval("get_db selected") == ""
+    # a Ctrl+click on the wire picks it, as the tool does
+    _drag(w, _at(w, cx, cy), _at(w, cx, cy), mods=Qt.ControlModifier)
+    assert s.eval("get_db selected") == "strap:u1/1"
 
 
 def test_tools_move_takes_the_selection(window):
@@ -527,7 +552,7 @@ def test_tools_move_shift_arrow_needs_a_selected_wire(window):
     for sel in ([], ["inst:u1"]):
         w.on_select(sel, "replace")
         _shift(w, "up")
-        assert "Move: select a wire first" in w.statusBar().currentMessage()
+        assert "Move: select a wire or a via first" in w.statusBar().currentMessage()
     assert "move_wire" not in s.out.getvalue() and not w.undo_edits
     # the last signal track up is y 9.36... with no assignment the last track is 11.52
     w.on_select(["strap:u1/1"], "replace")
@@ -596,9 +621,10 @@ def test_tools_delete_deletes_the_selected_wires(window):
     assert "delete_wire: deleted 2 wire(s)" in text
     assert s.db.strap_row("u1", seq) is None and s.db.pin_wire_row("u1", "Y") is None
     assert s.db.pin_wire_row("u1", "A") is None               # it ended on the strap
-    # ... and the vias of the two pin wires (pin to wire, wire to strap) with them
+    # ... and the vias of the two pin wires (pin to wire, wire to strap) with them:
+    # 2 of A, 3 of Y, whose pin is two rectangles
     assert drawn - set(w.canvas.owner_items) == {strap, "pin_wire:u1/Y", "pin_wire:u1/A"} | \
-        {f"via:SIGNAL/{k}" for k in range(1, 5)}
+        {f"via:SIGNAL/{k}" for k in range(1, 6)}
     assert w.canvas.transform() == transform                  # the view stays
     assert s.eval("get_db selected") == "inst:u1" and s.db.inst_row("u1") is not None
     assert w.act_undo_edit.isEnabled()
@@ -740,3 +766,31 @@ def test_status_bar_object_name(window):
     assert w.name_label.text() == "VSS"
     w.on_select([], "replace")
     assert w.name_label.text() == ""
+
+
+def test_tools_move_shift_arrow_moves_a_selected_via_a_track(window):
+    """A via selected alone steps as its crossing box (its .source): up or
+    down onto the next signal track of IA (the horizontal one of its two
+    layers); IB has no tracks here, so left or right leaves it."""
+    from core import vias
+    s, w = window
+    s.eval("assign_track_for_route -net {VDD_SOC NA - NA VSS NA - NA} -layer IA")
+    s.db.set_net_wires("n1", [("wire", "IA", wire_at(6.48)),
+                              ("cross", "IA/IB", "2.82 6.3 3.18 6.66")])
+    w.refresh()
+    out_of(s)
+    via = vias.handle(next(r for r in vias.rows(s.db, "n1")))
+    assert s.eval(f"get_db {via} .source") == "net_wire:n1/2"
+    w.on_select([via], "replace")
+    w.act_tool_move.setChecked(True)
+    _shift(w, "down")
+    text = s.out.getvalue()
+    assert f"move_wire -wires {{{via}}} -next_track down" in text
+    assert "net_wire:n1/2 (crossing box, IA signal track): y 6.48 -> 3.6" in text
+    assert rect(s, "net_wire:n1/2") == pytest.approx((2.82, 3.42, 3.18, 3.78))
+    assert lines(s, "net_wire:n1/1") == [6.48]                # its wire stays
+    assert [(r["x"], r["y"]) for r in vias.rows(s.db, "n1")] == [(3.0, 3.6)]
+    _shift(w, "left")
+    assert "IB has no DEF TRACKS X" in w.statusBar().currentMessage()
+    w.undo_edit()
+    assert rect(s, "net_wire:n1/2") == pytest.approx((2.82, 6.3, 3.18, 6.66))

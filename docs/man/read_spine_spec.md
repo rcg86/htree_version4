@@ -63,7 +63,10 @@ DESCRIPTION
                                       the cell's input, output and
                                       location keys (location: a number,
                                       um from the cell's driver along the
-                                      spine; see create_spine)
+                                      spine; see create_spine), and
+                                      track: {input: k, output: k}, whole
+                                      numbers from 1 (track_input,
+                                      track_output; see TRACKS below)
     Values are stored as written; nothing is derived or checked against
     other specs, tech or the library here (create_spine does that).
 
@@ -89,7 +92,33 @@ OBJECTS AND ATTRIBUTES
     spine_level:<spec>/<level>
         obj_type, name, spine_cells (handles), spine_spec
     spine_cell:<spec>/<level>/<cell>
-        obj_type, name, input, output, location, extra, spine_level
+        obj_type, name, input, output, location, track_input,
+        track_output, extra, spine_level
+
+TRACKS
+    track: {input: k, output: k} gives a cell the signal tracks its nets
+    run on: its input net comes into it on track k of the input, its
+    output net leaves on track k of the output (the same number: one
+    track carries both, the net coming in stopping at the input).
+        L1:
+          cells:
+            inv1: {input: net, track: {input: 2, output: 3}}
+            inv2: {input: L1/inv1/Y, location: 1200, track: {input: 3, output: 3}}
+    The braces are needed: "track: input: 2, output: 3" is not YAML.
+    Track k is the k-th signal track ('-' in assign_track_for_route) past
+    the spine's -location, counted in its build direction (toward the
+    stubs): on a vertical stretch of the spine the tracks numbered in x
+    (IB), on a horizontal stretch those numbered in y (IA). A spine bent
+    by move_spine_to_boundary counts again from the location line on each
+    stretch, so a net keeps its number round the bends. With these:
+      - legalize_placement moves a cell across the spine, on its row's
+        sites, so its straps reach both its tracks (HT4-289 when it
+        cannot), and its pin access check counts those tracks only;
+      - route_net keeps each net of the spine on its numbers (the
+        driver's output track, the loads' input tracks) along the spine,
+        changing track near a load whose input track differs (HT4-174
+        when a pin's track is not free);
+      - route_final_stub puts the stubs on the leaves' output track.
 
 QUERIES
     get_db spine_spec                           print every spec (all attributes,

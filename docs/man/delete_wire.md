@@ -20,7 +20,8 @@ DESCRIPTION
     Only the wires given go, and what cannot stay without them:
       - the pin wires that end on a deleted strap (the pin is then as
         before route_pin: route_net ends near it, not connected, HT4-172);
-      - the auto vias stretch_wire added to a deleted wire.
+      - the auto vias stretch_wire added to a deleted wire, and the vias
+        insert_vias put under it.
     Nothing else follows a deleted wire: the crossing boxes on it and the
     shapes it connected to stay, and its net is left open there. The other
     wires keep their handles (the numbers of a net's wires and of an
@@ -69,6 +70,8 @@ ERRORS
     HT4-223  -undo with no deleted wires to put back
     HT4-224  WARN: -undo could not put a wire back (its handle is taken,
              or its instance is gone)
+    HT4-286  WARN: the wires of a fixed net stay (set_db
+             .route_status fixed)
 
 SEE ALSO
     move_wire, stretch_wire, delete_route, route_net, route_pin, gui_show

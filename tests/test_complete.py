@@ -55,9 +55,24 @@ def test_attr_word_after_objects(tech_session):
     assert comp(tech_session, "get_db layer:IA .tech.db") == [".tech.db_units "]
 
 
-def test_attr_after_nested_command_offers_all_types(tech_session):
+def test_attr_after_nested_get_db_offers_its_type_only(tech_session):
     got = comp(tech_session, "get_db [get_db layers IA] .")
-    assert ".min_width " in got and ".db_units " in got
+    assert ".min_width " in got and ".db_units " not in got
+    got = comp(tech_session, "get_db [get_db spine sp] .")
+    assert ".spine_input" in got and ".spine_output" in got and ".min_width " not in got
+    assert ".insts" in got and ".area " not in got      # relations: '.' can follow
+    got = comp(tech_session, "get_db [get_db spine:sp .insts] .")       # through .insts
+    assert ".place_status " in got and ".spine_input" not in got
+    assert comp(tech_session, "get_db [get_db [get_db spine sp] .spine_input] .dir") == \
+        [".direction "]
+    assert comp(tech_session, "get_db [get_db insts -if {.name == a}] .pla") == [".place_status "]
+    assert comp(tech_session, "get_db [get_db nets] .route_s") == [".route_status "]
+
+
+def test_attr_after_other_words_offers_all_types(tech_session):
+    for line in ("get_db $objs .", "get_db [concat a b] .", "get_db [get_db spine sp .name] ."):
+        got = comp(tech_session, line)
+        assert ".min_width " in got and ".db_units " in got
 
 
 def test_if_expression(tech_session):
@@ -115,3 +130,32 @@ def test_options_match_the_man_pages(session):
             if "\nOPTIONS\n" in text else ""
         documented = set(re.findall(r"^    (-\w+)", section, re.M)) - {"-help"}
         assert documented == set(getattr(module, "OPTIONS", {})), name
+
+
+def test_selected_offers_the_selected_types(tech_session, write_lef):
+    from test_move_spine import build
+    s = build(tech_session, write_lef)
+    s.eval("route_pin -inst sp_L1_inv1")
+    strip = lambda got: [m.strip() for m in got]
+    s.eval("select_obj inst:sp_L1_inv1")
+    got = strip(comp(s, "get_db [get_db selected] ."))
+    assert ".place_status" in got and ".kind" not in got and ".min_width" not in got
+    assert strip(comp(s, "get_db selected .pl")) == [".place_status"]
+    assert strip(comp(s, "set_db [get_db selected] .")) == [".place_status", ".status"]
+    assert strip(comp(s, "set_db [get_db selected] .place_status ")) == \
+        ["placed", "fixed", "cover"]
+    s.eval("deselect_obj inst:sp_L1_inv1")
+    s.eval("select_obj spine_net:sp/sp_L1_inv1_Y")
+    assert strip(comp(s, "set_db [get_db selected] .")) == [".route_rule", ".route_status"]
+    assert strip(comp(s, "set_db [get_db selected] .route_status ")) == ["fixed", "routed"]
+    assert strip(comp(s, "set_db [get_db selected] .route_rule ")) == ["default"]
+    s.eval("select_obj inst:sp_L1_inv1")             # nothing settable on both
+    assert comp(s, "set_db [get_db selected] .") == []
+    got = strip(comp(s, "get_db [get_db selected] ."))
+    assert ".place_status" in got and ".loads" in got and ".min_width" not in got
+
+
+def test_set_db_of_unknown_objects_offers_every_settable_attribute(tech_session):
+    got = [m.strip() for m in comp(tech_session, "set_db $objs .")]
+    assert {".route_status", ".place_status", ".route_rule"} <= set(got)
+    assert comp(tech_session, "set_db [get_db selected] .") == comp(tech_session, "set_db $x .")

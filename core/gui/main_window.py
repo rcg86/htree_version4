@@ -1,29 +1,39 @@
 """Main window: menu bar, a small toolbar under it, the layout canvas in the
 middle (a Layout tab, and a Schematic tab once create_spine -validate -show
 has drawn one), the visibility panel on the right, the Move Spine panel on
-the left while it is open, cursor position and selection in the status bar."""
+the left while it is open, the DRC Violations table under the layout once
+check_drc has run, cursor position and selection in the status bar."""
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction, QActionGroup, QColor, QIcon, QKeySequence, QPixmap
-from PySide6.QtWidgets import (QCheckBox, QDockWidget, QGroupBox, QHBoxLayout, QLabel,
-                               QMainWindow, QMenu, QPushButton, QScrollArea, QTabWidget,
-                               QToolBar, QToolButton, QVBoxLayout, QWidget)
+from PySide6.QtCore import QRectF, QSize, Qt
+from PySide6.QtGui import (QAction, QActionGroup, QClipboard, QColor, QIcon, QKeySequence,
+                           QPixmap)
+from PySide6.QtWidgets import (QApplication, QCheckBox, QDockWidget, QGroupBox, QHBoxLayout,
+                               QLabel, QMainWindow, QMenu, QPushButton, QScrollArea,
+                               QTabWidget, QToolBar, QToolButton, QVBoxLayout, QWidget)
 
 import io
 import tkinter
 
+from core import drc
 from core.gui import shortcuts
-from core.gui.canvas import LayoutCanvas
+from core.gui.canvas import LayoutCanvas, scene
+from core.gui.drc_table import DrcTable, debug_objects
 from core.gui.layout_data import load_layout, with_via_rows
+from core.gui.highlight import Highlighter
 from core.gui.spine_move import SpineMover
+from core.messages import HtreeError
 
 # Object categories: (key, label). Categories with no data yet are disabled.
 OBJECTS = [("boundary", "Boundary"), ("ports", "Ports"), ("tracks", "Tracks"),
            ("rows", "Rows (sites)"),
            ("nets", "Nets"), ("cells", "Cells (instances)"), ("pins", "Pins"),
            ("spine", "Spine"), ("routes", "Routes (route_pin, route_net)"),
-           ("vias", "Vias"), ("flylines", "Flyline")]
+           ("vias", "Vias"), ("flylines", "Flyline"),
+           ("violation_marker", "Violation markers")]
 NOT_YET = {"nets": "No nets in the database yet"}
+MARKER_TIP = ("A marker (a box with a cross) at the box of every violation of the last "
+              "check_drc; the one clicked in DRC Violations is drawn wide")
+NO_MARKER_TIP = "No violations: check_drc has not run, or found none"
 VIA_TIP = ("The vias of the routes: a box with a cross, or the cuts and pads of its via "
            "definition (assign_via_for_route). Each is shown with its via_ row of Layers")
 FLY_TIP = ("Lines from the selected pins, or the pins of the selected instances, to what "
@@ -58,11 +68,21 @@ class MainWindow(QMainWindow):
         self.undo_edits = []                 # Tools > Undo Edit: commands that undo, last last
         self._edited = None                  # wires an edit here is changing: redraw just them
         self._build_panel()
+        # DRC Violations: the table of the last check_drc, hidden until one has run.
+        self.drc_table = DrcTable(self)
+        self.addDockWidget(Qt.BottomDockWidgetArea, self.drc_table)
+        self.drc_table.hide()
+        self.object_boxes["violation_marker"].setEnabled(False)       # no run yet
+        self.object_boxes["violation_marker"].setToolTip(NO_MARKER_TIP)
         self._build_actions()
         # Move Spine: the interactive move_spine_to_boundary, hidden until asked for.
         self.mover = SpineMover(self)
         self.addDockWidget(Qt.LeftDockWidgetArea, self.mover)
         self.mover.hide()
+        # Highlight: colour the selected objects, hidden until asked for.
+        self.highlighter = Highlighter(self)
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.highlighter)
+        self.highlighter.hide()
         self.pos_label = QLabel("")
         self.sel_label = QLabel("")
         # Centre: the selected object's name (a wire's net, inst/pin for a pin).
@@ -71,7 +91,11 @@ class MainWindow(QMainWindow):
         self.name_label.setStyleSheet("font-weight: bold;")
         self.name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         self.statusBar().addWidget(self.pos_label)
+        # The show_only filter while one is set: the rest is hidden, so say it.
+        self.only_label = QLabel("")
+        self.only_label.setStyleSheet("color: #ff9800; font-weight: bold;")
         self.statusBar().addWidget(self.name_label, 1)
+        self.statusBar().addPermanentWidget(self.only_label)
         self.statusBar().addPermanentWidget(self.sel_label)
         self.canvas.mouseMoved.connect(lambda x, y: self.pos_label.setText(f"x {x:.3f}  y {y:.3f} um"))
         self.canvas.selectRequested.connect(self.on_select)
@@ -189,6 +213,7 @@ class MainWindow(QMainWindow):
                       "  wires one track\n"
                       "Click: select   Ctrl+click: add/remove\n"
                       "Shift+drag: select in box   get_db selected\n"
+                      "Ctrl+drag: print and copy the box {x1 y1 x2 y2}\n"
                       "Right drag: select all touching box\n"
                       "Tracks and rows show when zoomed in enough;\n"
                       "sites when zoomed in further.\n"
@@ -290,6 +315,9 @@ class MainWindow(QMainWindow):
         self.act_swap_head = action("Swap Spine Head", lambda: self.mover.swap_head(), None,
                                     "Move Spine: make the other end of the spine the head")
         self.act_swap_head.setEnabled(False)  # on while a spine is being moved
+        self.act_highlight = action("Highlight...", lambda: self.highlighter.open(), None,
+                                    "Colour the selected objects from a palette; Clear "
+                                    "takes the colour off")
         self.canvas.wiresMoved.connect(self.on_wires_moved)
         self.canvas.wireStretched.connect(self.on_wire_stretched)
         self.canvas.trackStep.connect(self.step_selected)
@@ -307,7 +335,8 @@ class MainWindow(QMainWindow):
             "tool_move": self.act_tool_move, "edit_snap": self.act_edit_snap,
             "delete": self.act_delete,
             "undo_edit": self.act_undo_edit, "move_spine": self.act_move_spine,
-            "swap_head": self.act_swap_head, "clear_selection": self.act_clear_sel,
+            "swap_head": self.act_swap_head, "highlight": self.act_highlight,
+            "clear_selection": self.act_clear_sel,
             "shortcuts": self.act_shortcuts}
         self.default_shortcuts = {"fit": "F", "ruler": "K", "clear_rulers": "Shift+K",
                                   "tool_stretch": "S", "tool_move": "M", "swap_head": "H",
@@ -335,6 +364,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.act_move_spine)
         edit_menu.addAction(self.act_swap_head)
         edit_menu.addSeparator()
+        edit_menu.addAction(self.act_highlight)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.act_shortcuts)
         view_menu = bar.addMenu("&View")
         for a in (self.act_fit, self.act_zoom_in, self.act_zoom_out, self.act_zoom_sel,
@@ -347,6 +378,10 @@ class MainWindow(QMainWindow):
         panel = self.findChild(QDockWidget, "view_panel").toggleViewAction()
         panel.setText("Show View Panel")
         view_menu.addAction(panel)
+        table = self.drc_table.toggleViewAction()
+        table.setText("Show DRC Violations")
+        table.setStatusTip("The table of the violations the last check_drc found")
+        view_menu.addAction(table)
         select_menu = bar.addMenu("&Select")
         select_menu.addAction(self.act_clear_sel)
 
@@ -395,13 +430,15 @@ class MainWindow(QMainWindow):
         self.addToolBar(Qt.TopToolBarArea, tools)
         self.toolbar = tools
         self.canvas.rulerPlaced.connect(self.on_ruler)
+        self.canvas.boxDrawn.connect(self.on_box)
 
     # -- shortcuts ------------------------------------------------------------------
     def all_actions(self):
         """The window's actions, in menu order, for the shortcut list."""
         return [self.act_close, self.act_tool_select, self.act_tool_stretch, self.act_tool_move,
                 self.act_edit_snap, self.act_delete, self.act_undo_edit,
-                self.act_move_spine, self.act_swap_head, self.act_shortcuts, self.act_fit,
+                self.act_move_spine, self.act_swap_head, self.act_highlight,
+                self.act_shortcuts, self.act_fit,
                 self.act_zoom_in, self.act_zoom_out, self.act_zoom_sel, self.act_blink_sel,
                 self.act_ruler, self.act_clear_rulers, self.act_clear_sel]
 
@@ -439,7 +476,13 @@ class MainWindow(QMainWindow):
         self.tools_button.setText("Tools" if mode is None else f"Tools: {mode.capitalize()}")
 
     def on_wires_moved(self, handles, dx, dy):
-        wires = " ".join(handles)
+        from core.commands import move_wire
+        try:                                  # shields made again are not moved
+            rows = move_wire.wire_rows(self.session, " ".join(handles), move_wire.NAME)
+            skip = set(move_wire.rebuilt_shields(self.session.db, rows))
+        except HtreeError:
+            skip = set()                      # move_wire reports it
+        wires = " ".join(h for h in handles if h not in skip)
         self.run_edit(f"move_wire -wires {{{wires}}} -delta {{{_n(dx)} {_n(dy)}}}",
                       f"move_wire -wires {{{wires}}} -delta {{{_n(-dx)} {_n(-dy)}}}")
 
@@ -455,13 +498,18 @@ class MainWindow(QMainWindow):
         from core import objects
         from core.commands import move_wire
         sel = objects.selected(self.session.db)
-        wires = " ".join(h for h in sel if objects.obj_type(h) in objects.WIRE_TABLES)
+        wires = " ".join(h for h in sel if objects.obj_type(h) in objects.WIRE_TABLES
+                         or objects.obj_type(h) == "via")
         if not wires:
-            self.statusBar().showMessage("Move: select a wire first (Shift+arrow moves the "
-                                         "selected wires one track)", 8000)
+            self.statusBar().showMessage("Move: select a wire or a via first (Shift+arrow "
+                                         "moves them one track)", 8000)
             return
-        moves, stay = move_wire.next_track_moves(
-            self.session.db, move_wire.wire_rows(self.session, wires, move_wire.NAME), direction)
+        try:                                  # a via of a pin cannot step
+            rows = move_wire.wire_rows(self.session, wires, move_wire.NAME)
+        except HtreeError as exc:
+            self.statusBar().showMessage(f"Move: {exc.text}", 8000)
+            return
+        moves, stay = move_wire.next_track_moves(self.session.db, rows, direction)
         left = "; ".join(f"{h} ({why})" for h, why in stay)
         if not moves:
             self.statusBar().showMessage(f"Move: not moved: {left}", 8000)
@@ -553,6 +601,17 @@ class MainWindow(QMainWindow):
         where = f"from ({_fmt(start[0])}, {_fmt(start[1])}) to ({_fmt(end[0])}, {_fmt(end[1])})"
         self.statusBar().showMessage(f"Ruler: {text}", 10000)
         self.session.notify(f"Ruler: {text}  {where}")
+
+    def on_box(self, box):
+        """Ctrl+drag: the box drawn goes to the terminal and the clipboard as
+        {x1 y1 x2 y2}, the form -area takes, and nothing else happens."""
+        text = drc.box_text(box)
+        clipboard = QApplication.clipboard()
+        clipboard.setText(text)
+        if clipboard.supportsSelection():    # X11: middle click pastes it too
+            clipboard.setText(text, QClipboard.Selection)
+        self.statusBar().showMessage(f"Box: {text} (copied)", 10000)
+        self.session.notify(text)
 
     def zoom_selected(self):
         rect = self.canvas.selection_rect()
@@ -761,11 +820,13 @@ class MainWindow(QMainWindow):
             self.object_boxes[key].setToolTip(tips.get(key, "") if present
                                               else "Nothing in the database yet")
         visible = {n for n, b in self.layer_boxes.items() if b.isChecked()}
+        self.canvas.only = self._only_scope()
         self.canvas.set_layout(self.layout, visible)
         self.show_selection()
         title = f"htree4 - {self.layout.design}" if self.layout.design else "htree4"
         self.setWindowTitle(title)
         self.mover.reloaded()                 # its spine list, or its preview again
+        self.highlighter.reloaded()           # the colours, on what is drawn now
 
     def _redraw_edited(self):
         """Redraw just the wires an edit made here changed: moved or stretched
@@ -776,7 +837,16 @@ class MainWindow(QMainWindow):
         from core.gui.layout_data import net_wire_strap, pin_wire_shape, strap_shape
         shape = {"net_wire": net_wire_strap, "strap": strap_shape, "pin_wire": pin_wire_shape}
         rects, gone, back = {}, [], []
+        # shields move_wire made again: drawn anew (a number can be another shield's now)
+        redrawn, self.session.db.redrawn = list(dict.fromkeys(self.session.db.redrawn)), []
+        for h in redrawn:
+            row = objects.wire_row(self.session.db, h)
+            gone.append(h)
+            if row is not None:
+                back.append(shape[objects.obj_type(h)](row))
         for h in self._edited:
+            if h in redrawn:
+                continue
             row = objects.wire_row(self.session.db, h)
             if row is None:
                 gone.append(h)
@@ -787,6 +857,7 @@ class MainWindow(QMainWindow):
         names = {l.name for l in self.layout.layers}
         if {st.layer for st in back} - names:
             return False
+        self.canvas.only = self._only_scope()     # before the new shapes are drawn
         self.canvas.update_rects(rects)
         self.canvas.remove_route_shapes(gone)
         self.canvas.draw_route_shapes(back)
@@ -810,6 +881,62 @@ class MainWindow(QMainWindow):
             self.object_boxes["vias"].setToolTip(VIA_TIP)
         self.show_selection()
         return True
+
+    def _only_scope(self):
+        """The show_only filter of the session as the canvas takes it (None:
+        none set), and its note in the status bar."""
+        from core.commands.show_only import scope
+        shown = [h.partition(":")[2] for h in self.session.db.show_only]
+        more = f" +{len(shown) - NAMES_SHOWN} more" if len(shown) > NAMES_SHOWN else ""
+        self.only_label.setText(f"Showing only: {', '.join(shown[:NAMES_SHOWN])}{more}"
+                                if shown else "")
+        self.only_label.setToolTip("show_only -show_all shows everything again\n" +
+                                   "\n".join(self.session.db.show_only) if shown else "")
+        return scope(self.session.db)
+
+    def show_only(self):
+        """Apply the show_only filter of the session (show_only set or
+        cleared it): hide or show the instances and net routing."""
+        self.canvas.set_only(self._only_scope())
+
+    # -- check_drc: its violations in a table, one at a time on the layout --------
+    def show_drc(self):
+        """List what check_drc found (db.drc) in the DRC Violations table and
+        open it; after read_db there is no run: the table is emptied and
+        closed."""
+        report = self.session.db.drc
+        self.drc_table.set_report(report)
+        boxes = [v.bbox for _, v in report.rows] if report is not None else []
+        self.canvas.set_markers(boxes)            # shown while Violation markers is ticked
+        marker_box = self.object_boxes["violation_marker"]
+        marker_box.setEnabled(bool(boxes))
+        marker_box.setToolTip(MARKER_TIP if boxes else NO_MARKER_TIP)
+        self.drc_table.setVisible(report is not None)
+        if report is not None:
+            self.drc_table.raise_()
+
+    def show_violation(self, v):
+        """Let a violation of the DRC table (core/drc.py Violation) be
+        debugged: only its nets are shown (show_only, as if typed), its
+        shapes are selected and the layout zooms to its box."""
+        from core import objects
+        db = self.session.db
+        shown = debug_objects(db, v)
+        if shown:
+            self.run_command(f"show_only -object {{{' '.join(shown)}}}")
+        else:
+            self.statusBar().showMessage("The nets of this violation are gone: run "
+                                         "check_drc again", 8000)
+        # Its shapes; a violation without any (a stub with no wire): its nets.
+        picked = [h for h in v.handles or shown if objects.exists(db, h)]
+        self.on_select(picked, "replace")
+        x1, y1, x2, y2 = v.bbox
+        box = QRectF(scene(x1, y2), scene(x2, y1))
+        if box.isNull():                      # a point: zoom_to takes no empty rect
+            box.adjust(-1e-3, -1e-3, 1e-3, 1e-3)
+        self.tabs.setCurrentWidget(self.canvas)
+        self.canvas.set_marker_current(v.bbox)
+        self.canvas.zoom_to(box)
 
     def show_schematic(self, plan):
         """Draw a create_spine plan in the Schematic tab and switch to it."""
@@ -870,10 +997,12 @@ class MainWindow(QMainWindow):
 
     def object_name(self, handle):
         """The name the status bar shows in its centre: a wire's net (a
-        shield's, a power extension's or a via's: its power net), a via's net, an
-        instance's name, inst/pin for a pin, a port's pin name. A strap or pin
-        wire of an unrouted signal pin (net SIGNAL) shows its inst/pin."""
+        shield's, a power extension's or a via's: its power net; a stub
+        wire's: <leaf net>_stub), a via's net, an instance's name, inst/pin
+        for a pin, a port's pin name. A strap or pin wire of an unrouted
+        signal pin (net SIGNAL) shows its inst/pin."""
         from core import objects
+        from core.db import CARRIED
         db = self.session.db
         kind = objects.obj_type(handle)
         rest = handle.partition(":")[2]
@@ -881,7 +1010,8 @@ class MainWindow(QMainWindow):
             row = objects.wire_row(db, handle)
             if row is None:
                 return rest
-            net = (row["shield_net"] or row["net"]) if kind == "net_wire" else row["net"]
+            net = row["net"] if kind != "net_wire" or row["kind"] in CARRIED \
+                else (row["shield_net"] or row["net"])        # a stub's: <leaf>_stub
             if net != "SIGNAL":
                 return net
             pin = row["pin"] if kind == "pin_wire" else next(

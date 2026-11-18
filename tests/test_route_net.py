@@ -1,6 +1,8 @@
 import io
 import tkinter
 
+from core.db import _num
+
 import pytest
 
 pytest.importorskip("scipy")
@@ -59,6 +61,35 @@ def out_of(s):
     s.out.seek(0)
     s.out.truncate()
     return text
+
+
+def def_block(text, net):
+    """The lines of net's block in the SPECIALNETS of a write_def file, from
+    '- <net>' to the line before ' ;'."""
+    lines = text.split("\nSPECIALNETS ")[1].split("\nEND SPECIALNETS")[0].split("\n")
+    start = next(k for k, line in enumerate(lines)
+                 if line == f"- {net}" or line.startswith(f"- {net} "))
+    return lines[start:lines.index(" ;", start)]
+
+
+def stretches(s, kind, owner=None):
+    """[(owner, strap net, layer, piece (x1, y1, x2, y2), base strap rect)] of
+    the strap stretches of kind (of owner): what each adds to its strap."""
+    from core.db import base_rect
+    found = []
+    for r in s.db.stretch_rows(owner=owner) if owner else s.db.stretch_rows():
+        if r["kind"] != kind:
+            continue
+        strap = s.db.strap_row(r["inst"], r["seq"])
+        b = base_rect(strap)
+        found.append((r["owner"], strap["net"], strap["layer"], (r["x1"], b[1], r["x2"], b[3]), b))
+    return found
+
+
+def def_rect(status, layer, rect, units=1000):
+    """The SPECIALNETS line write_def gives a stored rect (microns)."""
+    x1, y1, x2, y2 = (round(float(v) * units) for v in rect.split())
+    return f"  + {status} + RECT {layer} ( {x1} {y1} ) ( {x2} {y2} )"
 
 
 @pytest.fixture
@@ -122,11 +153,13 @@ def test_pin_routes_extended_first_then_routed(spine, write_lef):
     assert "pin routes extended to the signal tracks (IB): sp_L1_inv1/Y strap 3: " in text
     assert "0 layer change(s)" in text
     assert "(its pin route, extended " in text
-    exts = rects(spine, "sp_L1_inv1_Y", "extension", "IA")
+    # each strap lengthened, no piece of wire beside it
+    assert not rects(spine, "sp_L1_inv1_Y", "extension", "IA")
+    exts = [st[3] for st in stretches(spine, "extension", "sp_L1_inv1_Y")]
     assert len(exts) == 4                       # 2 pins x left and right
     for inst, seq in (("sp_L1_inv1", 3), ("sp_L2_inv1", 5)):
-        sx1, sy1, sx2, sy2 = (float(v) for v in
-                              spine.eval(f"get_db strap:{inst}/{seq} .rect").split())
+        row = spine.db.strap_row(inst, seq)
+        sx1, sy1, sx2, sy2 = (float(v) for v in row["base_rect"].split())   # route_pin's
         left = [e for e in exts if e[2] == sx1 and e[1] == sy1]
         right = [e for e in exts if e[0] == sx2 and e[1] == sy1]
         assert len(left) == len(right) == 1
@@ -137,6 +170,9 @@ def test_pin_routes_extended_first_then_routed(spine, write_lef):
         # starts past the edge, and the next one in would be under the strap
         assert left[0][0] < sx1 and left[0][0] + 0.72 >= sx1 - 1e-6
         assert right[0][2] > sx2 and right[0][2] - 0.72 <= sx2 + 1e-6
+        # the strap is one shape from end to end, on its own y
+        assert spine.eval(f"get_db strap:{inst}/{seq} .rect") == " ".join(
+            _num(v) for v in (left[0][0], sy1, right[0][2], sy2))
     (ib,) = rects(spine, "sp_L1_inv1_Y", "wire", "IB")
     assert on_track((ib[0] + ib[2]) / 2)
     # max_strap_extension 0: the straps stay the cell width; the route crosses
@@ -234,8 +270,11 @@ def test_drawn_in_gui(spine):
     wires = [w for w in lay.net_wires if not w.outline]
     crosses = [w for w in lay.net_wires if w.outline]
     assert wires and crosses
-    assert {w.layer for w in wires} == {"IA", "IB"}
+    assert {w.layer for w in wires} == {"IB"}     # the IA straps are lengthened, not pieced
     assert all(w.handle.startswith("net_wire:sp_L1_inv1_Y/") for w in lay.net_wires)
+    strap = next(st for st in lay.straps if st.handle == "strap:sp_L1_inv1/3")
+    row = spine.db.strap_row("sp_L1_inv1", 3)
+    assert row["base_rect"] and strap.rect == tuple(float(v) for v in row["rect"].split())
 
 
 def test_collections_and_patterns(spine):
@@ -295,18 +334,23 @@ def test_write_def(spine, tmp_path):
     assert "  - sp_L1_inv1 INV_RP + PLACED ( -1560 -889 ) N ;" in text
     special = text.split("SPECIALNETS")[1]
     assert "- VSS ( sp_L1_inv1 VSS ) ( sp_L2_inv1 VSS )" in special
-    assert "+ SHAPE STRIPE" in special and "sp_L1_inv1_Y" not in special
-    nets = text.split("\nNETS ")[1]
-    block = nets.split("- sp_L1_inv1_Y ")[1].split("\n  ;")[0]
-    assert block.startswith("( sp_L1_inv1 Y ) ( sp_L2_inv1 A ) + USE CLOCK")
+    assert def_block(text, "VSS")[-1] == "  + USE GROUND"            # as the DEF's VSS port
+    assert "\nNETS " not in text                     # the routing is special wiring
+    block = def_block(text, "sp_L1_inv1_Y")
+    assert block[0] == "- sp_L1_inv1_Y"          # no pins, no USE: write_logical made it
     wires = [r for r in spine.db.net_wire_rows("sp_L1_inv1_Y") if r["kind"] != "cross"]
-    assert block.count(" RECT ") == len(wires) + 4                 # + 2 straps, 2 pin wires
-    x1, y1, x2, y2 = (round(float(v) * 1000) for v in wires[0]["rect"].split())
-    assert f"{wires[0]['layer']} ( {x1} {y1} ) RECT ( 0 0 {x2 - x1} {y2 - y1} )" in block
+    rects = [line for line in block if "+ RECT " in line]
+    assert len(rects) == len(wires) + 4                             # + 2 straps, 2 pin wires
+    assert all(line.startswith("  + FIXED + RECT ") for line in rects)
+    assert def_rect("FIXED", wires[0]["layer"], wires[0]["rect"]) in block
     out_of(spine)
     assert "HT4-180" in err(spine, f"write_def -output {path}")
     spine.eval(f"write_def -output {path} -overwrite -sections components")
     assert "NETS" not in path.read_text() and "COMPONENTS 4 ;" in path.read_text()
+    spine.eval(f"write_def -output {path} -overwrite -sections nets")     # connections only
+    nets = path.read_text().split("\nNETS ")[1]
+    assert "- sp_L1_inv1_Y ( sp_L1_inv1 Y ) ( sp_L2_inv1 A ) + USE CLOCK ;" in nets
+    assert "RECT" not in nets and "SPECIALNETS" not in path.read_text()
     assert "HT4-001" in err(spine, f"write_def -output {path} -sections pins")
     assert "HT4-001" in err(spine, "write_def")
 
@@ -316,11 +360,12 @@ def test_write_logical(spine, tmp_path):
     spine.eval(f"write_logical -output {path}")
     text = path.read_text()
     assert "create_net -name sp_L1_inv1_Y" in text
-    assert "# spine sp: root net net must exist in the design" in text
+    assert "# spine sp: root net\ncreate_net -name sp_primary_input\n" in text
+    assert "connect sp_L1_inv1/A -net sp_primary_input\n" in text
     l1 = text.split("# sp_L1_inv1 ")[1].split("\n\n")[0]
     assert "create_inst -cell INV_RP -name sp_L1_inv1" in l1
     assert "place_inst sp_L1_inv1 -1.56 -0.889 R0" in l1
-    assert "connect sp_L1_inv1/A -net net" in l1
+    assert "connect sp_L1_inv1/A -net sp_primary_input" in l1
     assert "connect sp_L1_inv1/Y -net sp_L1_inv1_Y" in l1
     assert "connect sp_L2_inv1/A -net sp_L1_inv1_Y" in text
     assert "connect sp_L3_inv1/Y -net sp_L3_inv1_Y" in text           # the stub's net
@@ -377,9 +422,12 @@ def test_shield_beside_every_wire(spine, tmp_path):
     path = tmp_path / "s.def"
     spine.eval(f"write_def -output {path}")
     text = path.read_text()
-    special = text.split("SPECIALNETS")[1].split("END SPECIALNETS")[0]
-    assert special.count("+ SHIELD sp_L1_inv1_Y IB 360 ") == 2
-    assert "( sp_L2_inv1 A ) + SHIELDNET VDD_SOC + SHIELDNET VSS + USE CLOCK" in text
+    # a shield is a shape of its power net: no + SHIELD to check against a + SHIELDNET
+    assert "SHIELD" not in text
+    rows = [r for r in spine.db.net_wire_rows("sp_L1_inv1_Y") if r["kind"] == "shield"]
+    assert len(rows) == 2
+    for r in rows:
+        assert def_rect("ROUTED", r["layer"], r["rect"]) in def_block(text, r["shield_net"])
     # routed again without -shield: the shields go
     spine.eval("route_net -net sp_L1_inv1_Y -rule r")
     assert shields(spine, "sp_L1_inv1_Y") == []
@@ -416,17 +464,15 @@ def test_power_straps_reach_the_shields(spine, tmp_path):
     text = out_of(spine)
     assert "power straps to shields:" in text
     assert "power pins connected to shields:" in text
-    exts = [r for r in spine.db.net_wire_rows() if r["kind"] == "shield_ext"]
-    assert exts and {r["shield_net"] for r in exts} <= {"VDD_SOC", "VSS"}
-    for r in exts:                 # on the strap layer, the strap's height, within reach
-        x1, y1, x2, y2 = (float(v) for v in r["rect"].split())
-        assert r["layer"] == "IA" and y2 - y1 == pytest.approx(0.72) and x2 - x1 <= 3 + 1e-6
-        strap = [s for s in spine.db.strap_rows() if s["net"] == r["shield_net"]
-                 and tuple(float(v) for v in s["rect"].split())[1::2] == (y1, y2)
-                 and (float(s["rect"].split()[2]) == x1 or float(s["rect"].split()[0]) == x2)]
-        assert strap, r["rect"]    # it continues a strap of its own net
-        shield = [w for w in spine.db.net_wire_rows() if w["kind"] == "shield"
-                  and w["shield_net"] == r["shield_net"] and w["layer"] == "IB"]
+    assert not [r for r in spine.db.net_wire_rows() if r["kind"] == "shield_ext"]
+    exts = stretches(spine, "shield_ext")          # power straps lengthened, no pieces
+    assert exts and {power for _, power, *_ in exts} <= {"VDD_SOC", "VSS"}
+    for owner, power, layer, (x1, y1, x2, y2), base in exts:
+        # on the strap layer, the strap's height, within reach, from the strap's end
+        assert layer == "IA" and y2 - y1 == pytest.approx(0.72) and x2 - x1 <= 3 + 1e-6
+        assert x1 == pytest.approx(base[2]) or x2 == pytest.approx(base[0])
+        shield = [w for w in spine.db.net_wire_rows(owner) if w["kind"] == "shield"
+                  and w["shield_net"] == power and w["layer"] == "IB"]
         # it reaches the far edge of a shield of its net
         assert any(abs(float(w["rect"].split()[2]) - x2) < 1e-6 or
                    abs(float(w["rect"].split()[0]) - x1) < 1e-6 for w in shield)
@@ -435,10 +481,10 @@ def test_power_straps_reach_the_shields(spine, tmp_path):
     assert len(pins) == 8 and any(ok for *_, ok in pins)
     path = tmp_path / "p.def"
     spine.eval(f"write_def -output {path}")
-    special = path.read_text().split("SPECIALNETS")[1].split("END SPECIALNETS")[0]
-    x1, y1, x2, y2 = (round(float(v) * 1000) for v in exts[0]["rect"].split())
-    assert f"IA {y2 - y1} + SHAPE STRIPE ( {x1} {(y1 + y2) // 2} ) ( {x2} {(y1 + y2) // 2} )" \
-        in special
+    st = spine.db.stretch_rows()                   # the lengthened strap: one RECT
+    strap = next(spine.db.strap_row(r["inst"], r["seq"]) for r in st if r["kind"] == "shield_ext")
+    assert strap["base_rect"] != strap["rect"]
+    assert def_rect("ROUTED", "IA", strap["rect"]) in def_block(path.read_text(), strap["net"])
 
 
 def test_shields_follow_the_track_assignment(spine):
@@ -490,27 +536,25 @@ def test_route_final_stub(spine, tmp_path):
     text = out_of(spine)
     assert "route_final_stub: 2 of 2 stubs routed" in text and "HT4-192" not in text
     for stub, net in (("stub1", "sp_L3_inv1_Y"), ("stub2", "sp_L3_inv2_Y")):
-        (w,) = [r for r in spine.db.net_wire_rows(net) if r["kind"] == "stub"]
+        (w,) = [r for r in spine.db.stub_wire_rows(net) if r["kind"] == "stub"]
         x1, y1, x2, y2 = (float(v) for v in w["rect"].split())
         px1, py1, px2, py2 = (float(v) for v in spine.eval(
             f"get_db stub:sp/{stub} .points").split())
         assert w["layer"] == "IB" and x2 - x1 == pytest.approx(0.36)      # vertical stub
         assert (y1, y2) == (pytest.approx(py1), pytest.approx(py2))       # its full length
         assert on_track((x1 + x2) / 2) and abs((x1 + x2) / 2 - px1) <= 0.36 + 1e-6
-        assert any(r["kind"] == "stub_cross" for r in spine.db.net_wire_rows(net))
+        assert any(r["kind"] == "stub_cross" for r in spine.db.stub_wire_rows(net))
     # route_net again keeps the stub; route_final_stub again replaces only it
     count = len(spine.db.net_wire_rows("sp_L3_inv1_Y"))
     spine.eval("route_net -net sp_L3_inv1_Y -rule r")
-    assert any(r["kind"] == "stub" for r in spine.db.net_wire_rows("sp_L3_inv1_Y"))
+    assert any(r["kind"] == "stub" for r in spine.db.stub_wire_rows("sp_L3_inv1_Y"))
     spine.eval("route_final_stub -rule r -stub stub1")
     assert len(spine.db.net_wire_rows("sp_L3_inv1_Y")) == count
-    assert len([r for r in spine.db.net_wire_rows("sp_L3_inv1_Y") if r["kind"] == "stub"]) == 1
+    assert len([r for r in spine.db.stub_wire_rows("sp_L3_inv1_Y") if r["kind"] == "stub"]) == 1
     path = tmp_path / "s.def"
     spine.eval(f"write_def -output {path}")
-    block = path.read_text().split("- sp_L3_inv1_Y ")[1].split("\n  ;")[0]
-    x1, y1, x2, y2 = (round(float(v) * 1000) for v in [r for r in spine.db.net_wire_rows(
-        "sp_L3_inv1_Y") if r["kind"] == "stub"][0]["rect"].split())
-    assert f"IB ( {x1} {y1} ) RECT ( 0 0 {x2 - x1} {y2 - y1} )" in block
+    stub = [r for r in spine.db.stub_wire_rows("sp_L3_inv1_Y") if r["kind"] == "stub"][0]
+    assert def_rect("FIXED", "IB", stub["rect"]) in def_block(path.read_text(), "sp_L3_inv1_Y")
     assert "HT4-190" in err(spine, "route_final_stub -rule r -stub nosuch")
     assert "HT4-001" in err(spine, "route_final_stub")
 
@@ -561,7 +605,8 @@ def test_delete_route(spine, tmp_path):
     spine.eval("route_net -net [get_db nets .name] -rule r -shield")
     spine.eval("route_final_stub -rule r")
     out_of(spine)
-    kinds = lambda net: {r["kind"] for r in spine.db.net_wire_rows(net)}
+    kinds = lambda net: {r["kind"] for r in spine.db.net_wire_rows(net)
+                         + spine.db.stub_wire_rows(net)}
     assert "stub" in kinds("sp_L3_inv1_Y") and "wire" in kinds("sp_L3_inv1_Y")
     # the stubs: only their wires go; the leaf nets keep their routes
     assert spine.eval("delete_route -nets [get_db stubs]") == "stub:sp/stub1 stub:sp/stub2"
@@ -597,7 +642,7 @@ def test_route_final_stub_shield(spine, tmp_path):
     text = out_of(spine)
     assert "shield VDD_SOC:" in text and "shield VSS:" in text
     for net in ("sp_L3_inv1_Y", "sp_L3_inv2_Y"):
-        rows = spine.db.net_wire_rows(net)
+        rows = spine.db.net_wire_rows(net) + spine.db.stub_wire_rows(net)
         (stub,) = [r for r in rows if r["kind"] == "stub"]
         sx1, sy1, sx2, sy2 = (float(v) for v in stub["rect"].split())
         centre = (sx1 + sx2) / 2
@@ -615,7 +660,12 @@ def test_route_final_stub_shield(spine, tmp_path):
         assert long > (sy2 - sy1) / 2                               # mostly not cut
     path = tmp_path / "s.def"
     spine.eval(f"write_def -output {path}")
-    assert "+ SHIELD sp_L3_inv1_Y IB 360" in path.read_text()
+    text = path.read_text()
+    stub_shields = [r for r in spine.db.stub_wire_rows("sp_L3_inv1_Y")
+                    if r["kind"] == "stub_shield"]
+    assert stub_shields and "SHIELD" not in text
+    for r in stub_shields:                       # on its power net, beside the stub
+        assert def_rect("ROUTED", r["layer"], r["rect"]) in def_block(text, r["shield_net"])
     # delete_route on the stub takes its shields too; the leaf's own stay
     spine.eval("delete_route -nets stub1")
     kinds = {r["kind"] for r in spine.db.net_wire_rows("sp_L3_inv1_Y")}
@@ -781,8 +831,11 @@ def test_optimize_pg_connection(spine, tmp_path):
     assert done and "new power connection(s)" in text
     from core.commands.route_net import _gap
     pg = [r for r in spine.db.net_wire_rows() if r["net"].startswith("pg:")]
-    exts = [r for r in pg if r["kind"] == "pg_ext"]
-    assert exts and all(r["shield_net"] in ("VDD_SOC", "VSS") for r in pg)
+    assert all(r["shield_net"] in ("VDD_SOC", "VSS") for r in pg)
+    assert not [r for r in pg if r["kind"] == "pg_ext"]          # straps lengthened instead
+    exts = [{"net": o, "shield_net": p, "layer": layer, "rect": " ".join(_num(v) for v in r)}
+            for o, p, layer, r, _ in stretches(spine, "pg_ext")]
+    assert exts
     shields = [(r["shield_net"], _floats(r["rect"])) for r in spine.db.net_wire_rows()
                if r["kind"] in ("shield", "stub_shield") and r["layer"] == "IB"]
     for r in exts:
@@ -806,17 +859,25 @@ def test_optimize_pg_connection(spine, tmp_path):
     assert len([r for r in spine.db.net_wire_rows() if r["net"].startswith("pg:")]) == count
     path = tmp_path / "pg.def"
     spine.eval(f"write_def -output {path}")
-    x1, y1, x2, y2 = (round(v * 1000) for v in _floats(exts[0]["rect"]))
-    special = path.read_text().split("SPECIALNETS")[1]
-    assert f"IA {y2 - y1} + SHAPE STRIPE ( {x1} {(y1 + y2) // 2} ) ( {x2} {(y1 + y2) // 2} )" \
-        in special
-    # move_obj takes them along; route_pin rebuilding the straps drops them
     inst = exts[0]["net"][3:]
+    x1, y1, x2, y2 = _floats(exts[0]["rect"])
+    # the strap it lengthens (its cell's, or the one of a cell beside it that it runs
+    # on from, same net, one track) is written as one shape with it
+    held = next(r for r in spine.db.stretch_rows(owner=exts[0]["net"])
+                if r["x1"] == pytest.approx(x1) and r["x2"] == pytest.approx(x2))
+    strap = spine.db.strap_row(held["inst"], held["seq"])
+    sx1, _, sx2, _ = _floats(strap["rect"])
+    assert sx1 <= x1 and x2 <= sx2 and strap["net"] == exts[0]["shield_net"]
+    assert def_rect("ROUTED", strap["layer"], strap["rect"]) in \
+        def_block(path.read_text(), exts[0]["shield_net"])
+    # move_obj takes them along; route_pin rebuilding the straps drops them
     spine.eval("move_obj -direction up -distance 0.72 sp")
-    assert _floats([r for r in spine.db.net_wire_rows(f"pg:{inst}")
-                    if r["seq"] == exts[0]["seq"]][0]["rect"])[1] == pytest.approx(y1 / 1000 + 0.72)
+    moved = [r for o, _, _, r, _ in stretches(spine, "pg_ext", exts[0]["net"])
+             if r[0] == pytest.approx(x1) and r[2] == pytest.approx(x2)]
+    assert moved and moved[0][1] == pytest.approx(y1 + 0.72)
     spine.eval(f"route_pin -inst {inst}")
     assert spine.db.net_wire_rows(f"pg:{inst}") == []
+    assert spine.db.stretch_rows(owner=f"pg:{inst}") == []
     assert "HT4-001" in err(spine, "optimize_pg_connection -inst sp_L1_inv1 -extend 0")
     assert "HT4-215" in err(spine, "optimize_pg_connection -inst nosuch")
 
@@ -979,3 +1040,35 @@ def test_legalize_spacing_both_placed_move(tech_session, write_lef):
     x2 = _floats(s.eval("get_db inst:u2 .location"))[0]
     assert x1 < 0 and x2 > 3.2                                # each moved away, about half
     assert x2 - (x1 + 3.12) >= 4 - 1e-6
+
+
+def test_stub_wires_are_named_after_the_stub(spine, tmp_path):
+    """route_final_stub stores a stub's wires under <leaf net>_stub; they
+    carry the leaf's net (.net, the vias, check_drc). A file written before
+    (stub rows under the leaf's net) is read into the new names."""
+    import sqlite3
+    spine.eval("route_pin -inst *sp_*")
+    spine.eval("route_net -net [get_db nets .name] -rule r")
+    spine.eval("route_final_stub -rule r")
+    out_of(spine)
+    handles = spine.split_list(spine.eval("get_db stub:sp/stub1 .net_wires"))
+    assert handles and all(h.startswith("net_wire:sp_L3_inv1_Y_stub/") for h in handles)
+    assert spine.eval(f"get_db {handles[0]} .net") == "spine_net:sp/sp_L3_inv1_Y"
+    assert not [r for r in spine.db.net_wire_rows("sp_L3_inv1_Y") if r["kind"].startswith("stub")]
+    assert "sp_L3_inv1_Y_stub" not in spine.db.route_nets()
+    spine.eval("check_drc")
+    drc = [l for l in out_of(spine).splitlines() if l.startswith(("  short", "  open"))]
+    # the old way: stub rows under the leaf's net
+    path = tmp_path / "old.db"
+    spine.eval(f"write_db -file {path}")
+    con = sqlite3.connect(path)
+    with con:
+        con.execute("UPDATE net_wire SET net = substr(net, 1, length(net) - 5), shield_net = "
+                    "CASE WHEN kind IN ('stub', 'stub_cross') THEN NULL ELSE shield_net END "
+                    "WHERE net LIKE '%\\_stub' ESCAPE '\\'")
+    con.close()
+    spine.eval(f"read_db -file {path}")
+    out_of(spine)
+    assert spine.split_list(spine.eval("get_db stub:sp/stub1 .net_wires")) == handles
+    spine.eval("check_drc")
+    assert [l for l in out_of(spine).splitlines() if l.startswith(("  short", "  open"))] == drc

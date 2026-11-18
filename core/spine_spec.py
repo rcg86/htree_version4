@@ -30,6 +30,8 @@ class SpineCell:
     input: Optional[str] = None
     output: Optional[str] = None
     location: Optional[float] = None   # along the spine from its driver, um
+    track_in: Optional[int] = None     # track: {input: k, output: k}: the k-th signal
+    track_out: Optional[int] = None    # track past the spine's location (core/spine_tracks.py)
     extra: List[str] = field(default_factory=list)
 
 
@@ -274,10 +276,29 @@ class _Parser:
                                    f"(um from its driver along the spine), got {_flow(kval)}",
                                    cline)
                     cell.location = kval
+                elif key == "track":
+                    cell.track_in, cell.track_out = self.tracks(spec, lname, cname, kval,
+                                                                cline)
                 else:
                     cell.extra.append(f"{key}: {_flow(kval)}")
             cells.append(cell)
         return cells
+
+    def tracks(self, spec, lname, cname, value, line):
+        """(input, output) of track: {input: k, output: k}, each a whole
+        number from 1 (or missing)."""
+        if not isinstance(value, dict) or set(value) - {"input", "output"}:
+            self.error(f"{spec.name}: {lname}/{cname} track must be a mapping like "
+                       f"{{input: 2, output: 3}} (signal tracks counted from the spine's "
+                       f"location), got {_flow(value)}", line)
+        found = []
+        for key in ("input", "output"):
+            k = value.get(key)
+            if k is not None and (isinstance(k, bool) or not isinstance(k, int) or k < 1):
+                self.error(f"{spec.name}: {lname}/{cname} track {key} must be a whole number "
+                           f"from 1, got {_flow(k)}", line)
+            found.append(k)
+        return tuple(found)
 
     def check_name(self, name, what, line):
         if "/" in name or any(c.isspace() for c in name):

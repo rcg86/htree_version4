@@ -11,7 +11,7 @@ spine_spec:
     count_stub_in_drive: true    # an L4 cell's drive includes its full stub length
 
   placement:
-    origin_x: 10                 # X of L1
+    origin: 10                 # X of L1
     level_pitch: 2.88          # X step between levels, and from L4 to the stubs
     deviation: 10                # a net may exceed its calculated length by up to 10 um
 
@@ -26,25 +26,102 @@ spine_spec:
   levels:
     L1:
       cells:
-        inv1: {input: net}
-        inv2: {input: L1/inv1/Y}
-        inv3: {input: L1/inv2/Y}
+              inv1: {input: net, track: {input : 1, output : 2}}
+              inv2: {input: L1/inv1/Y, location: 1200, track: {input: 2, output: 2 }}
+              inv3: {input: L1/inv2/Y, location: 1200, track: {input: 2, output: 2}}
     L2:
       cells:
-        inv1: {input: L1/inv2/Y}
+              inv1: {input: L1/inv2/Y, location: 1200, track: {input: 3, output: 4}}
 
     L3:
       cells:
-        inv1: {input: L1/inv3/Y}
-        inv2: {input: L2/inv1/Y}
+              inv1: {input: L1/inv3/Y, location: 1200, track: {input: 4, output: 5}}
+              inv2: {input: L2/inv1/Y, location: -1200, track: {input: 4, output: 5}}
     L4:
       cells:
-        inv1: {input: L3/inv1/Y, output: stub1}
-        inv2: {input: L3/inv1/Y, output: stub2}
-        inv3: {input: L3/inv2/Y, output: stub3}
-        inv4: {input: L3/inv2/Y, output: stub4}
+              inv1: {input: L3/inv1/Y, location: 600, output: stub1, track: {input: 5, output : 6}}
+              inv2: {input: L3/inv1/Y, location: -600, output: stub2, track: {input: 5, output : 6}}
+              inv3: {input: L3/inv2/Y, location: 600, output: stub3, track: {input: 5, output : 6}}
+              inv4: {input: L3/inv2/Y, location: -600, output: stub4, track: {input: 5, output : 6}}
 
 
+---
 
+spine_spec:
+  name: custom_spine_h5p2
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1300       # um of wire per driver
+    count_stub_in_drive: true    # an L7 cell's drive includes its full stub length
+
+  placement:
+    level_pitch: 2.88            # Y step between levels, and from L7 to the stubs
+    deviation: 10                # a net may exceed max_drive_length by up to 10 um
+    origin: 10                   # root (L1) this far from -location along the spine;
+                                 # with -mirror, the mirrored root as far the other way
+
+  spine:
+    orientation: horizontal
+    span: 2600                   # total X covered by the stubs (6 x 991.667 + 5 x 10)
+
+  stubs:
+    gap: 10
+    tap: center                  # driven at the midpoint
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net}
+    L2:
+      cells:
+              inv1: {input: L1/inv1/Y,location: 1300 }
+    L3:
+      cells:
+              inv1: {input: L2/inv1/Y,location: 650, output: stub1}
+              inv2: {input: L2/inv1/Y,location: -650, output: stub2}
+
+
+---
+
+spine_spec:
+  name: custom_spine_v5p2
+  type: spine
+  units: um
+  point: center
+  root_net: net
+
+  constraints:
+    max_drive_length: 1300       # um of wire per driver
+    count_stub_in_drive: true    # an L7 cell's drive includes its full stub length
+
+  placement:
+    level_pitch: 2.88            # Y step between levels, and from L7 to the stubs
+    deviation: 10                # a net may exceed max_drive_length by up to 10 um
+    origin: 10                   # root (L1) this far from -location along the spine;
+                                 # with -mirror, the mirrored root as far the other way
+
+  spine:
+    orientation: vertical
+    span: 2600                   # total X covered by the stubs (6 x 991.667 + 5 x 10)
+
+  stubs:
+    gap: 10
+    tap: center                  # driven at the midpoint
+
+  levels:
+    L1:
+      cells:
+        inv1: {input: net, track: {input : 1, output : 2} }
+    L2:
+      cells:
+              inv1: {input: L1/inv1/Y,location: 1300, track: {input : 2, output : 3} }
+    L3:
+      cells:
+              inv1: {input: L2/inv1/Y,location: 650, output: stub1, track: {input : 3, output : 4}}
+              inv2: {input: L2/inv1/Y,location: -650, output: stub2, track: {input : 3, output : 4}}
 
 

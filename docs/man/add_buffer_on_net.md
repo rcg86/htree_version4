@@ -5,7 +5,7 @@ NAME
 SYNOPSIS
     add_buffer_on_net -net <nets> -ref_cell <lib_cell> -distance <um>
                       [-first_distance <um>] [-last_distance <um>]
-                      [-name <suffix>]
+                      [-name <suffix>] [-spec <yaml>]
 
 DESCRIPTION
     Puts instances of -ref_cell on the nets of a built spine (create_spine
@@ -121,13 +121,48 @@ DESCRIPTION
     of a port that is nowhere (no shapes, not placed) is left as it is
     (HT4-259).
 
+    Routed nets of no spine. A net of no spine that route_net routed is
+    buffered along its wires, and the wires are cut where the buffers go:
+      The route. Its signal wires (kind wire) on the two layers of its
+      route rule, joined where a crossing box touches two of them, are
+      followed from the driver end (the end nearest the input port or
+      the output pin). The points -first_distance, + -distance, ... um
+      along it that lie before the last load of their branch get a
+      buffer; a branch is measured from the driver as on a spine.
+      The buffers. Each is centred under its point, in the orientation
+      (N or FS) that puts its input pin on the driver's side of its
+      output pin along the wire, then put on a site (legalize_placement)
+      and given its pin routes (route_pin, with -spec). Where the cell
+      or its pin routes (the straps' reach, as on another cell of the
+      same type that has them) would come within the rule spacing of
+      another cell's, or of a wire on the straps' layer, it slides along
+      its wire, at most half -distance and not past the ends of that
+      stretch of the route, to the nearest free place (reported, with
+      how far). A buffer with no such place is not made (HT4-261): what
+      it would drive stays on the net before it.
+      Named <name>_<n> from the driver (-name; default <port or driver
+      instance>_buf); each drives net <buffer>_<output pin>.
+      The cut. The wires are cut over each buffer: over its cell, on the
+      straps' layer also over the straps' reach, and the rule spacing
+      each side. Each piece goes on the net of the nearest buffer before
+      it; the pieces before the first buffer keep the net's name. The
+      loads go on the net of the buffer before them.
+      The joins. route_net then routes every net made or cut (with
+      -shield when the net had shields), all the pieces held as they
+      are (route_status fixed while it runs): it only joins them to the
+      pins of the buffers and loads, and makes the crossing boxes, the
+      pin routes' extensions and (with -shield) the shields and power
+      links again. A piece of a fixed wire stays fixed; the others are
+      freed again.
+      -last_distance is not taken on routed nets yet (HT4-001).
+
     What is not done.
       A leaf's net is left as it is (HT4-259): its load is a stub, and
       this command does not buffer the stub nets.
-      A routed net is an error (HT4-258): remove its routing first
-      (delete_route -nets).
-      The buffers get no pin routes: run route_pin on them, then
-      route_net on the nets.
+      A routed net of a spine is an error (HT4-258): remove its routing
+      first (delete_route -nets). On a net that is not routed the
+      buffers get no pin routes: run route_pin on them, then route_net
+      on the nets.
       There is no command that removes a buffer: write_db before, and
       read_db to go back.
     Everything is checked before anything is stored: on an error no
@@ -151,7 +186,12 @@ OPTIONS
         before a load to the input pin of the load. Default: no buffer
         is placed for the loads.
     -name <suffix>
-        The suffix of the buffer names. Default: buf.
+        The suffix of the buffer names: <driver>_<suffix><n>. Default:
+        buf. On a routed net, the prefix: <name>_<n> (default
+        <driver>_buf).
+    -spec <yaml>
+        On a routed net: the pin routing spec route_pin gives the
+        buffers (as route_pin -spec). Default: route_pin's defaults.
     -help
         Print the definition, usage, options and an example of the command.
 
@@ -187,6 +227,19 @@ EXAMPLES
         ...
     htree> get_db pin:sp_L1_inv1/A .net.driver
     pin:clk_rep4/Y
+    htree> add_buffer_on_net -net clk_in -ref_cell INV_RP -first_distance 100 \
+               -distance 100 -name rep -spec pin_routing_spec.yaml
+      clk_in: buffers moved along the route, off the cells under it (um, + is away from the driver): rep_1 -10.08, rep_3 -10.08
+    add_buffer_on_net: clk_in: 4 buffer(s) along its route, its 4 wire(s) cut into 8 piece(s) on 5 net(s); route_net joins them to the pins
+      clk_in: 4 buffer(s) along its route
+        Buffer  From driver  Centre               Input net -> output net
+        rep_1        89.92  {1.44 311.84}        clk_in -> rep_1_Y
+        rep_2          200  {1.44 201.76}        rep_1_Y -> rep_2_Y
+        rep_3       289.92  {1.44 111.84}        rep_2_Y -> rep_3_Y
+        rep_4          400  {14.8 15.12}         rep_3_Y -> rep_4_Y
+        load sp_L1_inv1/A: on rep_3_Y, behind rep_3
+        load d1/A: on rep_4_Y, behind rep_4
+
 ERRORS
     HT4-001  -net, -ref_cell or -distance missing, a distance that is not
              a number above 0, a bad suffix, or an unknown option
@@ -194,7 +247,8 @@ ERRORS
     HT4-256  no net of that name
     HT4-257  the cell is not in the library, or has no SIZE, signal input
              pin or signal output pin
-    HT4-258  a net given is routed
+    HT4-258  a net of a spine given is routed, or a routed net has no
+             route rule
     HT4-259  WARN: a leaf's net was left as it is (stub nets are not
              buffered by this command), a net of no spine was (no single
              driver, no input pin on it, or its port is nowhere), or no

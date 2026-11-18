@@ -39,8 +39,14 @@ DESCRIPTION
          spacing to other nets' shapes; a side that cannot is left
          unextended and the report says why (no track, too far, blocked,
          outside the design boundary).
-         The extensions are stored with the net (kind extension, on the
-         strap layer); the strap keeps its size.
+         The strap itself is lengthened: one shape on its own y, no
+         piece of metal beside it, so the strap, the route's crossing box
+         and its via stay aligned. The stretch is the net's: routing the
+         net again or delete_route takes it back (the strap goes back to
+         the size route_pin gave it), and route_pin making the cell's
+         straps again drops it (HT4-162 names the nets to route again).
+         get_db strap .rect is the lengthened strap; max_extension is
+         counted from route_pin's.
       b. The route only reaches the pin routes: a vertical wire across the
          extended strap on any signal track it covers, from the horizontal
          track nearest the strap centre. The route never goes to the pin
@@ -165,9 +171,10 @@ DESCRIPTION
     strap layer and stay inside the design boundary. A strap another
     routed net has already joined (a cell is on two nets: its input and
     its output) is left as it is and reported as already joined.
-    Extensions are stored with the net (kind
-    shield_ext, .shield_net VDD_SOC / VSS), with a crossing box where strap
-    and shield meet, and written by write_def as stripes of the power net.
+    The power strap itself is lengthened (as the signal straps in step
+    a: one shape, no piece beside it), the stretch the net's, with a
+    crossing box where strap and shield meet; write_def writes the strap
+    as one RECT of the power net.
     At the end the report says how many power pins of the nets' cells are
     connected (the pin's pin wire goes to a joined strap) and warns
     (HT4-177) about the others. Horizontal shields are on the strap layer,
@@ -189,6 +196,20 @@ DESCRIPTION
     crossing boxes as white outlines. The via of a crossing box is drawn
     under "Vias", with the via_<bottom>_<top> row of the layer list
     (via_IA_IB). write_db saves them.
+
+    Via definitions. At the end, every via of the routing that has no
+    via definition gets one: for each net and layer pair with no
+    assignment of assign_via_for_route (neither the net's own nor one for
+    every net), the definition of those layers that fits the most of the
+    net's vias, each pad inside the net's own metal on its layer (wires,
+    straps, pin wires, pin shapes) and each cut inside both. A DEFAULT via
+    of the tech LEF comes before another (a power via the DEF generated),
+    then, of those that fit every via, the one with the most cuts, then
+    pads that run the way their layers do, then the smallest pads. The
+    choice is stored as the net's assignment (assign_via_for_route lists
+    it and can change it), so write_def writes every via. Printed: the
+    definitions given, per layer pair, with the number of nets and vias;
+    HT4-297 when no definition of a pair fits some of the vias.
 
 OPTIONS
     -net <nets>
@@ -214,14 +235,69 @@ OPTIONS
     -help
         Print the definition, usage, options and an example of the command.
 
+SPINE SPEC TRACKS
+    When the spine spec gives its cells tracks (track: {input, output},
+    man read_spine_spec, TRACKS), a net of the spine lies, along the
+    spine, on its numbers only: its driver's output track and its loads'
+    input tracks, on each stretch of the spine (vertical wires on a
+    vertical stretch, horizontal ones on a horizontal stretch; hops across
+    on the other layer are free). Its pins' straps are extended to those
+    tracks. It stays on the output track as long as it can, so it changes
+    to a load's input track near that load. Where a cell's input and
+    output share a track, the piece of it past the input strap belongs to
+    the output net (the net coming in stops at the input). The stubs'
+    track is the leaves' output track: route_net keeps it free and removes
+    stubs routed before on another track (HT4-279); route_final_stub puts
+    them there. A pin whose track is taken or out of reach is not routed
+    (HT4-174, "on its spine spec track").
+
+PIN ACCESS THROUGH A CELL
+    A net reaches a route_pin strap at a crossing on the signal track
+    nearest the strap centre. On a cell with two signal straps (A and Y)
+    it may also reach a strap from the track on its outer side, away from
+    the other signal strap, for the longer drop: the net coming from
+    below then stops under the lower strap, and the net leaving the upper
+    strap goes up from over it, on the same vertical track (with 0.36
+    straps 0.72 apart, the two wires end 1.08 um apart). And a strap is
+    best reached on the track the cell's other signal strap is already
+    crossed on: another track costs two signal-track pitches more, so a
+    straight net keeps one track through its cells unless a jog saves
+    more. The nets of a spine are routed in the order the signal runs (a
+    net before the nets its loads drive), so the track is the incoming
+    net's. legalize_placement turns each cell so its input pin faces the
+    net coming in (man legalize_placement), and route_pin gives the
+    higher pin the higher strap.
+
+FIXED WIRES
+    A wire fixed alone (set_db <net_wire> .route_status fixed, a wire of
+    kind wire, e.g. one moved by hand with move_wire) is kept when the
+    net is routed again: route_net routes the rest of the net to it, as
+    to a load, and from then on any track crossing on it is part of the
+    net, so branches may leave it anywhere. It is not drawn again: only
+    the crossing boxes where the route joins it are added, and no new
+    wire is laid on top of it. With -shield its shields are made again
+    round it where it lies now (its old shields are not fixed and go).
+    A fixed wire whose centre line is not on a signal track of the rule's
+    layers cannot be joined; it stays and is reported (HT4-287). The
+    router does not check a fixed wire against other nets: a wire moved
+    onto another net's track is a short check_drc reports.
+
+    htree> move_wire -wires net_wire:sp_L2_inv1_Y/1 -next_track right
+    htree> set_db net_wire:sp_L2_inv1_Y/1 .route_status fixed
+    htree> route_net -net sp_L2_inv1_Y -rule r -shield
+        fixed wire net_wire:sp_L2_inv1_Y/1: kept; the route joins it at {76.68 111.24}
+    htree> set_db [get_db selected -if {.kind == wire}] .route_status fixed
+
 OBJECTS AND ATTRIBUTES
     net_wire:<net>/<n>
-        a wire, strap extension, crossing box or shield of a routed net:
-        obj_type, name (n), kind (wire | extension | cross | shield |
-        shield_ext),
+        a wire, crossing box or shield of a routed net (a route lengthens
+        a strap, see step a: no wire): obj_type, name (n), kind (wire |
+        cross | shield; extension or shield_ext only for a piece on no
+        strap of its net),
         shield_net (a shield's power net), layer (a cross: "<layer>/<layer>"), rect
         ("x1 y1 x2 y2"), width and length (a wire: across and along it;
-        a cross: x and y size), net (spine_net or net handle)
+        a cross: x and y size), net (spine_net or net handle),
+        route_status (fixed: fixed alone or with its net; else routed)
     spine_net:<spine>/<net> .net_wires and net:<name> .net_wires list
     one net's; get_db net_wires lists all.
     via:<net>/<n>
@@ -279,7 +355,12 @@ ERRORS
              location
     HT4-266  WARN: the route of a port's net ends near the port, not
              connected to it
+    HT4-287  WARN: a fixed wire is not on a signal track (or every
+             crossing on it is blocked): the route does not join it
+    HT4-286  WARN: a fixed net (set_db .route_status fixed) is not
+             routed again; its routes stay and block the others
+    HT4-297  WARN: vias that no definition of their layer pair fits
 
 SEE ALSO
-    create_route_rule, route_pin, assign_track_for_route, create_spine,
-    set_db, get_db, gui_show
+    route_track, create_route_rule, route_pin, assign_track_for_route,
+    create_spine, set_db, get_db, gui_show, assign_via_for_route

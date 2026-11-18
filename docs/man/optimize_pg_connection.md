@@ -17,8 +17,8 @@ DESCRIPTION
     cells' own power straps. (The DEF has no SPECIALNETS read.)
 
     For each power strap:
-      - Its reach is the strap with the extensions it already has on its
-        band (route_net's to its shields, this command's earlier ones).
+      - Its reach is the strap as it is, lengthened by route_net to its
+        shields and by this command before.
       - On each side it may grow up to -extend um beyond that reach, to
         the farthest shape of its own net in range, so it picks up every
         one on the way:
@@ -31,13 +31,14 @@ DESCRIPTION
         of other nets on that layer; if the farthest target is blocked,
         the next nearer one is tried.
 
-    The pieces are stored per instance, as net_wire rows of net
-    pg:<inst> (kind pg_ext and pg_cross, .shield_net the power net).
-    Running the command again on an instance replaces its pieces.
-    move_obj and legalize_placement move them with the instance; route_pin
-    on the instance (which rebuilds its straps) removes them. write_def
-    writes the extensions as stripes of their power net; the GUI draws
-    them labelled with it.
+    The strap itself is lengthened (no piece of metal beside it); the
+    crossing boxes are stored per instance, as net_wire rows of net
+    pg:<inst> (kind pg_cross, .shield_net the power net), and the
+    stretches are the instance's (owner pg:<inst>). Running the command
+    again on an instance replaces them. move_obj and legalize_placement
+    move them with the instance; route_pin on the instance (which
+    rebuilds its straps) removes them. write_def writes the strap as one
+    RECT of its power net.
 
     The report gives, per instance, each strap extended, how many
     connections it had before, how far it grew on which side and what it

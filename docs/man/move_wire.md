@@ -16,6 +16,10 @@ DESCRIPTION
                            shields, shield extensions and crossing boxes
       strap:<inst>/<n>     route_pin straps
       pin_wire:<inst>/<pin> route_pin pin wires
+      via:<net>/<n>        a via: its crossing box (.source) moves. The
+                           via of a pin (kind pin or strap) is where its
+                           pin wire meets the pin and does not move by
+                           itself (HT4-220)
     Every handle is checked before anything moves.
 
     Nothing else follows a moved wire: the crossing boxes on it and the
@@ -23,7 +27,27 @@ DESCRIPTION
     is then off its layer's tracks (a horizontal wire: DEF TRACKS Y, a
     vertical one: TRACKS X) is reported (HT4-222). route_net, route_pin
     and route_final_stub replace hand edits when they run again. The
-    auto vias stretch_wire added to a moved wire are removed.
+    auto vias stretch_wire added to a moved wire, and the vias insert_vias
+    put under it, are removed.
+
+    Shields made again. A signal wire (kind wire) of a net routed with
+    shields (route_net -shield) and a route rule has its shields made
+    again where it lies after the move, by -delta or -next_track: its old
+    shields (the ones beside it before the move) are removed and new ones
+    made as route_net -shield makes them: one each side on the nearest
+    track of the layer's track assignment that carries a power net (the
+    track's net), over the wire's span and the strap stacks of the net's
+    cells it reaches, cut where another shape is closer than the rule
+    spacing and at the design boundary. Shields given with the wire are
+    made again, not moved. A wire too short for a shield
+    (ignore_shield_less_than_routing_length) gets none. Then the net's
+    power links are made again as route_net -shield makes them: every
+    power strap of the net's cells is joined to the shield of its net
+    needing the shortest extension within the strap's max_extension (a
+    shield_ext and its crossing box), against the shields as they are
+    now; the old links go. A net routed without shields gets none, and
+    the wires of a net with no route rule (not route_net's) still move
+    with their shields as a group (below).
 
     Next track (-next_track). Each wire moves across its length only: a
     horizontal wire up or down, a vertical one left or right (a wire that
@@ -60,9 +84,14 @@ DESCRIPTION
     power wires that join a shield to a cell are not part of the group:
     they stay unless given, each by its own rule.
 
-    A crossing box (two layers) has no track of its own: it moves with the
-    wires given with it when they all move the same distance (a group:
-    its signal wire's distance), and stays otherwise. A wire with no such
+    A crossing box (two layers) moves with the wires given with it when
+    they all move the same distance (a group: its signal wire's
+    distance), and stays otherwise. Given with no wire (a selected via,
+    say), each box steps by itself: its centre onto the next track, on
+    that side, of the one of its two layers whose tracks run across the
+    move (left or right: the vertical layer, IB; up or down: the
+    horizontal one, IA), a signal track, or a track of its net for a
+    power box. Its wires do not follow. A wire with no such
     track on that side (the last track, a
     layer without tracks, a net with no track on the layer) is not moved
     and reported (HT4-226); the others still move.
@@ -72,11 +101,12 @@ DESCRIPTION
     The GUI's Tools > Move runs this command when a wire is dragged
     (several when the dragged wire is selected with others), and with
     -next_track when Shift+arrow is pressed in that mode (the selected
-    wires); Tools > Undo Edit moves them back.
+    wires and vias); Tools > Undo Edit moves them back.
 
 OPTIONS
     -wires <wires>
-        Wire handles as a Tcl list, e.g. [get_db selected]. Required.
+        Wire and via handles as a Tcl list, e.g. [get_db selected].
+        Required.
     -delta {<dx> <dy>}
         How far to move, in microns. A list of pairs, one for each wire
         in the order of -wires, moves each wire by its own distance.
@@ -115,6 +145,8 @@ ERRORS
     HT4-226  WARN: wires -next_track did not move (they run along the
              direction, have no track of their net on that side, or
              no signal track there has room for the shields)
+    HT4-286  WARN: the wires of a fixed net do not move (set_db
+             .route_status fixed)
 
 SEE ALSO
     stretch_wire, delete_wire, assign_track_for_route, route_net,

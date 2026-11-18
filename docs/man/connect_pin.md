@@ -37,7 +37,9 @@ DESCRIPTION
     a pin can have before connect_pin:
       - the ones create_spine -build made: a spine cell's input is on the
         net of the cell that drives it;
-      - the root of a spine: its input is on the spine spec's root_net.
+      - the root of a spine: its input is on the spine's root net
+        (<spine>_primary_input when the spec's root_net is the
+        placeholder 'net'; get_db spine:<name> .root_net).
         Once taken off, it goes back onto that net only from a port
         whose net it is: no other driver of it is known here;
       - the ones of an earlier connect_pin.

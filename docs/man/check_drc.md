@@ -94,6 +94,15 @@ DESCRIPTION
     check does not read (LEF58 properties, other kinds) is named with its
     layer: spacing on that layer is checked against the rest only.
 
+    GUI. With the window open (gui_show), the violations are also listed
+    in the DRC Violations table under the layout; a window opened later
+    lists the last run. A click on a violation shows only its nets
+    (show_only), selects its shapes and zooms to its box, to debug it
+    (see 'man gui_show'). Each violation also gets a marker at its box
+    on the layout (a white box with a cross), shown while Violation
+    markers is ticked in the Objects of the View panel. The table and
+    the markers are this run: run check_drc again after a fix.
+
 OPTIONS
     -check_shorts_only
         Only the shorts.
@@ -120,7 +129,7 @@ EXAMPLES
     htree> check_drc
     check_drc: every layer
       Shapes: 68 wires, 0 via pads, 40 pin shapes on M1 D12 H2 IA IB
-      Vias  : 91, 91 without a definition (no pads: checked as connections only)
+      Vias  : 107, 107 without a definition (no pads: checked as connections only)
       Nets  : 5 signal nets, 2 power nets
       Check     Rule    Layer   Violations
       --------- ------- ------- ----------
@@ -152,4 +161,5 @@ ERRORS
 
 SEE ALSO
     route_pin, route_net, route_final_stub, optimize_pg_connection,
-    create_route_rule, assign_via_for_route, get_obj_in_area, select_obj
+    create_route_rule, assign_via_for_route, get_obj_in_area, select_obj,
+    show_only, gui_show

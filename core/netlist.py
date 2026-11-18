@@ -9,7 +9,9 @@ of the design, and has a name the driver gives it:
 
 Where the net of a pin comes from, the last that applies:
 
-    1. the root of a built spine: the spine spec's root_net on its input
+    1. the root of a built spine: its root net on its input (root_net):
+       <spine>_primary_input, the spec's root_net when it gives one other
+       than the placeholder 'net', or the name rename_obj gave it
     2. the built spines: the driver of a spine net (the cell's first signal
        output pin) and its loads (their first signal input pin), as route_net
        takes them
@@ -33,6 +35,28 @@ from core.messages import HtreeError
 BAD_DIRECTION = 251
 NET_NAME = 252
 PORT = "port:"
+PLACEHOLDER = "net"          # a spec's root_net that names no net of the design
+PRIMARY_INPUT = "_primary_input"
+
+
+def root_net(db, spine):
+    """The net on the root input of a built spine (its row): the one
+    rename_obj gave it, else the spec's root_net, else, when that is the
+    placeholder 'net' or none, <spine>_primary_input."""
+    if spine["root_net"]:
+        return spine["root_net"]
+    spec = db.spine_spec_row(spine["spec"])
+    name = spec["root_net"] if spec is not None else None
+    return name if name and name != PLACEHOLDER else spine["name"] + PRIMARY_INPUT
+
+
+def made_root(db, spine):
+    """Is the root net of a built spine one htree named (not in the design
+    yet): <spine>_primary_input, or a name rename_obj gave it that is not
+    the net of a port of the DEF."""
+    if spine["root_net"]:
+        return spine["root_net"] not in db.port_net_names()
+    return root_net(db, spine) == spine["name"] + PRIMARY_INPUT
 
 
 class End(namedtuple("End", "kind inst pin direction")):
@@ -109,9 +133,7 @@ def _spines(db):
     found = []
     for name in db.spine_names():
         spine = db.spine_row(name)
-        spec = db.spine_spec_row(spine["spec"])
-        root = (spec["root_net"] if spec is not None else None) or "net"
-        found.append((spine, root, {s["name"] for s in db.spine_stub_rows(spine["id"])},
+        found.append((spine, root_net(db, spine), {s["name"] for s in db.spine_stub_rows(spine["id"])},
                       db.spine_net_rows(spine["id"])))
     return found
 

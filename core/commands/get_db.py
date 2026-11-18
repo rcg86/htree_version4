@@ -156,7 +156,9 @@ def run(session, argv):
     if second is not None and not second.startswith("."):
         if tail:
             raise HtreeError(USAGE, f"get_db: name pattern '{second}' cannot follow an attribute path")
-        handles = [h for h in handles if fnmatchcase(_name(h), second)]
+        # its own name, or its whole one: stub4 or mgt_clk/stub4 (spine_net, stub, pin ...)
+        handles = [h for h in handles if fnmatchcase(_name(h), second)
+                   or fnmatchcase(h.partition(":")[2], second)]
         second = None
 
     if second is not None and second != ".*":
@@ -299,6 +301,8 @@ def _dump_tech(db, out):
     for attr, name in zip(("min_layer", "max_layer"), db.tech_layer_range()):
         if name:
             info(f"  {attr:<20}: {name}", out)
+    if db.removed_layers():
+        info(f"  {'removed_layers':<20}: {' '.join(db.removed_layers())}", out)
     info(f"  {'layers':<20}: {len(layers)}", out)
     skip = {"obj_type", "name", "lef_text", "tech", "extra"}
     for name in layers:

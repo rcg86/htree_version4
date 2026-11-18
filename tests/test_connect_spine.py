@@ -109,12 +109,13 @@ def test_each_takes_its_nearest_stub(design):
     assert rows["sp3"][2] == "stub2" and float(rows["sp3"][4]) == pytest.approx(near, abs=1e-3)
     assert rows["sp3"][5:] == ON_STUB2
     # the roots were on the spec's root_net: taken off it, and said so
-    assert "disconnected first: sp2_L1_inv1/A from net net, sp3_L1_inv1/A from net net" in text
+    assert "disconnected first: sp2_L1_inv1/A from net sp2_primary_input, sp3_L1_inv1/A from " \
+        "net sp3_primary_input" in text
     assert "buf1/A from" not in text
     assert "netlist only: no wire is made" in text and "HT4-254" not in text
     # a leaf's net keeps its stub as its only load for route_net
     assert lst(s, "get_db spine_net:sp/sp_L3_inv1_Y .loads") == ["stub1"]
-    assert net(s, "sp_L1_inv1/A") == "net"                    # the -from spine's own root
+    assert net(s, "sp_L1_inv1/A") == "sp_primary_input"       # the -from spine's own root
 
 
 def test_again_and_from_another_spine(design):
@@ -142,7 +143,7 @@ def test_loops(design):
     assert "HT4-268" in err(s, "connect_spine -from sp -to {sp2 spine:sp}")
     text = err(s, "connect_spine -from sp -to sp_L2_inv1/A")           # a pin of its own
     assert "HT4-268" in text and "sp_L2_inv1" in text
-    assert net(s, "sp2_L1_inv1/A") == "net"                   # nothing connected
+    assert net(s, "sp2_L1_inv1/A") == "sp2_primary_input"     # nothing connected
     s.eval("connect_spine -from sp -to sp2")
     s.eval("connect_spine -from sp2 -to sp3")
     out_of(s)
@@ -150,7 +151,7 @@ def test_loops(design):
     for script in ("connect_spine -from sp2 -to sp", "connect_spine -from sp3 -to sp2",
                    "connect_spine -from sp3 -to sp", "connect_spine -from sp3 -to sp_L1_inv1/A"):
         assert "HT4-268" in err(s, script)
-    assert net(s, "sp_L1_inv1/A") == "net"
+    assert net(s, "sp_L1_inv1/A") == "sp_primary_input"
     s.eval("connect_spine -from sp3 -to buf1/A")              # not in a loop
 
 
@@ -169,7 +170,7 @@ def test_errors(design):
         assert "HT4-269" in err(s, f"connect_spine -from sp -to {port} {BUF}")
     # checked before anything is changed
     assert "HT4-251" in err(s, "connect_spine -from sp -to {sp2 buf1/Y}")
-    assert net(s, "sp2_L1_inv1/A") == "net" and net(s, "buf1/A") == ""
+    assert net(s, "sp2_L1_inv1/A") == "sp2_primary_input" and net(s, "buf1/A") == ""
 
 
 def test_spine_without_stubs(design):
@@ -224,9 +225,9 @@ def test_write_logical_and_def(design, tmp_path):
         assert f"connect {pin} -net sp_L3_inv1_Y\n" in text
     for pin in ON_STUB2:
         assert f"connect {pin} -net sp_L3_inv2_Y\n" in text
-    assert "connect sp_L1_inv1/A -net net\n" in text
-    assert "connect sp2_L1_inv1/A -net net\n" not in text
-    s.eval(f"write_def -output {tmp_path}/o.def")
+    assert "connect sp_L1_inv1/A -net sp_primary_input\n" in text
+    assert "connect sp2_L1_inv1/A -net sp2_primary_input\n" not in text
+    s.eval(f"write_def -output {tmp_path}/o.def -sections nets")
     nets = (tmp_path / "o.def").read_text().split("\nNETS")[1]
     assert "- sp_L3_inv1_Y ( sp_L3_inv1 Y ) ( sp2_L1_inv1 A ) ( buf1 A ) + USE CLOCK" in nets
     assert ("- sp_L3_inv2_Y ( sp_L3_inv2 Y ) ( sp3_L1_inv1 A ) ( sp3_mirror_L1_inv1 A ) "
@@ -375,7 +376,7 @@ def test_a_bit_of_a_bus_port(ported, tmp_path):
     s.eval(f"write_logical -output {tmp_path}/l.tcl")
     text = (tmp_path / "l.tcl").read_text()
     assert "connect out_d_3/Y -net {d[3]}\n" in text
-    s.eval(f"write_def -output {tmp_path}/o.def")
+    s.eval(f"write_def -output {tmp_path}/o.def -sections nets")
     assert "- d[3] ( out_d_3 Y ) ( PIN d[3] )" in (tmp_path / "o.def").read_text()
 
 
@@ -405,7 +406,7 @@ def test_port_errors_change_nothing(ported):
     text = err(s, "connect_spine -from sp -to {sp2 q} -ref_name NOPE -distance 10")
     assert "HT4-257" in text and "INV_RP" in text
     assert "HT4-022" in err(s, f"connect_spine -from sp -to {{q port:t/nosuch}} {BUF}")
-    assert lst(s, "get_db insts") == insts and net(s, "sp2_L1_inv1/A") == "net"
+    assert lst(s, "get_db insts") == insts and net(s, "sp2_L1_inv1/A") == "sp2_primary_input"
     assert s.eval("get_db net:q_net .pins") == ""
     # the buffer options are for ports: without one in -to they are not used
     s.eval("connect_spine -from sp -to sp2 -ref_name NOPE")
@@ -423,7 +424,7 @@ def test_ports_in_write_logical_and_def(ported, tmp_path):
     assert "net q_net of port q must exist in the design" in text
     made = [line.split()[-1] for line in text.splitlines() if line.startswith("create_net ")]
     assert "q_net" not in made and "top" not in made
-    s.eval(f"write_def -output {tmp_path}/o.def")
+    s.eval(f"write_def -output {tmp_path}/o.def -sections {{components nets}}")
     text = (tmp_path / "o.def").read_text()
     assert "- out_q INV_RP " in text.split("\nCOMPONENTS")[1]
     nets = text.split("\nNETS")[1]

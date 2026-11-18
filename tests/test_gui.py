@@ -281,9 +281,11 @@ def test_menu_and_toolbar(loaded):
              for a in w.menuBar().actions()}
     assert menus == {"File": ["Close Window"],
                      "Edit": ["Select", "Stretch", "Move", "Snap (tracks, edges, grid)", "Delete",
-                              "Undo Edit", "Move Spine...", "Swap Spine Head", "Shortcuts..."],
+                              "Undo Edit", "Move Spine...", "Swap Spine Head", "Highlight...",
+                              "Shortcuts..."],
                      "View": ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected",
-                              "Ruler", "Clear Rulers", "Show View Panel"],
+                              "Ruler", "Clear Rulers", "Show View Panel",
+                              "Show DRC Violations"],
                      "Select": ["Clear Selection"]}
     assert [a.text() for a in w.toolbar.actions() if a.text()] == \
         ["Fit", "Zoom Selected", "Blink Selected", "Zoom In", "Zoom Out", "Move Spine..."]
@@ -325,8 +327,8 @@ def test_shortcuts_list_and_create(loaded, tmp_path, monkeypatch):
     assert [new.action_box.itemText(i) for i in range(new.action_box.count())] == \
         ["Fit", "Zoom In", "Zoom Out", "Zoom Selected", "Blink Selected", "Ruler",
          "Clear Rulers", "Select", "Stretch", "Move", "Snap (tracks, edges, grid)",
-         "Delete", "Undo Edit", "Move Spine...", "Swap Spine Head", "Clear Selection",
-         "Shortcuts..."]                                       # all but Close Window
+         "Delete", "Undo Edit", "Move Spine...", "Swap Spine Head", "Highlight...",
+         "Clear Selection", "Shortcuts..."]                                       # all but Close Window
     assert w.act_delete.shortcut().isEmpty()                  # Delete: none until created
     assert w.set_user_shortcut("delete", "Del") is None
     assert w.act_delete.shortcut() == QKeySequence("Del")
@@ -533,6 +535,48 @@ def test_shift_drag_selects_all_ports_inside(loaded):
     _drag(w, w.canvas.mapFromScene(scene(-1, 31)), w.canvas.mapFromScene(scene(1, 29)),
           mods=Qt.ShiftModifier | Qt.ControlModifier)
     assert len(loaded.split_list(loaded.eval("get_db selected"))) == 3
+
+
+def test_ctrl_drag_only_prints_the_box(loaded):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QApplication
+    from core.gui.canvas import scene
+    w = _view(loaded)
+    w.set_all_layers(True)
+    w.on_select(["port:top/c"], "replace")
+    loaded.out.seek(0)
+    loaded.out.truncate()
+    QApplication.clipboard().setText("before")
+    transform = w.canvas.transform()
+    pixel = 1 / abs(transform.m11())
+    # around ports a and b, drawn from the lower right corner to the upper left
+    _drag(w, w.canvas.mapFromScene(scene(25, -1)), w.canvas.mapFromScene(scene(5, 1)),
+          mods=Qt.ControlModifier)
+    lines = loaded.out.getvalue().splitlines()
+    assert len(lines) == 1 and lines[0][0] == "{" and lines[0][-1] == "}"   # the box only
+    box = [float(v) for v in lines[0][1:-1].split()]
+    assert box == pytest.approx([5, -1, 25, 1], abs=2 * pixel)    # x1 y1 x2 y2, sorted
+    grid = w.canvas.layout.grid or 0.001
+    assert all(v / grid == pytest.approx(round(v / grid), abs=1e-6) for v in box)
+    assert w.statusBar().currentMessage() == f"Box: {lines[0]} (copied)"
+    assert QApplication.clipboard().text() == lines[0]             # ready to paste as -area
+    assert w.canvas.transform() == transform                       # no zoom
+    assert loaded.eval("get_db selected") == "port:top/c"          # the selection stays
+    assert w.canvas._band_mode is None
+    # a Ctrl+click is still add or remove: nothing printed as a box
+    loaded.out.seek(0)
+    loaded.out.truncate()
+    p = w.canvas.mapFromScene(scene(10.0, 0.2))
+    _drag(w, p, p, mods=Qt.ControlModifier)
+    assert sorted(loaded.split_list(loaded.eval("get_db selected"))) == \
+        ["port:top/a", "port:top/c"]
+    assert "{" not in loaded.out.getvalue()
+    assert QApplication.clipboard().text() == lines[0]             # a click copies nothing
+    # the ruler keeps its clicks
+    w.act_ruler.setChecked(True)
+    _drag(w, w.canvas.mapFromScene(scene(25, -1)), w.canvas.mapFromScene(scene(5, 1)),
+          mods=Qt.ControlModifier)
+    assert w.canvas.ruler_in_progress() and "{" not in loaded.out.getvalue()
 
 
 def test_segment_touches_rect():

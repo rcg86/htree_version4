@@ -240,19 +240,21 @@ def test_tables_not_applied_are_named(rules):
 def test_routed_spine(routed):
     """The test spine is routed clean but for the straps of the L2 and L3
     cells: 3.12 long on a level pitch of 2.88, so those of different nets
-    on one track overlap."""
+    on one track overlap, the more for the routes lengthening them."""
     s = routed
     count, found, text = check(s)
-    assert list(found) == ["Shorts"] and count == 6
-    assert sum("strap:sp_L2_inv1/5 (sp_L1_inv1_Y) and strap:sp_L3_inv1/5 (sp_L2_inv1_Y) "
-               "overlap 0.24 x 0.72" in v for v in found["Shorts"]) == 1
-    assert all("strap:sp_L" in v for v in found["Shorts"])
-    assert summary(text) == {("short", "-", "IA"): 6, ("spacing", "tech", "-"): 0,
+    assert list(found) == ["Shorts"] and count == 2
+    assert found["Shorts"] == [
+        "IA {4.14 7.7 4.5 8.42}  strap:sp_L2_inv1/5 (sp_L1_inv1_Y) and strap:sp_L3_inv1/5 "
+        "(sp_L2_inv1_Y) overlap 0.36 x 0.72",
+        "IA {4.14 10.58 4.5 11.3}  strap:sp_L2_inv1/3 (sp_L2_inv1_Y) and strap:sp_L3_inv1/3 "
+        "(sp_L3_inv1_Y) overlap 0.36 x 0.72"]
+    assert summary(text) == {("short", "-", "IA"): 2, ("spacing", "tech", "-"): 0,
                              ("width", "tech", "-"): 0, ("spacing", "custom", "-"): 0,
                              ("width", "custom", "-"): 0, ("open", "signal", "-"): 0,
                              ("open", "power", "-"): 0}
     assert "  Nets  : 5 signal nets, 2 power nets" in text     # 4 of the spine, its root net
-    assert "91 without a definition" in text
+    assert "107 without a definition" in text
 
 
 def test_via_pads(routed):
@@ -260,10 +262,10 @@ def test_via_pads(routed):
     s.eval("assign_via_for_route -via {V_D12_H1 V_H1_H2 V_H2_G1 V_G1_G2 V_G2_IA V_IA_IB}")
     out_of(s)
     count, found, text = check(s)
-    assert "182 via pads" in text and "without a definition" not in text
-    # the pads of the overlapping straps' vias are in the same six shorts
-    assert count == 12 and list(found) == ["Shorts"]
-    assert sum("via:" in v for v in found["Shorts"]) == 6
+    assert "214 via pads" in text and "without a definition" not in text
+    # the pads of the overlapping straps' vias are in the same two shorts
+    assert count == 6 and list(found) == ["Shorts"]
+    assert sum("via:" in v for v in found["Shorts"]) == 4
     assert all(v.startswith("IA {4.") for v in found["Shorts"])
     # The IA pad at the L1 wire's first crossing ends at x 1.64, 0.02 past the
     # strap extension: another net's wire from there abuts the pad alone.
@@ -329,8 +331,8 @@ def test_open_power(routed):
 
 def test_layer_range_shapes(routed):
     s = routed
-    assert check(s, "-layer_range IA")[0] == 6
-    assert check(s, "-layer_range IB:IA")[0] == 6          # either order
+    assert check(s, "-layer_range IA")[0] == 2
+    assert check(s, "-layer_range IB:IA")[0] == 2          # either order
     count, _, text = check(s, "-layer_range IB")
     assert count == 0
     assert "check_drc: layers IB\n" in text and " pin shapes on IB\n" in text
@@ -343,7 +345,7 @@ def test_layer_range_opens(routed):
     for r in ("D12:IB", "H2:IA", "IA:IB"):
         assert check(s, f"-check_open_only -layer_range {r}")[0] == 0
     # Without its crossing box the L1 cell's output strap has no way up.
-    s.eval("delete_wire -wires net_wire:sp_L1_inv1_Y/6")
+    s.eval("delete_wire -wires net_wire:sp_L1_inv1_Y/2")
     _, found, _ = check(s, "-check_open_only -layer_range IA:IB")
     assert len(found["Opens, signal nets"]) == 1
     assert "net sp_L1_inv1_Y: no path to IB from " in found["Opens, signal nets"][0]
@@ -392,17 +394,17 @@ def test_only_options(routed):
 def test_report_file(routed, tmp_path):
     s = routed
     path = tmp_path / "drc.rpt"
-    assert s.eval(f"check_drc -file {{{path}}}") == "6"
+    assert s.eval(f"check_drc -file {{{path}}}") == "2"
     screen = out_of(s)
     report = path.read_text()
-    assert "Shorts: 6" in report and "Shorts: 6" not in screen
-    assert "  short     -       IA      6" in report and "  short     -       IA      6" in screen
+    assert "Shorts: 2" in report and "Shorts: 2" not in screen
+    assert "  short     -       IA      2" in report and "  short     -       IA      2" in screen
     assert f"Report written to '{path}'" in screen and "HT4-250" in screen
-    assert report.count("\n  IA {") == 6
+    assert report.count("\n  IA {") == 2
     assert "HT4-248" in err(s, f"check_drc -file {{{path}}}")
     path.write_text("old")
     s.eval(f"check_drc -file {{{path}}} -overwrite")
-    assert "Shorts: 6" in path.read_text()
+    assert "Shorts: 2" in path.read_text()
     assert "HT4-249" in err(s, f"check_drc -file {{{tmp_path / 'none' / 'drc.rpt'}}}")
 
 

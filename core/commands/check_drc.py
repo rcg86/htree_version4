@@ -8,7 +8,8 @@ the tool made for shorts, spacing and width violations, and opens.
 
 Spacing and width are checked twice and reported apart: against the tech LEF
 (tech) and against the route rule of each wire (custom). A summary table is
-printed, then one line per violation with its box.
+printed, then one line per violation with its box. The run is kept for the
+GUI (db.drc), which lists the violations in its DRC table.
 """
 
 import os
@@ -73,7 +74,10 @@ def run(session, argv):
 
     head = _checked(design, tech, order, layers, shorts or spacing, opens)
     table = _summary(found, ran, order)
-    detail = _detail(found, ran, order)
+    sections = _sections(found, ran, order)
+    detail = _detail(sections)
+    # For the DRC table of the GUI.
+    db.drc = drc.Report(head, table, [(title, v) for title, mine in sections for v in mine])
     if path is None:
         for line in head + table + detail:
             info(line, out)
@@ -155,14 +159,22 @@ def _summary(found, ran, order):
     return lines
 
 
-def _detail(found, ran, order):
-    """One line per violation: layer, box, what is wrong."""
-    lines = []
+def _sections(found, ran, order):
+    """[(title, its violations)] of the checks that found any, in the order
+    of the report."""
+    sections = []
     for check, source, title in ran:
         mine = sorted((v for v in found if (v.check, v.source) == (check, source)),
                       key=_layer_key(order))
-        if not mine:
-            continue
+        if mine:
+            sections.append((title, mine))
+    return sections
+
+
+def _detail(sections):
+    """One line per violation: layer, box, what is wrong."""
+    lines = []
+    for title, mine in sections:
         lines.append(f"{title}: {len(mine)}")
         for v in mine:
             lines.append(f"  {v.layer + ' ' if v.layer else ''}{drc.box_text(v.bbox)}  {v.text}")

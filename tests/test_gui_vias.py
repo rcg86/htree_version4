@@ -43,7 +43,8 @@ def test_a_via_row_between_its_two_layers(routed):
     assert [l.via for l in rows] == [("D12", "H1"), ("H1", "H2"), ("H2", "G1"), ("G1", "G2"),
                                      ("G2", "IA"), ("IA", "IB")]
     assert [l.cut for l in rows] == ["C1", "C2", "C3", "C4", "C5", "C6"]
-    assert [l.port_shapes for l in rows] == [16, 16, 16, 16, 16, 11]     # its vias
+    # its vias: a pin stack per pin rectangle (6 an instance: Y and VDD have two)
+    assert [l.port_shapes for l in rows] == [24, 24, 16, 16, 16, 11]
     assert all(l.in_tech for l in rows)                         # checked at start
     assert len({l.color for l in rows}) == 6                    # a colour of its own each,
     assert not {l.color for l in rows} & {l.color for l in lay.layers if not l.via}
@@ -64,7 +65,7 @@ def test_row_colours_with_more_layers_than_colours():
 def test_vias_carry_their_row_and_net_class(routed):
     lay = load_layout(routed.db)
     rows = vias.rows(routed.db)
-    assert len(lay.vias) == len(rows) == 91                     # no definition: one box each
+    assert len(lay.vias) == len(rows) == 107                    # no definition: one box each
     assert all(v.cut and v.type == "rect" for v in lay.vias)
     by = {vias.handle(r): r for r in rows}
     for v in lay.vias:
@@ -72,7 +73,7 @@ def test_vias_carry_their_row_and_net_class(routed):
         assert v.layer == via_layer(r["bottom"], r["top"]) and v.between == (r["bottom"], r["top"])
         assert tuple(v.points) == box_of(r)
     assert Counter((v.layer, v.cls) for v in lay.vias if v.layer == "via_D12_H1") == \
-        {("via_D12_H1", "signal"): 8, ("via_D12_H1", "power"): 4, ("via_D12_H1", "ground"): 4}
+        {("via_D12_H1", "signal"): 12, ("via_D12_H1", "power"): 8, ("via_D12_H1", "ground"): 4}
     assert {v.cls for v in lay.vias if v.layer == "via_IA_IB"} == {"signal"}
 
 
@@ -91,8 +92,8 @@ def test_a_via_without_a_definition_gets_a_row(spine):
                           "M1"]                                 # each after its bottom layer
     row = lay.layer("via_H2_IA")
     assert (row.via, row.cut, row.port_shapes, row.in_tech) == (("H2", "IA"), None, 8, True)
-    assert lay.layer("via_D12_H2").port_shapes == 8 and not lay.layer("D12").in_tech
-    assert len(lay.vias) == 16 and all(v.cut for v in lay.vias)
+    assert lay.layer("via_D12_H2").port_shapes == 12 and not lay.layer("D12").in_tech
+    assert len(lay.vias) == 20 and all(v.cut for v in lay.vias)
 
 
 def test_layer_range_puts_a_row_before_its_top_layer(session, write_lef):
@@ -174,7 +175,7 @@ def test_rows_and_vias_in_the_window(shown):
         "Vias of power nets between IA and IB"
     assert w.object_boxes["vias"].isEnabled() and w.object_boxes["vias"].isChecked()
     assert {n: len(items) for n, items in w.canvas.via_items.items()} == \
-        dict(zip(ROWS, [16, 16, 16, 16, 16, 11]))
+        dict(zip(ROWS, [24, 24, 16, 16, 16, 11]))
     assert all(isinstance(i, ViaCut) for items in w.canvas.via_items.values() for i in items)
     assert all(seen(w, n) == {True} for n in ROWS)
     r = next(r for r in vias.rows(s.db) if r["kind"] == "cross")

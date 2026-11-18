@@ -15,7 +15,9 @@ DESCRIPTION
       stub_cross  a crossing box of route_final_stub
       pg_cross    a crossing box of optimize_pg_connection
       auto        a via stretch_wire added
-      pin         a route_pin pin wire over the pin shape it starts from
+      insert      a via insert_vias added
+      pin         a route_pin pin wire over a pin shape it starts from:
+                  one for every rectangle of the pin under the wire
       strap       a route_pin pin wire under the strap it reaches
     The via objects are derived from the routing each time it changes:
     the routers still write a layer change as a crossing box (a net_wire
@@ -58,6 +60,12 @@ DESCRIPTION
     signal, power and ground nets): a via without a definition as its
     box with a cross, one with a definition as the definition's cuts and
     pads at its place. See 'man gui_show'.
+
+    route_pin, route_net, route_track and route_final_stub assign a
+    definition themselves to each net and layer pair that has none,
+    after they route (see route_net, "Via definitions"). Those show here
+    as the net's own assignments. An assignment made here for every net
+    keeps them from assigning that layer pair; -reset removes theirs too.
 
 OPTIONS
     -via <via_defs>
@@ -108,7 +116,7 @@ EXAMPLES
     Via assignments (layers, cut layer, net, via definition, vias using it):
       IA/IB      C6     (every net)      VIA_IA_IB  11
       G2/IA      C5     (every net)      VIA_G2_IA  16
-    Vias: 91, with a definition 27, without: D12/H1(16) H1/H2(16) H2/G1(16) G1/G2(16)
+    Vias: 107, with a definition 27, without: D12/H1(24) H1/H2(24) H2/G1(16) G1/G2(16)
     htree> assign_via_for_route -via VIA_IA_IB_WIDE -nets [get_db nets *L1*]
     htree> get_db [get_db nets *L1*] .vias
     via:sp_L1_inv1_Y/1 via:sp_L1_inv1_Y/2 ...
@@ -129,4 +137,4 @@ ERRORS
 
 SEE ALSO
     get_db, get_obj_in_area, read_tech, read_def, route_net, route_pin,
-    route_final_stub, stretch_wire
+    route_final_stub, stretch_wire, insert_vias

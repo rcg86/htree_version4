@@ -63,6 +63,9 @@ DESCRIPTION
         whole range wanted, not the layers to add: after -min_layer G1
         -max_layer IB, -min_layer H1 -max_layer IB adds H1 and H2.
         Without the two options the whole file is read again.
+        A single layer is taken out with remove_layer and put in with
+        add_layer, without giving the range again; read_tech forgets
+        what remove_layer removed.
       - The range is kept with the tech data (tech .min_layer and
         .max_layer, empty when not given; write_db saves it).
 
@@ -119,4 +122,4 @@ ERRORS
              assignments or route wires of the database on it
 
 SEE ALSO
-    get_db, write_db, read_db, gui_show
+    remove_layer, add_layer, get_db, write_db, read_db, gui_show

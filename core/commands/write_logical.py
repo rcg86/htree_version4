@@ -11,10 +11,14 @@ Step 1 creates every spine net (the output net of each spine cell) and the
 nets connect_pin made. Then, level by level from the root, each cell is
 created, placed (lower-left corner, microns) and its pins connected as the
 netlist has them (core/netlist.py: the spine, then connect_pin and
-disconnect_pin). A spine's root takes the spec's root_net, which must already
-exist in the design, as the net of a port must. Instances that belong to no
-spine (create_inst) are created and placed last, with the connections
-connect_pin gave them.
+disconnect_pin). A spine's root takes its root net
+(netlist.root_net): one htree named (<spine>_primary_input, or a name
+rename_obj gave it that is no port's net) is created; one the spec names
+must already exist in the design, as the net of a port must. Instances
+that belong to no spine (create_inst) are created and placed last, with the connections
+connect_pin gave them. The script starts with
+set_db timing_enable_simultaneous_setup_hold_mode false and ends with
+set_db timing_enable_simultaneous_setup_hold_mode true.
 """
 
 import os
@@ -34,6 +38,8 @@ WRITE_FAILED = 186
 # DEF orientation -> Innovus orientation
 ORIENT = {"N": "R0", "S": "R180", "W": "R90", "E": "R270", "FN": "MY", "FS": "MX",
           "FW": "MX90", "FE": "MY90"}
+# The first and the last line: the script runs with simultaneous setup/hold off.
+SETUP_HOLD = "set_db timing_enable_simultaneous_setup_hold_mode"
 
 
 def run(session, argv):
@@ -60,7 +66,8 @@ def run(session, argv):
 def logical_text(db):
     """(script text, nets created, instances created)."""
     from core import netlist
-    lines = ["# htree4 logical changes: Innovus script, source it to reproduce them.", ""]
+    lines = [f"{SETUP_HOLD} false",
+             "# htree4 logical changes: Innovus script, source it to reproduce them.", ""]
 
     def sep(title):
         lines.extend(["# " + "=" * 60, f"# {title}", "# " + "=" * 60, ""])
@@ -68,10 +75,18 @@ def logical_text(db):
     spines = [db.spine_row(s) for s in db.spine_names()]
     nets = [r for s in spines for r in db.spine_net_rows(s["id"])]
     sep("Step 1: Create all nets")
+    on_pins = netlist.by_net(db)
+    roots = 0
     for s in spines:
-        spec = db.spine_spec_row(s["spec"])
-        root = (spec["root_net"] if spec is not None else None) or "net"
-        lines.append(f"# spine {s['name']}: root net {root} must exist in the design")
+        root = netlist.root_net(db, s)
+        if root not in on_pins:
+            pass                     # its root input is on another net (connect_pin)
+        elif netlist.made_root(db, s):
+            lines.append(f"# spine {s['name']}: root net")
+            lines.append(f"create_net -name {_word(root)}")
+            roots += 1
+        else:
+            lines.append(f"# spine {s['name']}: root net {root} must exist in the design")
         for r in db.spine_net_rows(s["id"]):
             lines.append(f"create_net -name {_word(r['name'])}")
         lines.append("")
@@ -105,7 +120,8 @@ def logical_text(db):
         for inst in others:
             count += 1
             lines += _inst_lines(db, inst) + _connect_lines(db, inst, pins) + [""]
-    return "\n".join(lines) + "\n", len(nets) + len(made), count
+    lines.append(f"{SETUP_HOLD} true")
+    return "\n".join(lines) + "\n", len(nets) + len(made) + roots, count
 
 
 def _connect_lines(db, inst, pins):

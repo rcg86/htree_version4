@@ -61,8 +61,13 @@ DESCRIPTION
         to a notch of the boundary moves to the nearest track that keeps
         it inside. A stub that fits inside on none of the tracks tried
         (it runs out of the die) is not routed (HT4-178): move the spine.
-      - Net: the stub wire belongs to its leaf's net (the net that drives
-        the stub, e.g. temp_L7_inv1_Y) and is stored with it as kind stub.
+      - Net: the stub wire carries its leaf's net (the net that drives
+        the stub, e.g. sp_L3_inv1_Y: its .net and .shield_net) and is
+        stored under the stub's own name, <leaf net>_stub, as kind stub:
+        net_wire:sp_L3_inv1_Y_stub/<n>, as are its crossing boxes and
+        shields, apart from the leaf's own wires (route_net's). A
+        database written before stubs had their own name is read into
+        these names.
         route_net and route_final_stub each replace only their own wires of
         the net, so either can be run again without losing the other's.
       - Join: where the leaf's route (route_net) overlaps the stub wire on
@@ -132,6 +137,20 @@ DESCRIPTION
 
     write_def writes the stub wires under their net in NETS. The GUI draws
     them with the other route wires (Routes checkbox).
+
+    Via definitions. At the end, every via of the routing that has no
+    via definition gets one: for each net and layer pair with no
+    assignment of assign_via_for_route (neither the net's own nor one for
+    every net), the definition of those layers that fits the most of the
+    net's vias, each pad inside the net's own metal on its layer (wires,
+    straps, pin wires, pin shapes) and each cut inside both. A DEFAULT via
+    of the tech LEF comes before another (a power via the DEF generated),
+    then, of those that fit every via, the one with the most cuts, then
+    pads that run the way their layers do, then the smallest pads. The
+    choice is stored as the net's assignment (assign_via_for_route lists
+    it and can change it), so write_def writes every via. Printed: the
+    definitions given, per layer pair, with the number of nets and vias;
+    HT4-297 when no definition of a pair fits some of the vias.
 
 OPTIONS
     -rule <route_rule>
@@ -213,7 +232,10 @@ ERRORS
     HT4-193  WARN: stubs of the spine that are not routed now have wires
              of an earlier run that are not on the tracks the stubs of
              the spine share now; route them again
+    HT4-286  WARN: a fixed stub (set_db .route_status fixed) is
+             not routed again
+    HT4-297  WARN: vias that no definition of their layer pair fits
 
 SEE ALSO
     route_net, create_spine, move_spine_to_boundary,
-    assign_track_for_route, create_route_rule, delete_route, write_def
+    assign_track_for_route, create_route_rule, delete_route, write_def, assign_via_for_route

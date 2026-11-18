@@ -13,6 +13,17 @@ legal, free site do not move; fixed ones (.place_status fixed) never move.
 Each instance's route_pin straps and pin wires move with it; the nets whose
 routes it moves off are listed to route again.
 
+The orientation for pin access (not with -keep_orientation). A cell whose
+signal runs up or down (its input net's driver below it and its output's
+loads above, or the other way: more in y than in x) is put in the
+orientation, N or FS (flipped about the x axis), that has its input pin on
+the side the signal comes from: route_pin then gives the input the strap on
+that side, so the net coming in and the net going out can pass the cell on
+one track (route_net). A cell whose pins are as high in both is left as it
+is. A cell that changes orientation goes on a site of the new one (an FS row
+for FS); its pin routes would be upside down, so they are removed: run
+route_pin on it again (the list is printed).
+
 Then the spacing of set_place_constraint: two instances closer than their
 space_x in x and space_y in y at the same time are moved apart, each along
 its spine (a cell of a vertical spine moves in y, of a horizontal one in x,
@@ -34,7 +45,7 @@ from core.placement import placed_bbox, rect_in_polygon
 NAME = "legalize_placement"
 SUMMARY = "Place instances on the free legal sites of their cells (DEF rows, LEF SITE)"
 # Options and their kind (value | flag), also used by <tab> completion.
-OPTIONS = {"-inst": "value"}
+OPTIONS = {"-inst": "value", "-keep_orientation": "flag"}
 
 USAGE = 1
 NO_INST = 210
@@ -42,6 +53,8 @@ NO_ROWS = 211
 NO_SITE = 212
 RECONNECT = 213
 TOO_CLOSE = 214
+NO_ACCESS = 288
+OFF_TRACKS = 289
 PASSES = 20                  # spacing passes: each moves every pair still too close
 SEARCH = 200                 # sites / rows tried in a direction for a spaced-out place
 TOL = 1e-6
@@ -63,7 +76,7 @@ def run(session, argv):
                          "with ROW statements first")
     out = session.out
     boxes = {r["name"]: objects.inst_bbox(db, r) for r in db.inst_rows()}
-    moved, kept, fixed, missed, worst = [], [], [], [], 0.0
+    moved, kept, fixed, missed, flipped, worst = [], [], [], [], [], 0.0
     for name in names:
         r = db.inst_row(name)
         if (r["status"] or "placed").lower() in ("fixed", "cover"):
@@ -75,7 +88,17 @@ def run(session, argv):
             continue
         site = cell["site"] if db.site_rows_of(cell["site"]) else None
         others = [b for n, b in boxes.items() if n != name and b is not None]
-        spot = _free_site(db, r, cell, site, others)
+        orient = r["orient"] or "N"
+        want = None if opts["-keep_orientation"] else _access_orient(db, name, cell, orient)
+        spot = None
+        if want is not None and want != orient:
+            spot = _free_site(db, r, cell, site, others, want)
+            if spot is not None:                  # flipped: its pin routes are upside down
+                db.set_inst_orient(name, want)
+                db.set_straps(name, [])
+                flipped.append(f"{name} {orient} -> {want}")
+        if spot is None:
+            spot = _free_site(db, r, cell, site, others)
         if spot is None:
             missed.append(name)
             continue
@@ -93,24 +116,202 @@ def run(session, argv):
     if missed:
         warn(NO_SITE, f"no free site of the cell's site and orientation within one cell "
              f"width + height of {' '.join(missed)}; left where they are", out)
+    slid, far = _slide_to_tracks(db, names, boxes)
+    moved += [n for n, _ in slid if n not in moved]
+    if slid:
+        info(f"  {len(slid)} instance(s) moved across their spine so their straps reach the "
+             f"tracks of the spine spec (track: input / output): "
+             + ", ".join(f"{n} {_num(d)}" for n, d in slid), out)
+    if far:
+        warn(OFF_TRACKS, f"legalize_placement: {len(far)} instance(s) cannot reach the tracks "
+             f"of the spine spec: " + "; ".join(far), out)
     spread = _spread(db, names, boxes, out)
     moved += [n for n in spread if n not in moved]
+    if spread and not opts["-keep_orientation"]:   # moved apart: turned the way they face now
+        again = _turn(db, spread, boxes, flipped)
+        if again:
+            moved += [n for n in again if n not in moved]
+            moved += [n for n in _spread(db, names, boxes, out) if n not in moved]
+    if flipped:
+        info(f"  {len(flipped)} instance(s) turned so the input pin faces the incoming net "
+             f"(their pin routes removed): {', '.join(flipped)}; route_pin -inst "
+             f"{{{' '.join(dict.fromkeys(f.split()[0] for f in flipped))}}}", out)
     touched = _nets_of(db, moved)
     if touched:
         warn(RECONNECT, f"{len(touched)} routed net(s) lost their pin routes' positions; "
              f"route them again: route_net -net {{{' '.join(touched)}}} -rule <rule>", out)
+    _pin_access(db, names, touched, out)
     return tuple(f"inst:{n}" for n in moved)
 
 
-def _free_site(db, r, cell, site, others):
+def _pin_access(db, names, touched, out):
+    """Report the signal pins of names route_net cannot reach (core/pin_access.py)."""
+    from core import pin_access
+    rows = pin_access.check(db, names, ignore=touched)
+    if rows is None:
+        info("legalize_placement: pin access not checked: no track assignment numbered in x "
+             "(assign_track_for_route)", out)
+    elif rows:
+        warn(NO_ACCESS, f"legalize_placement: {len(rows)} signal pin(s) with no track route_net "
+             f"can reach them on (the nets to route again are not counted as in the way):", out)
+        for line in pin_access.report(rows):
+            info(line, out)
+    else:
+        info(f"legalize_placement: pin access: every signal pin of the {len(names)} "
+             f"instance(s) has a track to be reached on", out)
+
+
+def _slide_to_tracks(db, names, boxes):
+    """Move the cells of names that the spine spec gives tracks (track:
+    {input, output}, core/spine_tracks.py) across their stretch of the spine,
+    on whole sites of their row, the least distance that puts both tracks in
+    their straps' reach (max_extension each side, as wide as the rule's
+    wires), overlapping no other cell. Returns ([(name, dx)], [why not])."""
+    from core import pin_access, spine_tracks
+    wanted = set(names)
+    slid, far = [], []
+    reach_default = next((r["max_extension"] for r in db.strap_rows()
+                          if r["max_extension"] is not None), 3.0)
+    for spine in db.spine_names():
+        for name, (st, cin, cout, kin, kout) in spine_tracks.placed(db, spine).items():
+            if name not in wanted:
+                continue
+            missing = [f"{what} {k}" for what, k, c in (("input", kin, cin), ("output", kout, cout))
+                       if k and c is None]
+            if missing:
+                far.append(f"{name}: no track {' and '.join(missing)} past the spine's location "
+                           f"on {st.layer}")
+                continue
+            if not st.vertical:
+                continue                          # a track along y: a hop reaches it
+            r = db.inst_row(name)
+            if (r["status"] or "placed").lower() in ("fixed", "cover"):
+                continue
+            cell = db.lib_cell_row(r["ref_cell"])
+            coords = [c for c in (cin, cout) if c is not None]
+            width = pin_access._rule(db, None, st.layer)[0]
+            reach = max((s["max_extension"] or 0.0 for s in db.strap_rows(name)),
+                        default=reach_default)
+            box = objects.inst_bbox(db, r)
+            lo = max(coords) + width / 2 - cell["size_x"] - reach    # where the cell may start
+            hi = min(coords) - width / 2 + reach
+            if lo - TOL <= box[0] <= hi + TOL:
+                continue
+            if lo > hi + TOL:
+                far.append(f"{name}: its tracks x {' and '.join(_num(c) for c in coords)} are "
+                           f"farther apart than its straps reach")
+                continue
+            spot = _site_between(db, r, cell, lo, hi, [b for n, b in boxes.items()
+                                                       if n != name and b is not None])
+            if spot is None:
+                far.append(f"{name}: no free site between x {_num(round(lo, 3))} and "
+                           f"{_num(round(hi, 3))} (to reach x {' and '.join(_num(c) for c in coords)})")
+                continue
+            dx = round(spot - r["x"], 6)
+            db.move_insts([name], dx, 0.0, pin_routes=True)
+            boxes[name] = objects.inst_bbox(db, db.inst_row(name))
+            slid.append((name, dx))
+    return slid, far
+
+
+def _site_between(db, r, cell, lo, hi, others):
+    """The x of the free site in r's row (its site and orientation) nearest
+    r's x with the cell starting between lo and hi; None if there is none."""
+    site = cell["site"] if db.site_rows_of(cell["site"]) else None
+    query = "SELECT * FROM site_row WHERE orient = ? AND abs(y - ?) < 1e-6" + \
+        (" AND site = ?" if site else "")
+    args = (r["orient"] or "N", r["y"]) + ((site,) if site else ())
+    best = None
+    for row in db.conn.execute(query, args):
+        step = row["step_x"] or 0.0
+        if not step:
+            continue
+        first = row["x"]
+        last = row["x"] + row["num_x"] * step - cell["size_x"]
+        k1, k2 = math.ceil((max(lo, first) - first) / step - TOL), \
+            math.floor((min(hi, last) - first) / step + TOL)
+        for k in sorted(range(k1, k2 + 1), key=lambda k: abs(first + k * step - r["x"])):
+            x = round(first + k * step, 6)
+            box = placed_bbox(cell["size_x"], cell["size_y"], r["orient"], x, r["y"])
+            if not any(_overlap(box, o) for o in others):
+                if best is None or abs(x - r["x"]) < abs(best - r["x"]):
+                    best = x
+                break
+    return best
+
+
+def _turn(db, names, boxes, flipped):
+    """Turn those of names whose input no longer faces its net (after the
+    spacing moved them) onto the nearest free site of the new orientation.
+    Returns the names turned; appends to flipped."""
+    done = []
+    for name in names:
+        r = db.inst_row(name)
+        if (r["status"] or "placed").lower() in ("fixed", "cover"):
+            continue
+        cell = db.lib_cell_row(r["ref_cell"])
+        orient = r["orient"] or "N"
+        want = _access_orient(db, name, cell, orient)
+        if want is None or want == orient:
+            continue
+        site = cell["site"] if db.site_rows_of(cell["site"]) else None
+        others = [b for n, b in boxes.items() if n != name and b is not None]
+        spot = _free_site(db, r, cell, site, others, want)
+        if spot is None:
+            continue
+        db.set_inst_orient(name, want)
+        db.set_straps(name, [])
+        db.move_insts([name], round(spot[0] - r["x"], 6), round(spot[1] - r["y"], 6))
+        boxes[name] = objects.inst_bbox(db, db.inst_row(name))
+        flipped.append(f"{name} {orient} -> {want}")
+        done.append(name)
+    return done
+
+
+def _access_orient(db, name, cell, orient):
+    """N or FS: the orientation that puts the cell's input pin on the side
+    its signal comes from: above or below the cell, where the driver of its
+    input net is (farther in y than in x, by more than the cell's height).
+    None when it comes from beside the cell, has no driver, or the pins are
+    as high in both orientations."""
+    from core import netlist
+    from core.commands.add_buffer_on_net import _pin_offset
+    from core.commands.write_def import cell_pin
+    pin_in, pin_out = cell_pin(db, cell["name"], "in"), cell_pin(db, cell["name"], "out")
+    if not pin_in or not pin_out or orient not in ("N", "FS"):
+        return None
+    pins = netlist.pins(db).get(name, {})
+    centre = lambda inst: _centre(objects.inst_bbox(db, db.inst_row(inst)))
+    source = None
+    if pins.get(pin_in):
+        for e in netlist.ends(db, pins[pin_in]):
+            if e.drives:
+                source = objects.port_centre(db, e.pin) if e.kind == "port" else centre(e.inst)
+    here = _centre(objects.inst_bbox(db, db.inst_row(name)))
+    if source is None or abs(source[1] - here[1]) <= abs(source[0] - here[0]) + cell["size_y"]:
+        return None                               # comes from beside it: no matter
+    side = 1 if source[1] > here[1] else -1       # from above: the input the higher pin
+    for want in ("N", "FS"):
+        rise = _pin_offset(db, cell, pin_in, want)[1] - _pin_offset(db, cell, pin_out, want)[1]
+        if rise * side > TOL:                     # the input on the side it comes from
+            return want
+    return None
+
+
+def _centre(box):
+    return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+
+
+def _free_site(db, r, cell, site, others, orient=None):
     """The nearest (x, y) site for instance row r that overlaps none of the
     boxes in others, within one cell width + height; None if there is none.
+    orient: look in the rows of that orientation, not r's.
     A site with the cell inside the design boundary comes before a nearer
     one where it is not: a row can be lower than the cell, so a cell in a
     row at the edge of the die may reach across it."""
     w, h = cell["size_x"], cell["size_y"]
     reach = w + h
-    orient = r["orient"] or "N"
+    orient = orient or r["orient"] or "N"
     query = "SELECT * FROM site_row WHERE orient = ? AND y BETWEEN ? AND ?" + \
         (" AND site = ?" if site else "")
     args = (orient, r["y"] - reach, r["y"] + reach) + ((site,) if site else ())
@@ -138,7 +339,7 @@ def _free_site(db, r, cell, site, others):
     for d, x, y in sorted(set(candidates)):
         if d > reach + TOL:
             break
-        box = placed_bbox(w, h, r["orient"], x, y)
+        box = placed_bbox(w, h, orient, x, y)
         if any(_overlap(box, o) for o in others):
             continue
         if not boundary or rect_in_polygon(box, boundary):

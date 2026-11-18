@@ -47,7 +47,8 @@ NAME = "add_buffer_on_net"
 SUMMARY = "Put buffers on nets at even distances along their centre lines"
 # Options and their kind (value | flag), also used by <tab> completion.
 OPTIONS = {"-net": "value", "-ref_cell": "value", "-distance": "value",
-           "-first_distance": "value", "-last_distance": "value", "-name": "value"}
+           "-first_distance": "value", "-last_distance": "value", "-name": "value",
+           "-spec": "value"}
 
 USAGE = 1
 NO_NET = 256
@@ -96,12 +97,23 @@ def run(session, argv):
              f"(their load is a stub: this command does not buffer the stub nets): "
              f"{' '.join(leaves)}", out)
     plain = [n for n in (_plain(db, name, out) for name in plain) if n is not None]
-    routed = [name for name in [row["name"] for _, row in nets] + [n.row["name"] for n in plain]
-              if netlist.routed(db, name)]
+    routed = [row["name"] for _, row in nets if netlist.routed(db, row["name"])]
     if routed:
-        raise HtreeError(ROUTED, f"add_buffer_on_net: routed net(s) {' '.join(routed)}: the "
-                         f"buffers would lie under their wires. Remove the routing first: "
-                         f"delete_route -nets {{{' '.join(routed)}}}")
+        raise HtreeError(ROUTED, f"add_buffer_on_net: routed spine net(s) {' '.join(routed)}: "
+                         f"buffers on the routes of a spine's nets are not made yet (only on "
+                         f"routed nets of no spine). Remove the routing first: delete_route "
+                         f"-nets {{{' '.join(routed)}}}")
+    on_route = [n for n in plain if netlist.routed(db, n.row["name"])]
+    plain = [n for n in plain if n not in on_route]
+    if on_route and last is not None:
+        raise HtreeError(USAGE, f"add_buffer_on_net: -last_distance is not taken on routed "
+                         f"nets yet ({' '.join(n.row['name'] for n in on_route)})")
+    routed_made = []
+    for net in on_route:                 # along the wires, cut and routed again
+        routed_made += _on_route(session, net, cell, ref, pin_in, pin_out, first, step,
+                                 opts.get("-name", f"{net.prefix}_buf"), opts.get("-spec"))
+    if on_route and not nets and not plain:
+        return tuple(f"inst:{n}" for n in routed_made)
 
     # everything is planned before anything is stored
     grid = db.tech_row()["manufacturing_grid"] if db.has_tech() else None
@@ -168,7 +180,7 @@ def run(session, argv):
              f"{_num(first)} um from the driver"
              + (f", the last {_num(last)} um from the pin of a load" if last else ""), out)
     if not plans:
-        return ()
+        return tuple(f"inst:{n}" for n in routed_made)
 
     info(f"add_buffer_on_net: {ref} every {_num(step)} um, the first {_num(first)} um from "
          f"the driver" + (f", the last {_num(last)} um from the pin of each load (x + y, "
@@ -196,7 +208,155 @@ def run(session, argv):
     info(f"Added {len(insts)} buffer(s) on {len(plans)} net(s), now {len(done) + len(rest)} "
          f"nets. Next: " + ("" if legal else "legalize_placement, ") + "route_pin for the buffers"
          + f", then route_net -net {{{' '.join(done + rest)}}} -rule <rule>", out)
-    return tuple(f"inst:{n}" for n in names)
+    return tuple(f"inst:{n}" for n in routed_made + names)
+
+
+def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spec):
+    """Buffers on a routed net of no spine (core/buffer_route.py): placed
+    under the route every step um along it, the wires cut there and the
+    pieces put on the buffers' nets, then route_pin on the buffers and
+    route_net on the nets, every piece held as it is. Returns the names of
+    the buffers."""
+    from core import auto_via, buffer_route as br
+    from core.commands import legalize_placement, route_net, route_pin
+    db, out = session.db, session.out
+    name = net.row["name"]
+    rule = db.net_route_rule(name)
+    if rule is None:
+        raise HtreeError(ROUTED, f"add_buffer_on_net: net {name} has wires but no route rule "
+                         f"(route_net sets it): route it with route_net first")
+    grid = route_net.Grid(db, route_net._rule_layers(db, rule))
+    lines, adj, bufs, top_loads = br.plan(db, name, net, cell, pin_in, pin_out, grid, first,
+                                          step, out)
+    if not bufs:
+        warn(SKIPPED, f"add_buffer_on_net: no buffer on {name}: no point {_num(first)} + k x "
+             f"{_num(step)} um along its route lies before its last load", out)
+        return []
+    if len(bufs) > LIMIT:
+        raise HtreeError(TOO_MANY, f"add_buffer_on_net: {len(bufs)} buffers on net {name}, "
+                         f"more than {LIMIT}: check -distance ({_num(step)} um)")
+    grid_um = db.tech_row()["manufacturing_grid"] if db.has_tech() else None
+    snap = (lambda v: round(round(v / grid_um) * grid_um, 6)) if grid_um else \
+        (lambda v: round(v, 6))
+    w, h = cell["size_x"], cell["size_y"]
+    # under the route, clear of the other cells and their pin routes by the rule spacing
+    gap_um = max(grid.h.spacing, grid.v.spacing)
+    taken = [box for box in (br.footprint(db, r) for r in db.inst_rows()) if box]
+    ml, mb, mr, mt = br.margins(db, ref)
+    box_at = lambda x, y: (x - w / 2 - ml - gap_um, y - h / 2 - mb - gap_um,
+                           x + w / 2 + mr + gap_um, y + h / 2 + mt + gap_um)
+    strap_layer = next((s["layer"] for r in db.inst_rows() if r["ref_cell"] == ref
+                        for s in db.strap_rows(r["name"])), grid.h.name)
+    wires = [(r, br._rect(r)) for r in db.net_wire_rows() if r["layer"] == strap_layer]
+    slid, stuck = [], []
+    for b in list(bufs):                 # in order from the driver
+        line = b.line                    # the wires on the straps' layer but its own
+        others = [box for r, box in wires if not (
+            r["net"] == name and r["layer"] == line.row["layer"] and abs(
+                ((box[1] + box[3]) if line.horizontal else (box[0] + box[2])) / 2 - line.c) < TOL)]
+        if not br.free_spot(b, box_at, taken + others, step):
+            stuck.append(f"{_num(round(b.dist, 3))} um ({{{_num(round(b.point[0], 3))} "
+                         f"{_num(round(b.point[1], 3))}}})")
+            br.drop(b, bufs, lines, top_loads)
+            continue
+        if b.slid:
+            slid.append(b)
+        x1, y1, x2, y2 = box_at(*b.point)     # its own footprint, without the spacing
+        taken.append((x1 + gap_um, y1 + gap_um, x2 - gap_um, y2 - gap_um))
+    if stuck:
+        warn(OVERLAP, f"add_buffer_on_net: {name}: {len(stuck)} buffer(s) not made: no place "
+             f"within {_num(step / 2)} um along that branch of the route clear of the cells "
+             f"under it and their pin routes, at {', '.join(stuck)} from the driver; their "
+             f"loads stay on the net before them", out)
+    if not bufs:
+        return []
+    names_in_use = set(db.inst_names())
+    net_names = set(netlist.spine_nets(db)) | set(netlist.roots(db).values())
+    net_names |= {r["net"] for r in db.connection_rows() if r["net"]}
+    n = 0
+    for b in bufs:                       # numbered from the driver
+        n += 1
+        while _used(db, f"{prefix}_{n}", pin_out, names_in_use, net_names):
+            n += 1
+        b.name, b.net = f"{prefix}_{n}", f"{prefix}_{n}_{pin_out}"
+    if slid:
+        info(f"  {name}: buffers moved along the route, off the cells under it (um, + is "
+             f"away from the driver): "
+             + ", ".join(f"{b.name} {_num(round(b.slid, 3))}" for b in slid), out)
+    up_net = lambda b: name if b.up is None else b.up.net
+    up_key = lambda b: net.driver.key if b.up is None else f"{b.up.name}/{pin_out}"
+    insts, links = [], []
+    for b in bufs:
+        orient = br.orient_for(db, cell, pin_in, pin_out, b.upstream, _pin_offset)
+        insts.append((b.name, ref, snap(b.point[0] - w / 2), snap(b.point[1] - h / 2), orient))
+        links.append((b.name, pin_in, up_net(b), up_key(b)))
+        links += [(net.loads[key].inst, net.loads[key].pin, b.net, f"{b.name}/{pin_out}")
+                  for key in b.loads]
+    shielded = any(r["kind"] == "shield" for r in db.net_wire_rows(name))
+    db.add_net_buffers(insts, [], [], [], [], links)
+    names = [b.name for b in bufs]
+    if db.has_site_rows():
+        legalize_placement.run(session, ["-inst", " ".join(names)])
+    route_pin.run(session, ["-inst", " ".join(names)] + (["-spec", spec] if spec else []))
+
+    # cut the wires: each buffer's gap on every wire of its line
+    gaps = {id(line): [] for line in lines}
+    for b in bufs:
+        g = br.gap(db, b, grid)
+        for line in lines:
+            if line.horizontal == b.line.horizontal and abs(line.c - b.line.c) < TOL and \
+                    line.row["layer"] == b.line.row["layer"]:
+                gaps[id(line)].append(g)
+        turns = br.junctions_in(adj, b.line, *g)
+        if turns:
+            warn(OVERLAP, f"add_buffer_on_net: {b.name} is cut out of {name} where its route "
+                 f"turns or branches ({' '.join(f'{{{_num(x)} {_num(y)}}}' for x, y in turns)}): "
+                 f"route_net joins the pieces again", out)
+    old = [line.row for line in lines]
+    was_fixed = {r["id"] for r in old if r["status"] == "fixed"}
+    new_rows = []                        # (net, rect text, keep fixed)
+    for line in lines:
+        for p1, p2, lab in br.pieces(line, gaps[id(line)]):
+            new_rows.append((name if lab is None else lab.net, line.row["layer"],
+                             br.text(br.piece_rect(line, p1, p2)), line.row["id"] in was_fixed))
+    db.delete_wires([("net_wire", r["id"]) for r in old])
+    auto_via.drop(db, [f"net_wire:{name}/{r['seq']}" for r in old])
+    made = db.add_net_wires([(n_, "wire", layer, rect, None, None)
+                             for n_, layer, rect, _ in new_rows])
+    ids = [db.net_wire_row(n_, seq)["id"] for n_, seq in made]
+    for k in ids:                        # held as they are while route_net joins them
+        db.set_wire_fixed(k, True)
+    nets = [name] + [b.net for b in bufs]
+    info(f"add_buffer_on_net: {name}: {len(bufs)} buffer(s) along its route, its {len(old)} "
+         f"wire(s) cut into {len(made)} piece(s) on {len(nets)} net(s); route_net joins them "
+         f"to the pins", out)
+    try:
+        route_net.run(session, ["-net", " ".join(nets), "-rule", rule]
+                      + (["-shield"] if shielded else []))
+    finally:
+        for k, (_, _, _, keep) in zip(ids, new_rows):
+            if not keep:
+                db.set_wire_fixed(k, False)
+    _report_route(db, name, bufs, top_loads, pin_out, out)
+    _check_place(db, names, out)
+    return names
+
+
+def _report_route(db, name, bufs, top_loads, pin_out, out):
+    width = max(len(b.name) for b in bufs)
+    info(f"  {name}: {len(bufs)} buffer(s) along its route", out)
+    info(f"    {'Buffer':<{width}}  {'From driver':>11}  Centre               Input net -> "
+         f"output net", out)
+    for b in bufs:
+        box = objects.inst_bbox(db, db.inst_row(b.name))
+        centre = f"{{{_num(round((box[0] + box[2]) / 2, 3))} {_num(round((box[1] + box[3]) / 2, 3))}}}"
+        info(f"    {b.name:<{width}}  {_num(round(b.dist, 3)):>11}  {centre:<19}  "
+             f"{name if b.up is None else b.up.net} -> {b.net}", out)
+    for key in top_loads:
+        info(f"    load {key}: on {name}, before the first buffer", out)
+    for b in bufs:
+        for key in b.loads:
+            info(f"    load {key}: on {b.net}, behind {b.name}", out)
 
 
 def _um(opts, name):

@@ -104,6 +104,8 @@ class ViaShape:
     points: List[float]          # x y x y ... (rect: x1 y1 x2 y2)
     cut: bool = True             # False: a pad on the via's bottom or top layer
     cls: str = "signal"          # signal | power | ground (net_class)
+    net: str = ""                # the net it carries (a shield's: its power net)
+    source: str = ""             # the wire it is derived from: net_wire: or pin_wire:
 
 
 @dataclass
@@ -160,6 +162,7 @@ def load_layout(db) -> Layout:
     other layers that carry port shapes or tracks, in first-use order. Tech
     data read with a layer range (read_tech -min_layer, -max_layer): its
     layers only, what is on another layer is not listed and so not drawn.
+    Nor is a layer remove_layer took out of tech.
 
     Vias have rows of their own in the list, via_<bottom>_<top>, each after
     its bottom layer (before its top layer when the bottom one is not
@@ -169,6 +172,7 @@ def load_layout(db) -> Layout:
     lay = Layout()
     tech = db.layer_names() if db.has_tech() else []
     ranged = db.has_tech() and any(db.tech_layer_range())
+    removed = set(db.removed_layers())               # remove_layer: not listed either
     for name in tech:
         d = PREFERRED_TRACKS.get(db.layer_row(name)["direction"] or "")
         if d:
@@ -198,7 +202,7 @@ def load_layout(db) -> Layout:
             for name in drawn_layers(lay.tracks[-1], lay.preferred):
                 counts.setdefault(name, [0, 0])[1] += 1
         for name in db.track_assignment_layers():
-            if name in tech or not ranged:
+            if name in tech or not (ranged or name in removed):
                 lay.assignments.append(load_assignment(db, name))
     for inst in load_insts(db):
         lay.insts.append(inst)
@@ -223,7 +227,7 @@ def load_layout(db) -> Layout:
     kinds = vias.tech_layers(db)
     real = [LayerInfo(name, name in tech, PALETTE[i % len(PALETTE)], shapes, tracks)
             for i, (name, (shapes, tracks)) in enumerate(counts.items())
-            if (name in tech or not ranged)
+            if (name in tech or not (ranged or name in removed))
             and not (kinds.get(name, (0, ""))[1] == "cut" and not shapes and not tracks)]
     lay.via_colors = len(counts)
     lay.layers, lay.vias = with_via_rows(db, real, lay.via_colors)
@@ -315,7 +319,8 @@ def load_vias(db) -> List[ViaShape]:
                                      for k, c in enumerate(pts)])
                       for layer, kind, pts in shapes_of[r["via_def"]]]
         out += [ViaShape(vias.handle(r), via_layer(*between), between, kind, pts,
-                         layer == r["cut"], net_class(r["net"])) for layer, kind, pts in shapes]
+                         layer == r["cut"], net_class(r["net"]), r["net"], r["source"])
+                for layer, kind, pts in shapes]
     return out
 
 
@@ -335,9 +340,9 @@ def net_wire_strap(r) -> Strap:
     """The drawing of a net_wire row: crossing boxes and vias as outlines
     shown with their first layer; shields and power extensions labelled with
     their power net."""
-    cross = r["kind"].endswith("cross") or r["kind"] == "via"
+    cross = r["kind"].endswith("cross") or r["kind"] in ("via", "insert_via")
     shield = r["shield_net"] if r["kind"] in ("shield", "shield_ext", "stub_shield", "pg_ext",
-                                              "via") else None
+                                              "via", "insert_via") else None
     return Strap(f"net_wire:{r['net']}/{r['seq']}", shield or r["net"], r["layer"].split("/")[0],
                  tuple(float(v) for v in r["rect"].split()), label=shield or "",
                  outline=cross, cls=net_class(r["shield_net"] or r["net"]))

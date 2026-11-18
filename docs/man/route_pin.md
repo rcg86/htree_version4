@@ -26,10 +26,19 @@ DESCRIPTION
       - strap: the strap of its net the wire is to connect to. Power nets
         (VDD_SOC, VSS) take the nearest strap of their net. SIGNAL straps
         are placeholders for signal nets: A and Y are different nets, so
-        each signal pin gets a SIGNAL strap of its own, chosen for the
-        least total distance. With fewer SIGNAL straps than signal pins,
-        the pins left over are not routed (warning).
-    Vias between the pin, the pin wire and the strap are not made yet.
+        each signal pin gets a SIGNAL strap of its own, by where the pins
+        lie in the placed cell: the higher pin (the centre of its shapes)
+        the higher SIGNAL strap; of pins as high, the input first. Turning
+        the cell about the x axis (N to FS) so swaps their straps;
+        legalize_placement turns a cell so its input faces the net coming
+        in. With fewer SIGNAL straps than signal pins, the pins left over
+        are not routed (warning).
+    Vias. A pin wire has a via to its strap and one to every rectangle
+    of its pin under it: a pin of two rectangles is connected at both.
+    The rectangles are the pin's shapes on the highest tech layer below
+    the pin wire's layer. They are via objects (get_db vias, kinds strap
+    and pin; man assign_via_for_route), derived from the pin wire: a
+    stack of one via per cut layer.
 
     The defaults are the pin_connect spec (runs/pin_connect.rpt):
         nets     VSS VDD_SOC SIGNAL VSS SIGNAL VDD_SOC VDD_SOC
@@ -91,9 +100,23 @@ DESCRIPTION
     see-through, under the "Routes (route_pin, route_net)" checkbox and the layer
     checkboxes; Label writes each strap's net and each pin wire's pin on
     it. They can be selected (click, Shift+drag, right drag) or with
-    select_obj. write_db saves them. The vias of a pin wire, over its
-    pin and under its strap, are drawn under the Vias checkbox, each
-    with its via_<bottom>_<top> row of the layer list.
+    select_obj. write_db saves them. The vias of a pin wire, over each
+    rectangle of its pin and under its strap, are drawn under the Vias
+    checkbox, each with its via_<bottom>_<top> row of the layer list.
+
+    Via definitions. At the end, every via of the routing that has no
+    via definition gets one: for each net and layer pair with no
+    assignment of assign_via_for_route (neither the net's own nor one for
+    every net), the definition of those layers that fits the most of the
+    net's vias, each pad inside the net's own metal on its layer (wires,
+    straps, pin wires, pin shapes) and each cut inside both. A DEFAULT via
+    of the tech LEF comes before another (a power via the DEF generated),
+    then, of those that fit every via, the one with the most cuts, then
+    pads that run the way their layers do, then the smallest pads. The
+    choice is stored as the net's assignment (assign_via_for_route lists
+    it and can change it), so write_def writes every via. Printed: the
+    definitions given, per layer pair, with the number of nets and vias;
+    HT4-297 when no definition of a pair fits some of the vias.
 
 OPTIONS
     -inst <insts>
@@ -156,7 +179,10 @@ ERRORS
     HT4-025  no tech data loaded (read_tech)
     HT4-160  no instance matches a -inst word, or a cell has no SIZE
     HT4-161  the strap or pin wire layer is not in tech
-    HT4-162  WARN: the instance's old straps and pin wires were replaced
+    HT4-162  WARN: the instance's old straps and pin wires were replaced;
+             also when routes had lengthened the old straps: those
+             stretches are dropped with them and the nets named, to be
+             routed again (route_net)
     HT4-163  WARN: width or spacing below the tech rule (straps or pin
              wires), or a layer not in its direction in tech
     HT4-164  WARN: strap or pin wire edges off the manufacturing grid
@@ -168,7 +194,10 @@ ERRORS
              'pin_routing:' section, or has an unknown key or a bad value;
              the -dump file cannot be written
     HT4-168  the -dump file exists (use -overwrite)
+    HT4-286  WARN: an instance with straps or pin wires on a fixed
+             net is not routed again (set_db .route_status fixed)
+    HT4-297  WARN: vias that no definition of their layer pair fits
 
 SEE ALSO
     create_inst, create_route_rule, assign_track_for_route, get_db,
-    gui_show
+    gui_show, assign_via_for_route

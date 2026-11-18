@@ -14,7 +14,7 @@ routing layer at most route_auto_via_insertion_during_stretch layers away
 the wire's auto vias it no longer covers go.
 """
 
-from core import auto_via
+from core import auto_via, route_status
 from core.commands.move_wire import (BAD_SIZE, USAGE, check_tracks, rect_of, rect_text,
                                      wire_rows)
 from core.db import _num
@@ -48,6 +48,9 @@ def run(session, argv):
     if len(rows) != 1:
         raise HtreeError(USAGE, f"stretch_wire: one wire at a time, got {len(rows)}. {usage}")
     handle, table, row = rows[0]
+    if route_status.fixed_shapes(session.db, rows):
+        route_status.skip(NAME, "wire(s) of fixed nets", [handle], session.out)
+        return ""
     r = list(rect_of(row))
     k = EDGES[edge]
     old = r[k]

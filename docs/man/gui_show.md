@@ -16,7 +16,7 @@ DESCRIPTION
                  File    Close Window (Ctrl+W; the terminal session stays)
                  Edit    Select, Stretch (S), Move (M), Snap, Delete, Undo
                          Edit, Move Spine..., Swap Spine Head (H),
-                         Shortcuts...
+                         Highlight..., Shortcuts...
                  View    Fit (F), Zoom In, Zoom Out, Zoom Selected, Blink
                          Selected, Ruler (K), Clear Rulers (Shift+K), Show
                          View Panel
@@ -36,8 +36,9 @@ DESCRIPTION
                                  Blink Selected, Ruler, Clear Rulers,
                                  Select, Stretch, Move, Snap, Delete, Undo
                                  Edit,
-                                 Move Spine..., Swap Spine Head, Clear
-                                 Selection, Shortcuts...), click Keys,
+                                 Move Spine..., Swap Spine Head,
+                                 Highlight..., Clear Selection,
+                                 Shortcuts...), click Keys,
                                  press the combination (Ctrl+Z, or
                                  Ctrl+Shift+Z for Ctrl with a capital Z),
                                  OK. Keys already used by another action are
@@ -217,6 +218,30 @@ DESCRIPTION
                                  the spine being moved ends the move, its
                                  moves dropped. The view stays where it is
                                  over Done.
+                 Highlight       opens the Highlight panel on the left, which
+                                 colours the selected objects:
+                                   Highlight  opens the palette (a click
+                                     again closes it): 16 colours and
+                                     More... for any colour. A click on a
+                                     colour paints the selected objects in
+                                     it: a wire, strap, pin wire, via, pin or
+                                     port alone; an instance with its pins; a
+                                     net with all its wires, shields and vias
+                                     and the pins on it; a stub with its
+                                     wires and vias; a spine with its cells,
+                                     nets and stubs. A net keeps its colour
+                                     when it is routed again. The selection
+                                     outline stays yellow; the colour shows
+                                     in the fill, and in the outline once the
+                                     object is deselected.
+                                   Clear  takes the colour off the selected
+                                     objects (a wire of a coloured net goes
+                                     back to its layer colour).
+                                   Clear All  takes every colour off.
+                                   Close  closes the panel; the colours stay.
+                                 The colours are only the display's: the
+                                 database does not change, and they are
+                                 gone when the window closes.
                Zoom Selected and Blink Selected report "Nothing selected" in
                the status bar when nothing is selected, or that the selected
                objects are not drawn (for example a design or a spine spec).
@@ -228,13 +253,14 @@ DESCRIPTION
                TRACKS X. Layers that are not in tech have no direction and
                show all their tracks. get_db track_patterns still lists
                every TRACKS statement of the DEF.
-      left     the Move Spine panel, hidden until Move Spine is chosen
-               (see above); it can be dragged off the window.
+      left     the Move Spine and Highlight panels, hidden until Move
+               Spine or Highlight is chosen (see above); they can be
+               dragged off the window.
       right    "View" panel with checkboxes:
                  Objects  Boundary, Ports, Tracks, Nets, Cells
                           (instance outlines), Pins (instance pin shapes)
                           with Label beside it, Spine, Routes, Vias,
-                          Flyline.
+                          Flyline, Violation markers.
                           Vias (on at first) draws the vias of the routes,
                           the via objects (see assign_via_for_route): one
                           for every layer change of a route, of a pin wire
@@ -297,6 +323,18 @@ DESCRIPTION
                           with its colour and row count. The site height
                           is the row pitch (else the cells' height for a
                           single row), its width the row STEP.
+                          Violation markers (on at first; greyed out
+                          until check_drc has found a violation) draws,
+                          while it is ticked, a marker at the box of
+                          every violation of the last check_drc: the box
+                          outlined in white with a cross in it, at least
+                          12 pixels on screen so that it is seen zoomed
+                          out. The marker of the violation clicked in the
+                          DRC Violations table (below) is drawn wide.
+                          Unticked, no marker is drawn. Markers are drawn
+                          over the layout whatever layers and objects
+                          are shown, show_only does not hide them, and
+                          they cannot be picked.
                           Categories with no data in the database are
                           greyed out (nets, placed cells and spine
                           geometry are not created yet).
@@ -312,6 +350,9 @@ DESCRIPTION
                           checked. A layer keeps the choice made here
                           across commands; one that read_tech makes a
                           tech layer is checked again.
+                          A layer remove_layer takes out of tech is not
+                          listed either, and what is on it is not drawn;
+                          add_layer lists it again, checked.
                           Via rows. Between two layers that vias join is a
                           row for those vias, named via_<bottom>_<top> with
                           the layer names as the tech LEF spells them
@@ -368,6 +409,18 @@ DESCRIPTION
                          box (several at once); an instance fully inside is
                          selected as the instance, not pin by pin;
                          Ctrl+Shift+drag adds to the selection
+      Ctrl+left drag     draw a box; only its coordinates are printed:
+                         one line {x1 y1 x2 y2} in the terminal (microns,
+                         lower left then upper right corner, on the
+                         manufacturing grid), also shown in the status
+                         bar and copied to the clipboard (on X11 to the
+                         middle-click selection too), replacing what was
+                         there. Nothing is zoomed, selected or edited, in
+                         the Stretch and Move tools too (while the ruler
+                         is on, the click is the ruler's). The line is
+                         what an -area option takes (get_obj_in_area,
+                         insert_vias). A box of no width or height
+                         prints nothing
       right drag         select every shown object with any part of a
                          shape touching the box: ports, instances,
                          instance pins, spine nets (their routed centre
@@ -406,6 +459,36 @@ DESCRIPTION
     stub:<spine>/<stub>); all segments of a net light up together.
     Signal nets from DEF are not read yet, so they cannot be selected.
 
+    show_only -object <nets, instances or spines> draws only those and
+    hides every other instance and the routing of every other net, for
+    debugging; the status bar then says "Showing only: ...". It works
+    over the boxes of the View panel. show_only -show_all draws
+    everything again (see 'man show_only').
+
+    DRC Violations. When check_drc has run, a table of its violations
+    opens under the layout (also when the window is opened after the
+    run): one row per violation with its number, check, rule, layer,
+    nets, box and the line of the report. The line above it gives the
+    count and what was checked (its tooltip: the summary table); the
+    list beside it shows the violations of one check only; a click on a
+    column heading sorts. A click on a violation (or the arrow keys) is
+    for debugging it:
+      - only its nets are shown: show_only -object <its nets> is run as
+        if typed. A short or a spacing violation has two nets, both are
+        shown. A shape on no net (a pin nothing is connected to, a strap
+        not routed yet) and a power pin are shown with their instance.
+      - its shapes are selected (get_db selected): the two shapes of a
+        short or a spacing violation, the wire of a width violation, the
+        part of the net that is cut off of an open
+      - the layout zooms to its box, and its marker is drawn wide
+    Every violation of the run has a marker at its box on the layout,
+    while Violation markers of the View panel is ticked (see above).
+    Show All runs show_only -show_all. The table and the markers are the
+    run as check_drc left it: after a fix, run check_drc again and the
+    new run is listed and marked. read_db empties and closes the table
+    and removes the markers. View > Show DRC Violations opens and closes
+    the table.
+
     The window and the prompt share one thread: while the prompt waits for
     input, the window is live. While a command runs, the window does not
     repaint until the command finishes. Closing the window does not end
@@ -432,5 +515,6 @@ ERRORS
     HT4-101  no usable display (DISPLAY unset or unreachable)
 
 SEE ALSO
-    read_def, read_tech, get_db, select_obj, deselect_obj,
-    move_spine_to_boundary, assign_via_for_route
+    read_def, read_tech, remove_layer, add_layer, get_db, select_obj,
+    deselect_obj, show_only, check_drc, move_spine_to_boundary,
+    assign_via_for_route

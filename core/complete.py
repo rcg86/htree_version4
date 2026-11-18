@@ -9,6 +9,8 @@
     get_db layer:<tab>                layer handles (lib_cell:, lib_pin: likewise)
     get_db <objects> .<tab>           attributes of those objects
     get_db <objects> -if {.<tab>      attributes of those objects
+    set_db <objects> .<tab>           the attributes set_db can set on those objects
+    set_db <objects> .<attr> <tab>    its values (fixed routed, placed fixed cover, rules)
     any other word                    file names
 
 The list shown on a double <tab> holds only the last path segment ('layer',
@@ -36,7 +38,12 @@ ROOT_TYPES = {"tech": "tech", "head": "tech", "layers": "layer", "layer": "layer
               "spines": "spine", "spine": "spine", "straps": "strap", "strap": "strap",
               "pin_wires": "pin_wire", "pin_wire": "pin_wire",
               "net_wires": "net_wire", "net_wire": "net_wire"}
+# Roots of more than one object type: the types they can yield.
+MIXED = {"nets": ["spine_net", "stub", "net"], "net": ["spine_net", "stub", "net"]}
 SHOWN_ROOTS = ["tech", "library_physical", "spine_spec", "design"]
+# set_db: the values of an attribute (route_rule: the rules, read at <tab>)
+_VALUES = {"route_status": ["fixed", "routed"], "place_status": ["placed", "fixed", "cover"],
+           "status": ["placed", "fixed", "cover"]}
 DELIMS = " \t\n[]{}()\"';"
 HELP = "-help"               # every command takes it (htree_builder)
 
@@ -59,6 +66,11 @@ class Completer:
             matches = self._get_db(words[1:], text)
             self.leaf_display = any(m.startswith(".") or "." in m for m in matches)
             return matches
+        if words[0] == "set_db":
+            return self._set_db(words[1:], text)
+        if words[0] == "highlight" and words[-1] == "-color":
+            from core.highlight import COLORS
+            return [c + " " for c in COLORS if c.startswith(text)]
         return _files(text)
 
     # readline interface -----------------------------------------------------
@@ -99,17 +111,36 @@ class Completer:
         return [o + " " for o in names if o.startswith(text) and o not in args]
 
     def _get_db(self, args, text):
+        db = self.session.db
         if "-if" in args:
             if not text.startswith("."):
                 return []
-            return _attrs(_target_types(args[0]) if args else list(objects.ATTRS),
+            return _attrs(_target_types(args[0], db) if args else list(objects.ATTRS),
                           text[1:].split("."), ".")
         if not args:
             return self._path(text)
         if len(args) == 1 and text.startswith("."):
             segs = text[1:].split(".")
             extra = [".* "] if segs == [""] else []
-            return extra + _attrs(_target_types(args[0]), segs, ".")
+            return extra + _attrs(_target_types(args[0], db), segs, ".")
+        return []
+
+    def _set_db(self, args, text):
+        """set_db <objects> .<tab>: the attributes set_db can set on every
+        type the objects can be; set_db <objects> .<attr> <tab>: its values."""
+        from core.commands import set_db
+        kinds = _target_types(args[0], self.session.db) if args else []
+        settable = [[a for k, a in set_db.SETTABLE if k == kind] for kind in kinds]
+        if len(args) == 1 and text.startswith("."):
+            every = [a for s in settable for a in s]
+            known = 0 < len(kinds) < len(objects.ATTRS)  # else any type: every settable one
+            common = [a for a in dict.fromkeys(every) if not known or all(a in s for s in settable)]
+            return ["." + a + " " for a in common if a.startswith(text[1:])]
+        if len(args) == 2 and args[1].startswith("."):
+            values = _VALUES.get(args[1][1:], [])
+            if args[1][1:] == "route_rule":
+                values = ["default"] + self.session.db.route_rule_names()
+            return [v + " " for v in values if v.startswith(text)]
         return []
 
     def _path(self, text):
@@ -174,18 +205,45 @@ def _attrs(kinds, segs, prefix):
     return out
 
 
-def _target_types(word):
-    """Object types a get_db first word yields; all types when it cannot be told."""
+def _target_types(word, db=None):
+    """Object types a get_db first word yields; all types when it cannot be
+    told. A bracketed get_db ([get_db spine sp], [get_db spine:sp .insts])
+    yields what its own first word does, through its .attr words; selected
+    (with db) the types of the objects selected now."""
+    if word.startswith("[") and word.endswith("]"):
+        inner = _command_words(word[1:-1])
+        if len(inner) < 2 or inner[0] != "get_db":
+            return list(objects.ATTRS)
+        kinds, rest = _target_types(inner[1], db), iter(inner[2:])
+        for w in rest:
+            if w == "-if":
+                next(rest, None)         # its expression
+            elif w.startswith("."):
+                kinds = _follow(kinds, w[1:].split("."))
+        return kinds
     word = word[1:] if word.startswith(".") else word
     if objects.is_handle(word) and objects.obj_type(word) in objects.ATTRS:
         return [objects.obj_type(word)]
     segs = word.split(".")
+    if segs[0] == "selected" and db is not None:
+        kinds = list(dict.fromkeys(k for k in map(objects.obj_type, objects.selected(db))
+                                   if k in objects.ATTRS))
+        return _follow(kinds, segs[1:]) if kinds else list(objects.ATTRS)
+    if segs[0] in MIXED:
+        return _follow(MIXED[segs[0]], segs[1:])
     kind = ROOT_TYPES.get(segs[0])
-    for seg in segs[1:]:
-        if kind is None:
-            break
-        kind = objects.RELATIONS.get((kind, seg))
-    return [kind] if kind else list(objects.ATTRS)
+    return _follow([kind], segs[1:]) if kind else list(objects.ATTRS)
+
+
+def _follow(kinds, segs):
+    """The object types reached from kinds through the relations segs; all
+    types when none is reached (a plain attribute, or an unknown one)."""
+    for seg in segs:
+        kinds = list(dict.fromkeys(k for k in (objects.RELATIONS.get((kind, seg))
+                                               for kind in kinds) if k))
+        if not kinds:
+            return list(objects.ATTRS)
+    return kinds
 
 
 def _command_words(prefix):
