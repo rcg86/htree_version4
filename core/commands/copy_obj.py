@@ -11,8 +11,8 @@ of its nets (wires, extensions, crossing boxes, shields, stub wires) and the
 vias they give, all shifted. Names: <from>_<rest> becomes <name>_<rest>
 (sp_L1_inv1 -> sp2_L1_inv1, net sp_L1_inv1_Y -> sp2_L1_inv1_Y); a name that
 does not start with <from>_ gets <name>_ in front. Stubs keep their names
-(they are named within their spine). The root takes the same input net as the
-original's. Each shift snaps to the nearest whole number of the legal step (at
+(they are named within their spine). The root takes a root net of its own,
+<name>_primary_input (its pin routes too), as a spine create_spine built. Each shift snaps to the nearest whole number of the legal step (at
 least one when it is not 0): a multiple of the track-pattern period and of the
 site step of the cells' rows. Cells, pin routes, routes and vias all move by
 that one shift, so nothing is legalized after and every connection holds:
@@ -77,6 +77,7 @@ def run(session, argv):
     port_drivers = [f"{r['inst']}/{r['pin']}" for r in db.connection_rows()
                     if r["inst"] in inst_map and r["driver"] == f"{r['inst']}/{r['pin']}"]
     straps, pin_wires, wires, stretches = db.copy_spine(src, new, inst_map, net_map, dx, dy)
+    _root_pin_routes(db, src, new, list(inst_map.values()))
     info(f"Copied spine:{src} to spine:{new} (x {_num(dx)}, y {_num(dy)}): {len(insts)} "
          f"instance(s), {len(nets)} net(s), {straps} strap(s), {pin_wires} pin wire(s), "
          f"{wires} routed shape(s) (wires, crossing boxes, shields, stubs), {stretches} "
@@ -101,6 +102,29 @@ def _spine(session, word):
         raise HtreeError(NO_SPINE, f"copy_obj: -from takes {what}; copy_obj copies built "
                          f"spines only (get_db spines: {' '.join(db.spine_names()) or 'none'})")
     return names[0]
+
+
+def _root_pin_routes(db, src, new, insts):
+    """The copy's root takes a root net of its own: the copied pin routes
+    route_pin put on the original's root net go on the copy's, and the
+    shapes kept with them that carry that net: route_pin's pieces under the
+    pin wires (pg:<inst>) and the vias inserted on the pin routes (auto_via:)."""
+    old, now = netlist.root_net(db, db.spine_row(src)), netlist.root_net(db, db.spine_row(new))
+    if not old or not now or old == now:
+        return
+    with db.conn:
+        for table in ("strap", "pin_wire"):
+            db.conn.executemany(f"UPDATE {table} SET net = ? WHERE inst = ? AND net = ?",
+                                [(now, inst, old) for inst in insts])
+        own = {f"pg:{inst}" for inst in insts}
+        under = tuple(o for inst in insts for o in (
+            f"auto_via:pin_wire:{inst}/", f"auto_via:strap:{inst}/", f"auto_via:net_wire:pg:{inst}/"))
+        rows = db.conn.execute("SELECT id, net FROM net_wire WHERE shield_net = ?",
+                               (old,)).fetchall()
+        db.conn.executemany("UPDATE net_wire SET shield_net = ? WHERE id = ?",
+                            [(now, r["id"]) for r in rows
+                             if r["net"] in own or r["net"].startswith(under)])
+    db.netlist = None
 
 
 def _renamed(name, src, new):

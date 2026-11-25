@@ -45,7 +45,8 @@ def electrical(table, row):
 
 def _shapes(db):
     """(handle, electrical net, layer, rect) of every route shape but crossing
-    boxes and vias."""
+    boxes, vias and route_pin's pieces under the pin wires (pin_layer: the
+    pin's via stack goes through them already)."""
     rect = lambda text: tuple(float(c) for c in text.split())
     for r in db.strap_rows():
         yield f"strap:{r['inst']}/{r['seq']}", electrical("strap", r), r["layer"], rect(r["rect"])
@@ -53,7 +54,7 @@ def _shapes(db):
         yield (f"pin_wire:{r['inst']}/{r['pin']}", electrical("pin_wire", r), r["layer"],
                rect(r["rect"]))
     for r in db.net_wire_rows():
-        if "/" in r["layer"] or r["kind"] == "via":
+        if "/" in r["layer"] or r["kind"] in ("via", "pin_layer"):
             continue
         yield (f"net_wire:{r['net']}/{r['seq']}", electrical("net_wire", r), r["layer"],
                rect(r["rect"]))

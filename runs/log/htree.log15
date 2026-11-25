@@ -1,0 +1,161 @@
+# htree_builder 
+# started 2026-11-24 12:02:27 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+Log: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.log15
+Commands: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.cmd15
+htree> #read_tech -file ../tech.new.lef
+htree> read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+**WARN: (HT4-013): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 23)
+**WARN: (HT4-013): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 24)
+**WARN: (HT4-013): 1 CLEARANCEMEASURE statement(s) not modeled, kept verbatim (first at line 25)
+**WARN: (HT4-013): 1 USEMINSPACING statement(s) not modeled, kept verbatim (first at line 26)
+**WARN: (HT4-013): 1 FIXEDMASK statement(s) not modeled, kept verbatim (first at line 34)
+**WARN: (HT4-013): 4 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 36)
+**WARN: (HT4-013): 40 VIARULE statement(s) not modeled, kept verbatim (first at line 4553)
+Reading tech LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef'
+  LEF version : 5.8
+  DB units    : 4000
+  Layer range : D12 .. IB (-min_layer D12, -max_layer IB); 54 of the 75 layers of the file left out
+  Layers      : 21 (D12 DH H1 N1 H2 HG G1 T1 G2 GI IA II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM IB)
+  Vias        : 190 (190 DEFAULT); 216 left out, a layer of theirs is not in the range
+htree> read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+**WARN: (HT4-063): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 2)
+**WARN: (HT4-063): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 3)
+**WARN: (HT4-063): 1 SITE statement(s) not modeled, kept verbatim (first at line 5)
+**WARN: (HT4-063): 1 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 11)
+Reading cell LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef'
+  LEF version : 5.8
+  Cells       : 6 added
+  Pins        : 36, ports 294, shapes 294
+  Pin layers  : S11(192) D12(42) M1(12) NW(24) PSUB(24)
+  In tech     : D12
+**WARN: (HT4-064): 252 pin shape(s) on layers not in tech: S11 M1 NW PSUB. They are kept but ignored in calculations
+htree> read_spine_spec -file ./custom_spine.yaml
+Reading spine spec '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/custom_spine.yaml'
+  custom_spine_4000       : line 3, levels L1(3) L2(1) L3(2) L4(4), 10 cells
+  custom_spine_h5p2       : line 51, levels L1(1) L2(1) L3(2), 4 cells
+  custom_spine_v5p2       : line 91, levels L1(1) L2(1) L3(2), 4 cells
+htree> read_def -file cf999.def
+Reading DEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/cf999.def'
+  Design      : cf999 (DEF 5.8, 4000 units/micron)
+  Boundary    : polygon, 26 points, bbox 0 0 5704.56 14144.08
+  Pins        : 110728, shapes 110725
+  Rows        : 167043 (ln04lpp_sc_s7p94t_c60 ln04lpp_sc_s7p94t_c60_2x ln04lpp_sc_s7p94t_c60_pg)
+  Tracks      : 56 patterns on 19 layers (IB IA G2 G1 H2 H1 D12 D11 D10 D9 D8 D7 D6 LB F5 F4 M3 M2 M1)
+  Tracks tech : IB IA G2 G1 H2 H1 D12, tech layers without tracks: DH N1 HG T1 GI II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM
+  Vias        : 2 (DH_POWER_VIA_0 N1_POWER_VIA_0)
+  Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) PINPROPERTIES BLOCKAGES
+  Pin layers  : D6(2084) D8(16404) D12(17251) D9(8404) D11(11762) G1(2880) H1(2712) D7(2284) G2(8108) D10(21584) H2(17252)
+  In tech     : D12 G1 H1 G2 H2
+**WARN: (HT4-093): 62522 pin shape(s) on layers not in tech: D6 D8 D9 D11 D7 D10. They are kept but ignored in calculations
+htree> # Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+htree> # power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+htree> assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IA (horizontal, DEF TRACKS Y): 19645 tracks, y 0.36 .. 14144.04
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 2456 tracks, first at y 0.36
+  VSS         : 2456 tracks, first at y 3.24
+  signal      : 4911 tracks, first at y 1.8
+  blank (NA)  : 9822 tracks, first at y 1.08
+htree> assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IB (vertical, DEF TRACKS X): 7923 tracks, x 0.36 .. 5704.2
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 991 tracks, first at x 0.36
+  VSS         : 990 tracks, first at x 3.24
+  signal      : 1981 tracks, first at x 1.8
+  blank (NA)  : 3961 tracks, first at x 1.08
+htree> create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+Route rule rule1, IA: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+Route rule rule1, IB: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+  route rule rule1 layers: IA IB
+route_rule:rule1
+htree> read_pin_spec -file pin_routing_spec.yaml 
+read_pin_spec: 2 pin routing spec(s) from 'pin_routing_spec.yaml':
+  vertical_routing: cells *, 6 straps (VSS VDD_SOC SIGNAL VSS SIGNAL VDD_SOC), width 0.36, spacing 0.36, on IA from H2
+  horizontal_routing: cells *, no straps: H2 pin wires only (pins.horizontal_layer none)
+  route_pin -inst <insts> -spec_name <name>
+vertical_routing horizontal_routing
+htree> # route_pin needs instances: it runs after create_spine below
+htree> #route_pin -spec pin_routing_spec.yaml
+htree> #create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+htree> #create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+htree> 
+htree> connect_pin -from ref_clk_ione_ctm3_clk_out_31_3_clock -to {ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31} -ref_cell INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04
+legalize_placement: 7 instance(s) moved onto sites (up to 2.56 um), 0 already legal, 0 fixed (not moved)
+legalize_placement: pin access: every signal pin of the 7 instance(s) has a track to be reached on
+connect_pin: net ref_clk_ione_ctm3_clk_out_31_3_clock: port ref_clk_ione_ctm3_clk_out_31_3_clock -> buf_ref_clk_ctm3_eyp0_clk_out_30_clock/A buf_ref_clk_ctm3_iose_local_clk_29/A buf_ref_clk_ctm3_scp_local_clk_28/A buf_ref_clk_ctm3_scp_clk_out_29_clock/A buf_ref_clk_ctm3_tlp_clk_out_31_clock/A buf_ref_clk_ctm3_ione_local_clk_30/A buf_ref_clk_ctm3_gpp_local_clk_31/A
+  output ports, each driven through a buffer (its output pin from the port, x + y; as placed):
+    port ref_clk_ctm3_eyp0_clk_out_30_clock: buf_ref_clk_ctm3_eyp0_clk_out_30_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 889.409}, 10.216 um; buf_ref_clk_ctm3_eyp0_clk_out_30_clock/Y -> net ref_clk_ctm3_eyp0_clk_out_30_clock
+    port ref_clk_ctm3_iose_local_clk_29: buf_ref_clk_ctm3_iose_local_clk_29 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5562.84 10.061}, 9.984 um; buf_ref_clk_ctm3_iose_local_clk_29/Y -> net ref_clk_ctm3_iose_local_clk_29
+    port ref_clk_ctm3_scp_local_clk_28: buf_ref_clk_ctm3_scp_local_clk_28 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 3433.473}, 10.176 um; buf_ref_clk_ctm3_scp_local_clk_28/Y -> net ref_clk_ctm3_scp_local_clk_28
+    port ref_clk_ctm3_scp_clk_out_29_clock: buf_ref_clk_ctm3_scp_clk_out_29_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 3429.409}, 10.06 um; buf_ref_clk_ctm3_scp_clk_out_29_clock/Y -> net ref_clk_ctm3_scp_clk_out_29_clock
+    port ref_clk_ctm3_tlp_clk_out_31_clock: buf_ref_clk_ctm3_tlp_clk_out_31_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 10068.969}, 10.012 um; buf_ref_clk_ctm3_tlp_clk_out_31_clock/Y -> net ref_clk_ctm3_tlp_clk_out_31_clock
+    port ref_clk_ctm3_ione_local_clk_30: buf_ref_clk_ctm3_ione_local_clk_30 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5702.4 13708.789}, 9.4 um; buf_ref_clk_ctm3_ione_local_clk_30/Y -> net ref_clk_ctm3_ione_local_clk_30
+    port ref_clk_ctm3_gpp_local_clk_31: buf_ref_clk_ctm3_gpp_local_clk_31 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5702.4 10221.369}, 12.488 um; buf_ref_clk_ctm3_gpp_local_clk_31/Y -> net ref_clk_ctm3_gpp_local_clk_31
+  Next: route_pin -inst {buf_ref_clk_ctm3_eyp0_clk_out_30_clock buf_ref_clk_ctm3_iose_local_clk_29 buf_ref_clk_ctm3_scp_local_clk_28 buf_ref_clk_ctm3_scp_clk_out_29_clock buf_ref_clk_ctm3_tlp_clk_out_31_clock buf_ref_clk_ctm3_ione_local_clk_30 buf_ref_clk_ctm3_gpp_local_clk_31}, then route_net -net {ref_clk_ione_ctm3_clk_out_31_3_clock ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31}
+inst:buf_ref_clk_ctm3_eyp0_clk_out_30_clock inst:buf_ref_clk_ctm3_iose_local_clk_29 inst:buf_ref_clk_ctm3_scp_local_clk_28 inst:buf_ref_clk_ctm3_scp_clk_out_29_clock inst:buf_ref_clk_ctm3_tlp_clk_out_31_clock inst:buf_ref_clk_ctm3_ione_local_clk_30 inst:buf_ref_clk_ctm3_gpp_local_clk_31
+
+-buffer_ref    -distance      -help          -inverter_ref  -name
+htree> create_buffer_tree -from ref_clk_ione_ctm3_clk_out_31_3_clock -distance 500 -inverter_ref INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04 -name buff_tree_ref_clk
+legalize_placement: 70 instance(s) moved onto sites (up to 2.032 um), 0 already legal, 0 fixed (not moved)
+legalize_placement: pin access: every signal pin of the 70 instance(s) has a track to be reached on
+create_buffer_tree: port ref_clk_ione_ctm3_clk_out_31_3_clock (net ref_clk_ione_ctm3_clk_out_31_3_clock) -> 7 sink(s): 70 cell(s), 70 inverter(s) (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04), 0 buffer(s) (no -buffer_ref), one every 500 um of the tree
+  the shortest ways leave the design boundary: the tree takes the shortest ways inside it, down the middle of its arms
+  one more inverter before 3 sink(s) to keep their polarity: buff_tree_ref_clk_68 buff_tree_ref_clk_69 buff_tree_ref_clk_70
+  Sink                                      Way        Inverters  Buffers  Inverters after  Last cell
+  buf_ref_clk_ctm3_eyp0_clk_out_30_clock/A  18512.392  37         0        1                buff_tree_ref_clk_37
+  buf_ref_clk_ctm3_iose_local_clk_29/A      13839.28   27         0        1                buff_tree_ref_clk_39
+  buf_ref_clk_ctm3_scp_local_clk_28/A       15968.328  31         0        1                buff_tree_ref_clk_50
+  buf_ref_clk_ctm3_scp_clk_out_29_clock/A   15972.392  31         0        1                buff_tree_ref_clk_50
+  buf_ref_clk_ctm3_tlp_clk_out_31_clock/A   9332.832   19         0        1                buff_tree_ref_clk_68
+  buf_ref_clk_ctm3_ione_local_clk_30/A      0.992      1          0        1                buff_tree_ref_clk_69
+  buf_ref_clk_ctm3_gpp_local_clk_31/A       3488.412   7          0        1                buff_tree_ref_clk_70
+  netlist and placement only: route_pin -inst {buff_tree_ref_clk_*}, route_net next
+buff_tree_ref_clk_1 buff_tree_ref_clk_2 buff_tree_ref_clk_3 buff_tree_ref_clk_4 buff_tree_ref_clk_5 buff_tree_ref_clk_6 buff_tree_ref_clk_7 buff_tree_ref_clk_8 buff_tree_ref_clk_9 buff_tree_ref_clk_10 buff_tree_ref_clk_11 buff_tree_ref_clk_12 buff_tree_ref_clk_13 buff_tree_ref_clk_14 buff_tree_ref_clk_15 buff_tree_ref_clk_16 buff_tree_ref_clk_17 buff_tree_ref_clk_18 buff_tree_ref_clk_19 buff_tree_ref_clk_20 buff_tree_ref_clk_21 buff_tree_ref_clk_22 buff_tree_ref_clk_23 buff_tree_ref_clk_24 buff_tree_ref_clk_25 buff_tree_ref_clk_26 buff_tree_ref_clk_27 buff_tree_ref_clk_28 buff_tree_ref_clk_29 buff_tree_ref_clk_30 buff_tree_ref_clk_31 buff_tree_ref_clk_32 buff_tree_ref_clk_33 buff_tree_ref_clk_34 buff_tree_ref_clk_35 buff_tree_ref_clk_36 buff_tree_ref_clk_37 buff_tree_ref_clk_38 buff_tree_ref_clk_39 buff_tree_ref_clk_40 buff_tree_ref_clk_41 buff_tree_ref_clk_42 buff_tree_ref_clk_43 buff_tree_ref_clk_44 buff_tree_ref_clk_45 buff_tree_ref_clk_46 buff_tree_ref_clk_47 buff_tree_ref_clk_48 buff_tree_ref_clk_49 buff_tree_ref_clk_50 buff_tree_ref_clk_51 buff_tree_ref_clk_52 buff_tree_ref_clk_53 buff_tree_ref_clk_54 buff_tree_ref_clk_55 buff_tree_ref_clk_56 buff_tree_ref_clk_57 buff_tree_ref_clk_58 buff_tree_ref_clk_59 buff_tree_ref_clk_60 buff_tree_ref_clk_61 buff_tree_ref_clk_62 buff_tree_ref_clk_63 buff_tree_ref_clk_64 buff_tree_ref_clk_65 buff_tree_ref_clk_66 buff_tree_ref_clk_67 buff_tree_ref_clk_68 buff_tree_ref_clk_69 buff_tree_ref_clk_70
+htree> gui_show 
+GUI opened. Commands typed here update the layout.
+[KSelected inst:buff_tree_ref_clk_30  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {3521.22 888.52} N  bbox {3521.22 888.52 3524.34 890.298}
+[KSelected inst:buff_tree_ref_clk_21  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5565.06 3344.7} N  bbox {5565.06 3344.7 5568.18 3346.478}
+[KSelected inst:buff_tree_ref_clk_40  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5476.92 3432.584} N  bbox {5476.92 3432.584 5480.04 3434.362}
+[KSelected inst:buff_tree_ref_clk_20  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5660.82 3749.068} N  bbox {5660.82 3749.068 5663.94 3750.846}
+[KSelection cleared
+[KSelected inst:buff_tree_ref_clk_51  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5341.68 10068.08} N  bbox {5341.68 10068.08 5344.8 10069.858}
+[KSelected 3 objects (get_db selected)
+[KSelection cleared
+[KSelected inst:buff_tree_ref_clk_70  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 10218.448} N  bbox {5700.84 10218.448 5703.96 10220.226}
+[KSelected inst:buf_ref_clk_ctm3_gpp_local_clk_31  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 10220.48} N  bbox {5700.84 10220.48 5703.96 10222.258}
+[KSelection cleared
+[KSelected inst:buf_ref_clk_ctm3_gpp_local_clk_31  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 10220.48} N  bbox {5700.84 10220.48 5703.96 10222.258}
+[KSelected inst:buff_tree_ref_clk_70  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 10218.448} N  bbox {5700.84 10218.448 5703.96 10220.226}
+[KSelected inst:buff_tree_ref_clk_67  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 10708.668} N  bbox {5700.84 10708.668 5703.96 10710.446}
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelected inst:buff_tree_ref_clk_69  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 13705.868} N  bbox {5700.84 13705.868 5703.96 13707.646}
+[KSelected inst:buf_ref_clk_ctm3_ione_local_clk_30  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 13707.9} N  bbox {5700.84 13707.9 5703.96 13709.678}
+[KSelected inst:buff_tree_ref_clk_69  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 13705.868} N  bbox {5700.84 13705.868 5703.96 13707.646}
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelected 2 objects (get_db selected)
+[KSelection cleared
+[KSelected inst:buff_tree_ref_clk_1  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5660.82 13249.176} N  bbox {5660.82 13249.176 5663.94 13250.954}
+htree> get_db [get_db selected] .pins
+pin:buff_tree_ref_clk_1/A pin:buff_tree_ref_clk_1/VDD pin:buff_tree_ref_clk_1/VSS pin:buff_tree_ref_clk_1/Y pin:buff_tree_ref_clk_1/VNW pin:buff_tree_ref_clk_1/VPW
+htree> get_db [get_db selected] .pins.net
+net:ref_clk_ione_ctm3_clk_out_31_3_clock net:buff_tree_ref_clk_1_Y
+[KSelected inst:buff_tree_ref_clk_62  INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04  at {5700.84 13209.044} N  bbox {5700.84 13209.044 5703.96 13210.822}
+htree> get_db [get_db selected] .pins.net
+net:ref_clk_ione_ctm3_clk_out_31_3_clock net:buff_tree_ref_clk_62_Y
+htree> get_db nets ref_clk_ione_ctm3_clk_out_31_3_clock
+net:ref_clk_ione_ctm3_clk_out_31_3_clock
+htree> get_db [get_db nets ref_clk_ione_ctm3_clk_out_31_3_clock] .pins
+pin:buff_tree_ref_clk_1/A pin:buff_tree_ref_clk_62/A pin:buff_tree_ref_clk_69/A
+
+test2.db  test3.db  test.db
+htree> write_db test.db
+**ERROR: (HT4-030): write_db: 'test.db' exists; use -overwrite to replace it
+htree> write_db test.db -overwrite 
+Database written to '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/test.db'
+htree> exit
+# ended 2026-11-24 12:24:20

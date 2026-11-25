@@ -27,7 +27,7 @@ import itertools
 from collections import namedtuple
 
 from core import netlist, objects, vias
-from core.db import CARRIED, STUB, _num
+from core.db import CARRIED, PIN_LAYER, STUB, _num
 
 TOL = 1e-6
 SIGNAL = "SIGNAL"
@@ -35,6 +35,8 @@ SIGNAL = "SIGNAL"
 RULED = {"wire": "net", "shield": "net", "stub": "stub", "stub_shield": "stub"}
 SHIELDS = {"shield", "stub_shield"}
 SHORT, SPACING, WIDTH, OPEN = "short", "spacing", "width", "open"
+DIRECTION = "direction"      # the way a cell's signal pins are reached (check_direction)
+MIXED, AGAINST = "mixed", "spec"
 TECH, CUSTOM = "tech", "custom"
 
 # source: tech | custom for spacing and width, signal | power for an open.
@@ -152,7 +154,8 @@ def collect(db):
     for r in db.net_wire_rows():
         if "/" in r["layer"]:                # a crossing box: its vias stand for it
             continue
-        if r["shield_net"] and r["kind"] not in CARRIED:     # a stub's: its signal net
+        if r["shield_net"] and r["kind"] not in CARRIED and not (
+                r["kind"] == PIN_LAYER and r["shield_net"] in d.nets):   # a stub's: its net
             d.power.add(r["shield_net"])
         base = r["net"]                      # a stub's rows: under <leaf net>_stub
         if r["kind"].startswith("stub") and base.endswith(STUB):
@@ -593,4 +596,96 @@ def check_opens(design, order, layers=None):
                 OPEN, source, "", (min(pts[0::2]), min(pts[1::2]), max(pts[0::2]),
                                    max(pts[1::2])),
                 f"net {name}: stub {stub['name']} has no wire (route_final_stub)", (name,)))
+    return found
+
+
+JOG = 10.0                   # um: a wire shorter than this is a jog, not a direction
+
+
+def pin_directions(db, jog=JOG):
+    """{inst: {pin: (vertical | horizontal, pin wire handle, net)}}: the way
+    the route of each routed signal pin of the instances comes to it. From
+    where the net touches the pin (its strap, or its pin wire when it has no
+    strap: a side pin), the net's wires are followed out, nearest first
+    (along the route); the first one at least jog um long gives the way: a
+    wire on a vertical layer, vertical; on a horizontal one, horizontal.
+    Shorter pieces on the way (a drop onto a strap, a jog of a few tracks)
+    are passed over. A pin no such wire reaches is not in it."""
+    import heapq
+    from core import netlist
+    rect = lambda text: tuple(float(c) for c in text.split())
+    dirs = {r["name"]: (r["direction"] or "").lower()
+            for r in db.conn.execute("SELECT name, direction FROM layer")}
+    signal = set(netlist.signal_nets(db))
+    wires = {}                               # net -> [(layer direction, rect)]
+    for r in db.net_wire_rows():
+        if r["kind"] in ("wire", "stub") and "/" not in r["layer"]:
+            net = r["net"][:-len(STUB)] if r["kind"] == "stub" and r["net"].endswith(STUB) \
+                else r["net"]
+            wires.setdefault(net, []).append((dirs.get(r["layer"], ""), rect(r["rect"])))
+    touch = lambda a, b: a[0] <= b[2] + TOL and b[0] <= a[2] + TOL and \
+        a[1] <= b[3] + TOL and b[1] <= a[3] + TOL
+    length = lambda q: max(q[2] - q[0], q[3] - q[1])
+    found = {}
+    for row in db.inst_rows():
+        pins = db.pin_wire_rows(row["name"])
+        if not pins:
+            continue
+        straps = {s["seq"]: s for s in db.strap_rows(row["name"])}
+        for w in pins:
+            net = w["net"]
+            if net not in signal:
+                continue                     # power, or not routed yet (SIGNAL)
+            mine = wires.get(net, [])
+            s = straps.get(w["strap"]) if w["strap"] is not None else None
+            at = rect(s["rect"]) if s is not None else rect(w["rect"])
+            # nearest first along the route: the wires touching the pin, then theirs
+            heap = [(0.0, k) for k, (_, q) in enumerate(mine) if touch(q, at)]
+            heapq.heapify(heap)
+            seen, how = set(), None
+            while heap:
+                d, k = heapq.heappop(heap)
+                if k in seen:
+                    continue
+                seen.add(k)
+                way, q = mine[k]
+                if length(q) >= jog - TOL and way in ("vertical", "horizontal"):
+                    how = way
+                    break
+                for m, (_, o) in enumerate(mine):
+                    if m not in seen and touch(o, q):
+                        heapq.heappush(heap, (d + length(q), m))
+            if how is not None:
+                found.setdefault(row["name"], {})[w["pin"]] = \
+                    (how, f"pin_wire:{row['name']}/{w['pin']}", net)
+    return found
+
+
+def check_direction(db, jog=JOG):
+    """[Violation]: a cell whose signal pins are reached both vertically and
+    horizontally (source mixed: heterogeneous routing direction: one pin
+    needs vertical routing, another horizontal), and a pin reached against
+    the routing_direction of the cell's pin spec (source spec). Jogs shorter
+    than jog um do not count (pin_directions)."""
+    found = []
+    for inst, pins in sorted(pin_directions(db, jog).items()):
+        box = objects.inst_bbox(db, db.inst_row(inst))
+        ways = {how for how, _, _ in pins.values()}
+        text = ", ".join(f"{p} {how}" for p, (how, _, _) in sorted(pins.items()))
+        nets = tuple(dict.fromkeys(n for _, _, n in pins.values()))
+        handles = tuple(h for _, h, _ in pins.values())
+        if len(ways) > 1:
+            found.append(Violation(DIRECTION, MIXED, "", box,
+                                   f"cell {inst}: its pins are reached both ways "
+                                   f"(heterogeneous routing direction; one needs vertical "
+                                   f"routing, one horizontal): {text}", nets, handles))
+        kept = db.pin_spec(inst)
+        want = kept[0].get("routing_direction") if kept else None
+        bad = [(p, how) for p, (how, _, _) in sorted(pins.items()) if want and how != want]
+        if bad:
+            found.append(Violation(DIRECTION, AGAINST, "", box,
+                                   f"cell {inst} (pin spec {kept[1] or 'default'}, "
+                                   f"routing_direction {want}): "
+                                   + ", ".join(f"{p} reached {how}" for p, how in bad),
+                                   nets, handles))
     return found

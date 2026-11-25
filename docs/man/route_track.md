@@ -6,6 +6,7 @@ SYNOPSIS
     route_track -net <nets> -rule <route_rule> [-compact]
                 [-via_weight <um>] [-shield]
                 [-shield_nets {<left/above> <right/below>}]
+                [-min_routing_distance <um> [-max_routing_distance <um>]]
 
 DESCRIPTION
     Routes the nets with the router of route_net (man route_net: the two
@@ -76,6 +77,19 @@ DESCRIPTION
     it and can change it), so write_def writes every via. Printed: the
     definitions given, per layer pair, with the number of nets and vias;
     HT4-297 when no definition of a pair fits some of the vias.
+    Before the definitions are chosen, every crossing box is made the
+    full crossing of its net's two wires: the vertical wire's width by the
+    horizontal wire's width, so each via sits in the middle of the
+    crossing. A routed wire that stops short of the other wire's far edge
+    is lengthened to it (no further than the box is long); straps, pin
+    wires and pins are not. Fixed nets are left. Printed: how many boxes
+    moved and wires lengthened.
+    A via of a crossing box that its net's definition does not fit (its
+    pads past the metal there) while another of the same layers does gets
+    that one as its own, kept on the box as insert_vias -via_ref keeps one
+    (of those that fit, the first in the order above); the net's
+    assignment stays. Every net's vias are looked at, not only the nets
+    routed. Printed: how many vias, per layer pair.
 
 OPTIONS
     -net <nets>
@@ -102,6 +116,24 @@ OPTIONS
     -shield_nets {<left/above> <right/below>}
         Shield nets for a layer with no track assignment (implies
         -shield). Default {VDD_SOC VSS}.
+    -min_routing_distance <um>
+        The least length of the wire from each net's driver to its
+        nearest load, along the route (the drops from the tracks to the
+        strap centres not counted). A shorter route goes out and back:
+        see route_net, "Route length".
+    -max_routing_distance <um>
+        The most that length may be; with -min_routing_distance. Default
+        -min_routing_distance + 10. A wider window (e.g. 2600 .. 2700)
+        leaves the router more ways to make it.
+    -force
+        Route the fixed nets given too (see route_net;
+        without it they are left, HT4-286), keeping every shape they have:
+        their wires, their stubs' wires, shields, vias and lengthened
+        straps. Only the pins not on the route yet (an input pin
+        connect_pin or connect_spine put on the net, a strap still on
+        SIGNAL) are routed, from the nearest point of the existing wires;
+        only those new wires, their crossing boxes, shields and power links
+        are added. The net stays fixed.
     -help
         Print the definition, usage, options and an example of the command.
 

@@ -4,7 +4,8 @@
 
 Each instance goes to the nearest free site of its cell: a DEF ROW (read_def)
 whose site is the cell's LEF SITE and whose orientation is the instance's (N
-cells in N rows, FS cells in FS rows), the cell inside the row, at a whole
+and FN cells in N rows, FS and S cells in FS rows: FN and S are N and FS
+mirrored about the y axis), the cell inside the row, at a whole
 number of site steps from the row origin, overlapping no other instance,
 and inside the design boundary when a free site there is near enough. It
 looks no farther than one cell width + height from where the instance is;
@@ -21,8 +22,11 @@ the side the signal comes from: route_pin then gives the input the strap on
 that side, so the net coming in and the net going out can pass the cell on
 one track (route_net). A cell whose pins are as high in both is left as it
 is. A cell that changes orientation goes on a site of the new one (an FS row
-for FS); its pin routes would be upside down, so they are removed: run
-route_pin on it again (the list is printed).
+for FS); its pin routes would be upside down, so they are removed and, once
+every instance is placed, made again (route_pin.rebuild): straps, pin wires
+and pin vias, with the spec route_pin last routed the instance with. One
+routed before specs were kept (an older database) is said: run route_pin
+on it.
 
 Then the spacing of set_place_constraint: two instances closer than their
 space_x in x and space_y in y at the same time are moved apart, each along
@@ -40,7 +44,7 @@ from core import objects
 from core.db import _num
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
-from core.placement import placed_bbox, rect_in_polygon
+from core.placement import placed_bbox, rect_in_polygon, row_orient
 
 NAME = "legalize_placement"
 SUMMARY = "Place instances on the free legal sites of their cells (DEF rows, LEF SITE)"
@@ -77,6 +81,7 @@ def run(session, argv):
     out = session.out
     boxes = {r["name"]: objects.inst_bbox(db, r) for r in db.inst_rows()}
     moved, kept, fixed, missed, flipped, worst = [], [], [], [], [], 0.0
+    had = set()                          # turned instances that had pin routes
     for name in names:
         r = db.inst_row(name)
         if (r["status"] or "placed").lower() in ("fixed", "cover"):
@@ -95,10 +100,12 @@ def run(session, argv):
             spot = _free_site(db, r, cell, site, others, want)
             if spot is not None:                  # flipped: its pin routes are upside down
                 db.set_inst_orient(name, want)
+                if db.strap_rows(name):           # made again once all are placed
+                    had.add(name)
                 db.set_straps(name, [])
                 flipped.append(f"{name} {orient} -> {want}")
         if spot is None:
-            spot = _free_site(db, r, cell, site, others)
+            spot = _free_site(db, r, cell, site, others, wide=True)
         if spot is None:
             missed.append(name)
             continue
@@ -114,8 +121,8 @@ def run(session, argv):
     info(f"legalize_placement: {len(moved)} instance(s) moved onto sites (up to {_num(round(worst, 6))} "
          f"um), {len(kept)} already legal, {len(fixed)} fixed (not moved)", out)
     if missed:
-        warn(NO_SITE, f"no free site of the cell's site and orientation within one cell "
-             f"width + height of {' '.join(missed)}; left where they are", out)
+        warn(NO_SITE, f"no free site of the cell's site and orientation within {WIDE[-1]} "
+             f"cell widths + heights of {' '.join(missed)}; left where they are", out)
     slid, far = _slide_to_tracks(db, names, boxes)
     moved += [n for n, _ in slid if n not in moved]
     if slid:
@@ -128,14 +135,23 @@ def run(session, argv):
     spread = _spread(db, names, boxes, out)
     moved += [n for n in spread if n not in moved]
     if spread and not opts["-keep_orientation"]:   # moved apart: turned the way they face now
-        again = _turn(db, spread, boxes, flipped)
+        again = _turn(db, spread, boxes, flipped, had)
         if again:
             moved += [n for n in again if n not in moved]
             moved += [n for n in _spread(db, names, boxes, out) if n not in moved]
-    if flipped:
-        info(f"  {len(flipped)} instance(s) turned so the input pin faces the incoming net "
-             f"(their pin routes removed): {', '.join(flipped)}; route_pin -inst "
-             f"{{{' '.join(dict.fromkeys(f.split()[0] for f in flipped))}}}", out)
+    if flipped:                  # their pin routes made again, the way route_pin made them
+        turned = list(dict.fromkeys(f.split()[0] for f in flipped))
+        info(f"  {len(flipped)} instance(s) turned so the input pin faces the incoming net: "
+             f"{', '.join(flipped)}; their pin routes (straps, pin wires, vias) made again "
+             f"in the new orientation", out)
+        from core.commands import route_pin
+        done, unknown = route_pin.rebuild(session, [n for n in turned if n in had])
+        if done:
+            info(f"  pin routes made again with the spec route_pin used: {' '.join(done)}", out)
+        if unknown:
+            warn(RECONNECT, f"legalize_placement: no pin routing spec kept for "
+                 f"{' '.join(unknown)} (routed before specs were kept): their pin routes are "
+                 f"removed; route_pin -inst {{{' '.join(unknown)}}} -spec <yaml>", out)
     touched = _nets_of(db, moved)
     if touched:
         warn(RECONNECT, f"{len(touched)} routed net(s) lost their pin routes' positions; "
@@ -220,7 +236,7 @@ def _site_between(db, r, cell, lo, hi, others):
     site = cell["site"] if db.site_rows_of(cell["site"]) else None
     query = "SELECT * FROM site_row WHERE orient = ? AND abs(y - ?) < 1e-6" + \
         (" AND site = ?" if site else "")
-    args = (r["orient"] or "N", r["y"]) + ((site,) if site else ())
+    args = (row_orient(r["orient"]), r["y"]) + ((site,) if site else ())
     best = None
     for row in db.conn.execute(query, args):
         step = row["step_x"] or 0.0
@@ -240,7 +256,7 @@ def _site_between(db, r, cell, lo, hi, others):
     return best
 
 
-def _turn(db, names, boxes, flipped):
+def _turn(db, names, boxes, flipped, had):
     """Turn those of names whose input no longer faces its net (after the
     spacing moved them) onto the nearest free site of the new orientation.
     Returns the names turned; appends to flipped."""
@@ -260,6 +276,8 @@ def _turn(db, names, boxes, flipped):
         if spot is None:
             continue
         db.set_inst_orient(name, want)
+        if db.strap_rows(name):
+            had.add(name)
         db.set_straps(name, [])
         db.move_insts([name], round(spot[0] - r["x"], 6), round(spot[1] - r["y"], 6))
         boxes[name] = objects.inst_bbox(db, db.inst_row(name))
@@ -302,19 +320,32 @@ def _centre(box):
     return (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
 
 
-def _free_site(db, r, cell, site, others, orient=None):
+WIDE = (1, 2, 4, 8, 16, 32)  # how far a crowded cell looks, in cell widths + heights
+
+
+def _free_site(db, r, cell, site, others, orient=None, wide=False):
     """The nearest (x, y) site for instance row r that overlaps none of the
-    boxes in others, within one cell width + height; None if there is none.
+    boxes in others, within one cell width + height (wide: then two, four
+    ... up to WIDE[-1] of them, until one is free: a cell on a crowded spot,
+    another on it already); None if there is none.
     orient: look in the rows of that orientation, not r's.
     A site with the cell inside the design boundary comes before a nearer
     one where it is not: a row can be lower than the cell, so a cell in a
     row at the edge of the die may reach across it."""
+    for k in (WIDE if wide else WIDE[:1]):
+        spot = _free_site_within(db, r, cell, site, others, orient,
+                                 k * (cell["size_x"] + cell["size_y"]))
+        if spot is not None:
+            return spot
+    return None
+
+
+def _free_site_within(db, r, cell, site, others, orient, reach):
     w, h = cell["size_x"], cell["size_y"]
-    reach = w + h
     orient = orient or r["orient"] or "N"
     query = "SELECT * FROM site_row WHERE orient = ? AND y BETWEEN ? AND ?" + \
         (" AND site = ?" if site else "")
-    args = (orient, r["y"] - reach, r["y"] + reach) + ((site,) if site else ())
+    args = (row_orient(orient), r["y"] - reach, r["y"] + reach) + ((site,) if site else ())
     candidates = []
     for row in db.conn.execute(query, args):
         step = row["step_x"] or 0.0
@@ -486,7 +517,7 @@ def _along(db, r, cell, site, axis, sign, least):
     if axis == "x":
         query = "SELECT * FROM site_row WHERE orient = ? AND abs(y - ?) < 1e-6" + extra[0]
         found = []
-        for row in db.conn.execute(query, (orient, r["y"]) + args):
+        for row in db.conn.execute(query, (row_orient(orient), r["y"]) + args):
             step = row["step_x"] or 0.0
             if not step:
                 continue
@@ -507,7 +538,7 @@ def _along(db, r, cell, site, axis, sign, least):
             " ORDER BY y DESC LIMIT ?"
         bound = r["y"] - least + TOL
     found = []
-    for row in db.conn.execute(query, (orient, bound) + args + (SEARCH,)):
+    for row in db.conn.execute(query, (row_orient(orient), bound) + args + (SEARCH,)):
         step = row["step_x"] or 0.0
         last = row["x"] + (row["num_x"] or 1) * step - w
         on_grid = not step or abs((r["x"] - row["x"]) / step

@@ -309,6 +309,31 @@ def _spec_stub_tracks(db, spine, plan, names):
     return lines
 
 
+def _pin_wire_tracks(db, grid, spine, plan, names):
+    """{centre line: {track: how many}} of the tracks along a centre line
+    that the pin wires with no strap of the stubs' leaves (their output) lie
+    over: route_pin took them on to the stub's track."""
+    found = {}
+    leaf = {r["loads"]: r["driver"] for r in db.spine_net_rows(spine["id"])}
+    for name in names:
+        inst = leaf.get(name)
+        if inst is None:
+            continue
+        for w in db.pin_wire_rows(inst):
+            if w["strap"] is not None or w["net"] != plan.net.get(name):
+                continue
+            x1, y1, x2, y2 = (float(c) for c in w["rect"].split())
+            for line in plan.line[name]:
+                vertical, centre = plan.lines[line]
+                if vertical:             # a vertical stub: pin wires are vertical too
+                    continue
+                for c in grid.all_ys:
+                    if y1 + grid.h.width / 2 - TOL <= c <= y2 - grid.h.width / 2 + TOL:
+                        k = round(c, 6)
+                        found.setdefault(line, {})[k] = found.get(line, {}).get(k, 0) + 1
+    return found
+
+
 def plan_stubs(db, grid, spine, replaced=(), more=()):
     """The tracks of the stubs of a spine (StubPlan), every stub of it. The
     stubs on one centre line take one track: all the stubs of a straight
@@ -343,8 +368,10 @@ def plan_stubs(db, grid, spine, replaced=(), more=()):
     gone = set(owner.values()) | set(replaced)
     gone |= {stub_owner(n) for n in gone}        # the stubs' rows: under <net>_stub
     rect = lambda text: tuple(float(c) for c in text.split())
-    shapes = [(r["layer"], rect(r["rect"]), None) for r in db.strap_rows()]
-    shapes += [(r["layer"], rect(r["rect"]), None) for r in db.pin_wire_rows()]
+    # straps and pin wires on their nets (route_pin names them): a leaf's own does not
+    # keep its stub off a track; SIGNAL (on no net yet) and other nets' do
+    shapes = [(r["layer"], rect(r["rect"]), r["net"]) for r in db.strap_rows()]
+    shapes += [(r["layer"], rect(r["rect"]), r["net"]) for r in db.pin_wire_rows()]
     shapes += [(r["layer"], rect(r["rect"]), r["net"]) for r in db.net_wire_rows()
                if r["kind"] != "cross"
                and not (r["kind"].startswith("stub") and r["net"] in gone)]
@@ -356,6 +383,12 @@ def plan_stubs(db, grid, spine, replaced=(), more=()):
         k = bisect.bisect_left(tracks, centre)
         cands.append(sorted(tracks[max(0, k - SEARCH):k + SEARCH + 1],
                             key=lambda t: abs(t - centre)))
+    # a track a leaf's pin wire with no strap reaches already (route_pin took its output
+    # to the stub's track): first, so the stub lies on the pin wire's end
+    landed = _pin_wire_tracks(db, grid, spine, plan, names)
+    for line, found in landed.items():
+        cands[line] = sorted(cands[line], key=lambda t: (-found.get(round(t, 6), 0),
+                                                         abs(t - plan.lines[line][1])))
     for line, x in _spec_stub_tracks(db, spine, plan, names).items():
         cands[line] = [x]        # the spine spec's: its leaves' output track, nothing else
     reach = max(abs(t - centre) for (_, centre), found in zip(plan.lines, cands)

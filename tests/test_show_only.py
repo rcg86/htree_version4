@@ -44,6 +44,14 @@ def lst(s, script):
     return list(s.split_list(s.eval(script)))
 
 
+def pin_layers(s, net=None, inst=None):
+    """The handles of route_pin's pieces under the pin wires (H1, kind pin_layer) of a
+    net or an instance."""
+    return [f"net_wire:{r['net']}/{r['seq']}" for r in s.db.net_wire_rows()
+            if r["kind"] == "pin_layer" and (net is None or r["shield_net"] == net)
+            and (inst is None or r["net"] == f"pg:{inst}")]
+
+
 def err(s, script):
     with pytest.raises(tkinter.TclError) as e:
         s.eval(script)
@@ -67,8 +75,11 @@ def test_a_net_shows_its_routing_and_its_pins(routed):
     assert got["pin"] == ["pin:sp_L1_inv1/Y", "pin:sp_L2_inv1/A"]
     assert got["line"] == [NET]
     wires = lst(s, f"get_db {NET} .net_wires")
+    # with the H1 piece under each of its pin wires
+    assert len(pin_layers(s, "sp_L1_inv1_Y")) == 2
     assert got["route"] == sorted(wires + ["pin_wire:sp_L1_inv1/Y", "pin_wire:sp_L2_inv1/A",
-                                           "strap:sp_L1_inv1/3", "strap:sp_L2_inv1/5"])
+                                           "strap:sp_L1_inv1/3", "strap:sp_L2_inv1/5"]
+                                  + pin_layers(s, "sp_L1_inv1_Y"))
     assert got["via"] == sorted(lst(s, f"get_db {NET} .vias"))  # its pin stacks too
     assert len(got["route"]) < len(everything["route"]) and len(got["via"]) < \
         len(everything["via"])
@@ -83,7 +94,8 @@ def test_an_instance_shows_its_cell_and_pin_routes(routed):
     assert got["pin"] == sorted(lst(s, "get_db inst:sp_L2_inv1 .pins"))
     assert got["line"] == []
     assert got["route"] == sorted(lst(s, "get_db inst:sp_L2_inv1 .straps") +
-                                  lst(s, "get_db inst:sp_L2_inv1 .pin_wires"))
+                                  lst(s, "get_db inst:sp_L2_inv1 .pin_wires") +
+                                  pin_layers(s, inst="sp_L2_inv1"))
     assert got["via"] == sorted(vias.handle(r) for r in vias.rows(s.db)
                                 if r["source"].startswith("pin_wire:sp_L2_inv1/"))
     assert got["via"]
@@ -122,7 +134,9 @@ def test_a_power_net_shows_the_shapes_on_it(routed):
     assert got["inst"] == got["pin"] == got["line"] == []
     lay = load_layout(s.db)
     on_vss = [st.handle for st in lay.straps + lay.pin_wires + lay.net_wires if st.net == "VSS"]
-    assert got["route"] == sorted(on_vss) and len(on_vss) == 12
+    # the straps and pin wires, and an H1 piece under each VSS pin wire
+    assert got["route"] == sorted(on_vss) and len(on_vss) == 12 + 4
+    assert set(pin_layers(s, "VSS")) <= set(on_vss) and len(pin_layers(s, "VSS")) == 4
     assert got["via"] == sorted(v.handle for v in lay.vias if v.net == "VSS")
     assert s.eval("show_only -object net:VSS") == "net:VSS"
     assert "HT4-270" in err(s, "show_only -object SIGNAL")     # route_pin's placeholder net
@@ -219,12 +233,14 @@ def test_the_filter_follows_a_net_routed_again(routed):
     s = routed
     s.eval("show_only -object sp_L1_inv1_Y")
     s.eval("delete_route -nets sp_L1_inv1_Y")
-    assert not [h for h in drawn(s)["route"] if h.startswith("net_wire:")]
+    # the H1 pieces under its pin wires are pin routes (route_pin): they stay
+    assert not [h for h in drawn(s)["route"] if h.startswith("net_wire:")
+                and not h.startswith("net_wire:pg:")]
     s.eval("route_net -net sp_L1_inv1_Y -rule r")
     wires = lst(s, f"get_db {NET} .net_wires")
     assert wires and set(wires) <= set(drawn(s)["route"])
     assert all(h.startswith(("net_wire:sp_L1_inv1_Y/", "pin_wire:", "strap:"))
-               for h in drawn(s)["route"])
+               or h in pin_layers(s, "sp_L1_inv1_Y") for h in drawn(s)["route"])
 
 
 def test_scope_of_shapes_by_handle():
@@ -294,7 +310,8 @@ def test_window_filter_works_over_the_view_boxes(shown):
     w.layer_boxes["IA"].setChecked(True)
     assert [h for h in seen(w) if h.startswith(("net_wire:", "strap:"))] == routes
     assert not [h for h in seen(w) if not h.startswith(("net_wire:sp_L1_inv1_Y/", "pin", "strap:",
-                                                        "via:sp_L1_inv1_Y/", NET))]
+                                                        "via:sp_L1_inv1_Y/", NET))
+                and h not in pin_layers(s, "sp_L1_inv1_Y")]
 
 
 def test_hidden_shapes_cannot_be_picked(shown):
@@ -304,7 +321,8 @@ def test_hidden_shapes_cannot_be_picked(shown):
     assert "inst:sp_L3_inv2" in picked and set(picked) <= set(seen(w))
     assert not [h for h in picked if h.startswith(("inst:", "strap:", "pin_wire:"))
                 and "sp_L3_inv2" not in h]
-    assert not [h for h in picked if h.startswith(("net_wire:", "spine_net:", "stub:"))]
+    assert not [h for h in picked if h.startswith(("net_wire:", "spine_net:", "stub:"))
+                and h not in pin_layers(s, inst="sp_L3_inv2")]     # its own H1 pieces
 
 
 def test_window_keeps_the_filter_when_the_database_changes(shown):
@@ -332,7 +350,8 @@ def test_window_keeps_the_filter_through_an_edit_made_in_it(shown):
     assert wire not in seen(w) and set(seen(w)) < set(first)
     w.undo_edit()                                               # drawn again: within the filter
     assert wire in seen(w)
-    assert not [h for h in seen(w) if h.startswith("net_wire:") and "sp_L1_inv1_Y" not in h]
+    assert not [h for h in seen(w) if h.startswith("net_wire:") and "sp_L1_inv1_Y" not in h
+                and h not in pin_layers(s, "sp_L1_inv1_Y")]
     assert w.canvas.transform() == transform                    # no reload
 
 

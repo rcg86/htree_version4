@@ -195,7 +195,10 @@ OBJECTS AND ATTRIBUTES
         that drive the stubs: where the spine ends), root_net (net handle:
         the net on spine_input. <spine>_primary_input when the spec's
         root_net is the placeholder 'net' or none, else the spec's
-        root_net; rename_obj renames it)
+        root_net; rename_obj renames it), link_buffer and
+        link_sink_buffer (inst handles: the source and the sink buffer
+        connect_spine put on the way to this spine's input; empty
+        without)
     stub:<spine>/<stub>
         a final stub (the class is stub; get_db stubs lists them, get_db
         nets lists them with the nets): obj_type, name, driver (inst),

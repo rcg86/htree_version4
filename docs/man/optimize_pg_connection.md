@@ -31,6 +31,19 @@ DESCRIPTION
         of other nets on that layer; if the farthest target is blocked,
         the next nearer one is tried.
 
+    A cell of a horizontal pin spec (routing_direction horizontal, or
+    horizontal_layer none: no straps, route_pin -spec_name
+    horizontal_routing) has no power strap: its VDD_SOC and VSS pin wires
+    (H2) are lengthened instead, up and down, up to -extend um past where
+    route_pin left them, to the farthest power wire of their net on a
+    horizontal layer (IA: insert_pg_grid wires, shields, other cells'
+    straps) they then cover, so every one on the way, as far as the H2
+    tech spacing to other nets' shapes allows. The pin wire itself is
+    lengthened; its shape before is kept, so the command run again starts
+    from where route_pin left it (route_pin making it again forgets it).
+    Each new crossing gets a crossing box (net pg:<inst>, kind pg_cross,
+    layer H2/IA) for its via.
+
     The strap itself is lengthened (no piece of metal beside it); the
     crossing boxes are stored per instance, as net_wire rows of net
     pg:<inst> (kind pg_cross, .shield_net the power net), and the

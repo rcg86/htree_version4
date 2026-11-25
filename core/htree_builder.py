@@ -3,6 +3,10 @@
     python core/htree_builder.py                    interactive prompt
     python core/htree_builder.py -init run.tcl      run a script, then prompt
     python core/htree_builder.py -init run.tcl -batch   run a script, then exit
+
+Each run writes log/htree.log (all output) and log/htree.cmd (the commands)
+under the directory it is started in, the directory made when it is not
+there (core/session_log.py); -no_log turns that off.
 """
 
 import argparse
@@ -42,7 +46,12 @@ class Session:
         self.exit_code = None          # set by the exit command
         self.after_command = []        # callables run after every command (GUI refresh)
         self._at_prompt = False        # True while the REPL waits for a line
+        self.log = None                # core/session_log.Log of this run, if any
         self.tcl = tkinter.Tcl()
+        # Tcl's puts writes to the terminal itself; to stdout and stderr it goes
+        # through Python here, so the log file gets it (and the GUI's terminal).
+        self.tcl.eval("rename ::puts ::__tcl_puts")
+        self.tcl.createcommand("puts", self._puts)
         self.commands = command_pkg.discover()
         self.tcl.createcommand("__htree_dispatch", self._dispatch)
         # The source command replaces Tcl's; keep the original under another name.
@@ -50,6 +59,26 @@ class Session:
         self.tcl.eval(source_cmd.HELPER)
         for name in self.commands:
             self.tcl.eval(_WRAPPER.format(name=name))
+
+    def _puts(self, *args):
+        words = list(args)
+        newline = not (words and words[0] == "-nonewline")
+        if not newline:
+            words = words[1:]
+        channel, text = ("stdout", words[0]) if len(words) == 1 else \
+            (words[0], words[1]) if len(words) == 2 else (None, None)
+        if channel not in ("stdout", "stderr"):      # a file, a socket, a usage error
+            return self.tcl.call("__tcl_puts", *args)
+        stream = self.out if channel == "stdout" else sys.stderr
+        stream.write(text + ("\n" if newline else ""))
+        stream.flush()
+        return ""
+
+    def log_command(self, text: str):
+        """Keep a command run (typed, given with -init, run by the GUI) in the
+        cmd file of the run."""
+        if self.log is not None:
+            self.log.command(text)
 
     def split_list(self, text: str):
         return self.tcl.splitlist(text)
@@ -129,7 +158,11 @@ class Session:
             prompt = PROMPT if not buffer else "> "
             self._at_prompt = True
             try:
-                line = input(prompt)
+                if self.log is not None:     # readline needs the terminal's own stdout
+                    with self.log.terminal():
+                        line = input(prompt)
+                else:
+                    line = input(prompt)
             except EOFError:
                 print(file=self.out)
                 return
@@ -139,12 +172,15 @@ class Session:
                 continue
             finally:
                 self._at_prompt = False
+            if self.log is not None:
+                self.log.typed(prompt, line)
             buffer = f"{buffer}\n{line}" if buffer else line
             if not self.tcl.call("info", "complete", buffer):
                 continue
             script, buffer = buffer, ""
             if not script.strip():
                 continue
+            self.log_command(script)
             try:
                 result = self.eval(script)
             except tkinter.TclError as exc:
@@ -163,10 +199,24 @@ def main(argv=None) -> int:
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("-init", metavar="SCRIPT", help="Tcl script to run at startup")
     parser.add_argument("-batch", action="store_true", help="exit after the -init script")
+    parser.add_argument("-no_log", action="store_true",
+                        help="write no log/htree.log and log/htree.cmd")
     args = parser.parse_args(argv)
 
+    from core.session_log import Log
+    log = None if args.no_log else Log().start(sys.argv[1:] if argv is None else list(argv))
+    try:
+        return _main(args, log)
+    finally:
+        if log is not None:
+            log.stop()
+
+
+def _main(args, log):
     session = Session()
+    session.log = log
     if args.init:
+        session.log_command(f"source {args.init}")
         try:
             session.source(args.init)
         except tkinter.TclError as exc:

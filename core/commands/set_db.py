@@ -47,11 +47,15 @@ def _set_net_route_rule(db, handle, rule):
 
 
 ROUTE_STATUSES = ("fixed", "routed")
+FREE_WORDS = ("route", "unfixed", "free")      # said for routed
 
 
 def _route_status_value(db, value):
-    """True to fix; routed frees (the status then follows the wires)."""
+    """True to fix; routed (or route, unfixed, free) frees (the status then
+    follows the wires)."""
     status = value.lower()
+    if status in FREE_WORDS:
+        status = "routed"
     if status not in ROUTE_STATUSES:
         raise HtreeError(BAD_VALUE, f"set_db: .route_status must be fixed (no routing command "
                          f"changes the net's routes) or routed (frees them), got '{value}'; "
@@ -100,6 +104,28 @@ def _set_inst_status(db, handle, status):
     db.set_inst_status(objects.name_of(handle), status)
 
 
+def _pin_spec_value(db, value):
+    """(spec, name) of a named pin routing spec (read_pin_spec), or of the
+    built-in one (default)."""
+    if value == "default":
+        from core.commands.route_pin import DEFAULTS
+        return DEFAULTS, None
+    kept = db.pin_spec_def(value)
+    if kept is None:
+        names = db.pin_spec_def_names()
+        raise HtreeError(BAD_VALUE, f"set_db: .pin_spec must be a pin routing spec read by "
+                         f"read_pin_spec, or default; got '{value}'"
+                         + (f" (read: {' '.join(names)})" if names else
+                            " (none read: read_pin_spec -file <yaml>)"))
+    return kept[0], value
+
+
+def _set_pin_spec(db, handle, kept):
+    """The spec route_pin -inst (no -spec) routes the instance with next."""
+    spec, name = kept
+    db.set_pin_spec(objects.name_of(handle), spec, name)
+
+
 # (object type, attr) -> (value check returning the stored value, setter)
 SETTABLE = {("spine_net", "route_rule"): (_route_rule_value, _set_net_route_rule),
             ("net", "route_rule"): (_route_rule_value, _set_net_route_rule),
@@ -109,7 +135,8 @@ SETTABLE = {("spine_net", "route_rule"): (_route_rule_value, _set_net_route_rule
             ("stub", "route_status"): (_route_status_value, _set_route_status),
             ("net_wire", "route_status"): (_route_status_value, _set_route_status),
             ("inst", "place_status"): (_place_status_value, _set_inst_status),
-            ("inst", "status"): (_place_status_value, _set_inst_status)}
+            ("inst", "status"): (_place_status_value, _set_inst_status),
+            ("inst", "pin_spec"): (_pin_spec_value, _set_pin_spec)}
 
 
 # (object type, attr) -> a check of each object before any is set
@@ -156,4 +183,9 @@ def run(session, argv):
     for handle in handles:
         key = (objects.obj_type(handle), attr)
         SETTABLE[key][1](db, handle, checked[key])
+    if attr == "pin_spec":
+        names = [objects.name_of(h) for h in handles]
+        info(f"set_db: {len(names)} instance(s) on pin spec {value}; route_pin -inst "
+             f"{{{' '.join(names[:10])}{' ...' if len(names) > 10 else ''}}} makes their pin "
+             f"routes again with it (the old ones removed)", session.out)
     return tuple(handles)

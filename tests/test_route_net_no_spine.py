@@ -86,9 +86,11 @@ def test_routes_the_nets_of_no_spine(ported):
     # a load by another pin than the first input of its cell: that pin (no pin route here)
     assert "HT4-172" in text and "route_pin is not done on d3 (pin B)" in text
     assert "load d3/B: ends near the pin, not connected" in text
-    # one vertical wire from the crossing at the port down to the strap of b1/A
+    # one vertical wire from the crossing by the port down to the strap of b1/A: the
+    # port (on H2, below the rule's layers) is left to the top level, the route stops at
+    # the crossing 1 um from it (-30.24 is 0.28 from it)
     (x1, y1, x2, y2), = rects(s, "clk_in", "wire", "IB")
-    assert (x1 + x2) / 2 == pytest.approx(-30.24) and y2 == pytest.approx(30.24 + 0.18)
+    assert (x1 + x2) / 2 == pytest.approx(-30.96) and y2 == pytest.approx(30.24 + 0.18)
     assert s.eval("get_db net:clk_in .route_rule") == "route_rule:r"
 
 
@@ -96,11 +98,12 @@ def test_port_ends(ported):
     s = ported
     s.eval("route_net -net {clk_in clk2_in edge_in} -rule r")
     text = out_of(s)
-    # a port on a layer below the rule's: the route ends at the crossing, not connected
+    # a port on a layer below the rule's: left to the top level, the route stops at the
+    # nearest crossing at least 1 um (x + y) from its shapes (x -30.1 .. -29.9, y 29.9 .. 30.1)
     assert "HT4-266" in text and "clk_in: the route ends at the track crossing nearest port " \
-        "clk, {-30.24 30.24} on IA and IB, 0.48 um from the centre of the port (shapes on H2); " \
-        "it is not connected to the port" in text
-    assert "driver port clk: ends near the port, not connected at {-30.24 30.24}" in text
+        "clk at least 1 um from it, {-30.96 30.24} on IA and IB, 1.2 um from the centre of " \
+        "the port (shapes on H2); it is not connected to the port: left to the top level" in text
+    assert "driver port clk: ends near the port, not connected at {-30.96 30.24}" in text
     # a port on a rule layer under a wire of the route on that layer: connected
     assert "driver port clk2: connected on IB at {20.16 30.24}" in text
     assert "clk2_in: the route ends" not in text
@@ -109,13 +112,39 @@ def test_port_ends(ported):
     assert "driver port edge: ends near the port, not connected at {50.4 -20.16}" in text
 
 
+def test_a_net_that_drives_an_output_port(tech_session, write_lef, monkeypatch):
+    # an output port q on IB over a track crossing; connect_pin puts a buffer before it:
+    # its net is the buffer's output pin and the port, no input pin
+    import sys
+    pins = PINS.replace("PINS 4 ;", "PINS 5 ;").replace(
+        "END PINS", "- q + NET q_out + DIRECTION OUTPUT\n"
+        "  + LAYER IB ( -400 -400 ) ( 400 400 ) + FIXED ( 40320 30240 ) N ;\nEND PINS")
+    monkeypatch.setattr(sys.modules[__name__], "PINS", pins)
+    s = make(tech_session, write_lef)
+    s.eval("connect_pin -from d2/Y -to q -ref_cell INV_RP")
+    buf = [n for n in lst(s, "get_db insts .name") if n not in
+           ("b1", "d2", "d3", "d4") and not n.startswith("sp_")]
+    assert len(buf) == 1
+    s.eval(f"route_pin -inst {buf[0]}")
+    net = s.eval("get_db [get_db ports q] .net").removeprefix("net:")
+    out_of(s)
+    assert lst(s, f"route_net -net {net} -rule r") == [f"net:{net}"]
+    text = out_of(s)
+    assert "HT4-265" not in text
+    assert f"driver {buf[0]}/Y" in text
+    # on IB over a crossing, as clk2: the route ends on it, connected
+    assert "load port q: connected on IB" in text
+    assert rects(s, net, "wire")
+
+
 def test_nets_that_are_not_routed(ported):
     s = ported
     # the net of a port with no pin on it
     for word in ("idle", "net:idle"):
         assert s.eval(f"route_net -net {word} -rule r") == ""
         text = out_of(s)
-        assert "HT4-265" in text and "net idle is not routed: no input pin of an instance" in text
+        assert "HT4-265" in text and "net idle is not routed: no input pin of an instance " \
+            "or output port of the design is on it" in text
     # every word must match a net; a pattern sees the nets with a pin on them
     for word in ("net:nosuch", "nosuch", "id*"):
         assert "HT4-170" in err(s, f"route_net -net {word} -rule r")
@@ -188,7 +217,7 @@ def test_shields(ported):
         assert "VDD_SOC" in got and "VSS" in got
     # the power pins of the cells on the nets: b1 and the root of the spine reach the
     # shields; d3 has no pin routes
-    assert "strap:b1/1 VSS (shield x -29.52 over it)" in text
+    assert "strap:b1/1 VSS (shield x -30.24 over it)" in text
     assert "power pins connected to shields: 4 of 6" in text
     assert "HT4-177" in text and "d3/VDD (strap 6) d3/VSS (strap 4)" in text
     # routed again without -shield: the shields go
@@ -217,10 +246,16 @@ def test_delete_route(routed):
     s = routed
     assert lst(s, "delete_route -nets {net:clk_in b1*}") == ["net:clk_in", "net:b1_Y"]
     text = out_of(s)
-    assert "clk_in: 4 wire(s), extension(s), crossing box(es) and shield(s) removed; 2 strap(s) " \
-        "and pin wire(s) back on SIGNAL" in text
-    assert s.eval("get_db net:clk_in .net_wires") == "" and s.eval("get_db net:b1_Y .vias") == ""
-    assert s.eval("get_db strap:b1/5 .net") == s.eval("get_db strap:sp_L1_inv1/5 .net") == "SIGNAL"
+    assert "clk_in: 4 wire(s), extension(s), crossing box(es) and shield(s) removed\n" in text
+    assert "back on SIGNAL" not in text          # the pin routes stay on their pin's net
+    assert s.eval("get_db net:clk_in .net_wires") == ""
+    # what stays: the vias of its pin routes (route_pin's: pin to pin wire, pin wire to
+    # strap), no via of a route
+    assert {s.eval(f"get_db {v} .kind") for v in lst(s, "get_db net:b1_Y .vias")} == \
+        {"pin", "strap"}
+    # each strap stays on the net its pin is on (route_pin named it so)
+    assert s.eval("get_db strap:b1/5 .net") == "clk_in"
+    assert s.eval("get_db strap:sp_L1_inv1/5 .net") == "b1_Y"
     # the nets stay, and the others keep their routing
     assert s.eval("get_db net:clk_in .pins") == "pin:b1/A"
     assert s.eval("get_db net:clk2_in .net_wires") != ""

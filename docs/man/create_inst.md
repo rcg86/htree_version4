@@ -42,7 +42,11 @@ OBJECTS AND ATTRIBUTES
     inst:<name>
         obj_type, name, ref_name (cell name), lib_cell (handle), location
         ("x y", lower-left), orient, bbox ("x1 y1 x2 y2"), status and
-        place_status (placed; set_db .place_status fixed), pins (handles)
+        place_status (placed; set_db .place_status fixed), pins (handles),
+        straps and pin_wires (handles: route_pin), pin_spec (the -spec file
+        route_pin last routed it with, "default" for the built-in spec,
+        empty when not routed; legalize_placement makes its pin routes
+        again with it when it turns the instance)
     pin:<inst>/<pin>
         a pin of an instance: obj_type, name, inst (handle), lib_pin
         (handle), direction, use, layers, rect (placed bounding box of the

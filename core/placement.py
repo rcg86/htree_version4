@@ -10,6 +10,17 @@ from core.def_parser import ORIENTS
 ORIENT_NAMES = list(ORIENTS)          # N W S E FN FW FS FE
 
 
+# The orientation of the rows a cell of an orientation goes in: a DEF ROW is N or
+# FS; a cell mirrored about the y axis (FN, S) sits in the row of its unmirrored
+# orientation.
+ROW_ORIENT = {"N": "N", "FN": "N", "FS": "FS", "S": "FS"}
+
+
+def row_orient(orient):
+    """The orientation of the rows a cell of orient is placed in."""
+    return ROW_ORIENT.get(orient or "N", orient or "N")
+
+
 def placer(size_x, size_y, orient, x, y):
     """A function mapping cell coordinates to placed coordinates."""
     t = ORIENTS[orient]

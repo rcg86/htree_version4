@@ -8,6 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
+from core import objects
+
 pytest.importorskip("scipy")
 
 from core.commands.route_net import H, KEEP, Terminal, V, _flow_order
@@ -38,13 +40,22 @@ def ib(s, net):
 def test_legalize_turns_the_cell_to_face_its_input(chain):
     s = chain
     s.eval("route_pin -inst c2")
-    assert s.db.strap_rows("c2")
+    before = len(s.db.strap_rows("c2"))
+    assert before
     s.eval("legalize_placement -inst {c1 c2 c3}")
     text = out_of(s)
-    assert "  2 instance(s) turned so the input pin faces the incoming net (their pin routes " \
-           "removed): c2 FS -> N, c3 FS -> N; route_pin -inst {c2 c3}" in text
+    assert "  2 instance(s) turned so the input pin faces the incoming net: c2 FS -> N, " \
+           "c3 FS -> N; their pin routes (straps, pin wires, vias) made again" in text
+    assert "pin routes made again with the spec route_pin used: c2" in text
     assert [s.db.inst_row(n)["orient"] for n in ("c1", "c2", "c3")] == ["FS", "N", "N"]
-    assert not s.db.strap_rows("c2")          # upside down: made again by route_pin
+    # upside down, so made again where the cell is now, as route_pin made them
+    assert len(s.db.strap_rows("c2")) == before
+    x1, y1, x2, y2 = objects.inst_bbox(s.db, s.db.inst_row("c2"))
+    for r in s.db.strap_rows("c2"):
+        sx1, sy1, sx2, sy2 = map(float, r["rect"].split())
+        assert (sx1, sx2) == pytest.approx((x1, x2)) and y1 - 10 < sy1 < sy2 < y2 + 10
+    assert {w["pin"] for w in s.db.pin_wire_rows("c2")} == {"VDD", "VSS", "A", "Y"}
+    assert not s.db.strap_rows("c3")          # it had none: none made
     # c1 has no driver: the way its signal comes cannot be told; the others face it now
     s.eval("legalize_placement -inst {c1 c2 c3}")
     assert "turned" not in out_of(s)
@@ -150,3 +161,52 @@ def test_a_track_outside_the_design_is_named(chain):
     rows = {(i, p): why for i, p, _, why in pin_access.check(s.db, ["e1"])}
     assert rows[("e1", "A")] == [(59.4, "outside the design"), (62.28, "taken by blk"),
                                  (65.16, "taken by blk")]
+
+
+def test_a_turned_cell_routed_before_specs_were_kept(chain):
+    # an older database: no spec kept for the cell, its routes are removed and said
+    s = chain
+    s.eval("route_pin -inst c2")
+    with s.db.conn:
+        s.db.conn.execute("DELETE FROM meta WHERE key = 'pin_spec:c2'")
+    s.eval("legalize_placement -inst {c1 c2 c3}")
+    text = out_of(s)
+    assert "(HT4-213): legalize_placement: no pin routing spec kept for c2" in text
+    assert not s.db.strap_rows("c2")
+
+
+
+def test_a_moved_cell_takes_its_pin_routes(chain):
+    # not turned, only moved by legalize: its straps and pin wires go with it, as they are
+    s = chain
+    s.eval("route_pin -inst c1")
+    s.db.move_insts(["c1"], 0.37, 0.0, pin_routes=True)      # off its site, routes and all
+    straps = [tuple(map(float, r["rect"].split())) for r in s.db.strap_rows("c1")]
+    wires = [tuple(map(float, r["rect"].split())) for r in s.db.pin_wire_rows("c1")]
+    x, y = s.db.inst_row("c1")["x"], s.db.inst_row("c1")["y"]
+    s.eval("legalize_placement -inst c1 -keep_orientation")
+    out_of(s)
+    dx, dy = s.db.inst_row("c1")["x"] - x, s.db.inst_row("c1")["y"] - y
+    assert dx or dy
+    shifted = lambda rects: [pytest.approx((a + dx, b + dy, c + dx, d + dy))
+                             for a, b, c, d in rects]
+    assert [tuple(map(float, r["rect"].split())) for r in s.db.strap_rows("c1")] == \
+        shifted(straps)
+    assert [tuple(map(float, r["rect"].split())) for r in s.db.pin_wire_rows("c1")] == \
+        shifted(wires)
+
+
+def test_each_instance_keeps_its_own_pin_spec(chain, write_lef, tmp_path):
+    # route_pin keeps the spec it routed each instance with; different cells, different specs
+    s = chain
+    spec = write_lef("pin_routing:\n  width: 0.36\n  spacing: 0.36\n", "p.yaml")
+    s.eval(f"route_pin -inst c1 -spec {spec}")
+    s.eval("route_pin -inst c2")
+    out_of(s)
+    assert s.eval("get_db inst:c1 .pin_spec") == spec
+    assert s.eval("get_db inst:c2 .pin_spec") == "default"
+    assert s.eval("get_db inst:c3 .pin_spec") == ""                 # never routed
+    assert s.db.pin_spec("c1")[0]["width"] == 0.36 and s.db.pin_spec("c2")[0]["width"] == 0.72
+    s.eval(f"write_db -file {tmp_path / 'k.db'}")                   # kept in the database
+    s.eval(f"read_db -file {tmp_path / 'k.db'}")
+    assert s.eval("get_db inst:c1 .pin_spec") == spec

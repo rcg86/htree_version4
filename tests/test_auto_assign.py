@@ -104,3 +104,90 @@ def test_fits():
     assert vias.fits([("G2", "RECT", [-1, -1, 1, 1])] + small, metal, "IA", "C6", "IB", 0.18,
                      0.18)
     assert vias.fits([("G2", "RECT", [-1, -1, 1, 1])], {}, "G1", "T1", "G2", 0, 0)
+
+
+# V_IA_IB turned a quarter: its IA pad 0.3 wide and 0.4 tall, past a 0.36 IA wire;
+# and one of 0.3 square pads, on the IB wire's end where the IA wire stops at its edge
+TURNED = ("VIA V_IA_IB_T\n  LAYER IA ;\n    RECT -0.15 -0.2 0.15 0.2 ;\n"
+          "  LAYER C6 ;\n    RECT -0.1 -0.1 0.1 0.1 ;\n"
+          "  LAYER IB ;\n    RECT -0.2 -0.15 0.2 0.15 ;\nEND V_IA_IB_T\n"
+          "VIA V_IA_IB_S\n  LAYER IA ;\n    RECT -0.15 -0.15 0.15 0.15 ;\n"
+          "  LAYER C6 ;\n    RECT -0.1 -0.1 0.1 0.1 ;\n"
+          "  LAYER IB ;\n    RECT -0.15 -0.15 0.15 0.15 ;\nEND V_IA_IB_S\n")
+
+
+def test_a_via_its_net_definition_does_not_fit_gets_its_own(via_session, write_lef):
+    from via_tech import tech_text
+    s = build(via_session, write_lef)
+    text = tech_text()
+    s.eval(f"read_tech -file {{{write_lef(text.replace('END LIBRARY', TURNED + 'END LIBRARY'), 'vt.lef')}}}")
+    s.eval("route_pin -inst sp_*")
+    s.eval("route_net -net [get_db nets .name] -rule r")
+    out_of(s)
+    net = "sp_L1_inv1_Y"
+    s.eval(f"assign_via_for_route -via V_IA_IB_T -nets {net}")   # by hand: fits none of them
+    out_of(s)
+    metal = vias.net_shapes(s.db)
+    ia_ib = lambda: [r for r in vias.rows(s.db, net) if (r["bottom"], r["top"]) == ("IA", "IB")]
+    fit = lambda r: vias.fits(vias.definition_shapes(s.db, r["via_def"]), metal.get(net, {}),
+                              r["bottom"], r["cut"], r["top"], r["x"], r["y"])
+    defs = [n for n, st in vias.definition_layers(s.db).items() if st == ("IA", "C6", "IB")]
+    fits_one = lambda r: [n for n in defs if vias.fits(vias.definition_shapes(s.db, n),
+                                                       metal.get(net, {}), "IA", "C6", "IB",
+                                                       r["x"], r["y"])]
+    mine = ia_ib()
+    assert mine and all(r["via_def"] == "V_IA_IB_T" and not fit(r) for r in mine)
+    assert all(fits_one(r) for r in mine)                    # another definition fits each
+    # another net routed (the vias of every net looked at): each of them gets a definition
+    # that fits, its own, kept on its crossing box
+    s.eval("route_net -net sp_L3_inv1_Y -rule r")
+    text = out_of(s)
+    assert f"{len(mine)} IA/IB via(s) given a definition of their own" in text
+    now = ia_ib()
+    assert [(r["x"], r["y"]) for r in now] == [(r["x"], r["y"]) for r in mine]
+    assert all(r["via_def"] in fits_one(r) for r in now)
+    assert all(fit(r) for r in now)
+    for r in now:
+        n, seq = r["source"][len("net_wire:"):].rsplit("/", 1)
+        assert r["via_def"] in s.db.net_wire_row(n, int(seq))["via_def"].split()
+    assert assigned(s)[("IA", "IB", net)] == "V_IA_IB_T"     # the net's assignment stays
+    assert vias.own_misfits(s.db) == {}                         # nothing more to change
+
+
+def test_a_crossing_box_is_made_the_full_crossing_of_its_wires(via_session, write_lef):
+    s = build(via_session, write_lef)
+    s.eval("route_pin -inst sp_*")
+    s.eval("route_net -net [get_db nets .name] -rule r")
+    out_of(s)
+    rows = lambda net: {r["seq"]: r for r in s.db.net_wire_rows(net)}
+    net, fixed = "sp_L2_inv1_Y", "sp_L3_inv1_Y"
+    wire = next(r for r in rows(net).values() if r["kind"] == "wire" and r["layer"] == "IB")
+    box = next(r for r in rows(net).values()
+               if r["kind"] == "cross" and r["rect"].split()[1] == wire["rect"].split()[1])
+    full = box["rect"]                        # the IB wire's end on the IA strap: the crossing
+    x1, y1, x2, y2 = (float(c) for c in wire["rect"].split())
+    # by hand: the IB wire stops 0.05 short of the strap's lower edge, the box 0.1 off it
+    s.db.set_wire_rect("net_wire", wire["id"], f"{x1} {y1 + 0.05} {x2} {y2}")
+    b = [float(c) for c in full.split()]
+    s.db.set_wire_rect("net_wire", box["id"], f"{b[0]} {b[1] + 0.1} {b[2]} {b[3] + 0.1}")
+    # the same on a fixed net: left as it is
+    fwire = next(r for r in rows(fixed).values() if r["kind"] == "wire")
+    fbox = next(r for r in rows(fixed).values() if r["kind"] == "cross")
+    fb = [float(c) for c in fbox["rect"].split()]
+    s.db.set_wire_rect("net_wire", fbox["id"], f"{fb[0]} {fb[1] + 0.1} {fb[2]} {fb[3] + 0.1}")
+    s.eval(f"set_db [get_db nets {fixed}] .route_status fixed")
+    moved_fixed = rows(fixed)[fbox["seq"]]["rect"]
+    out_of(s)
+    assert box["rect"] != rows(net)[box["seq"]]["rect"]
+    s.eval("route_net -net sp_L3_inv2_Y -rule r")              # another net: every box looked at
+    text = out_of(s)
+    assert "1 crossing box(es) made the full crossing of their two wires, 1 wire(s) " \
+           "lengthened to it" in text
+    assert rows(net)[box["seq"]]["rect"] == full                # back on the crossing
+    assert rows(net)[wire["seq"]]["rect"].split() == wire["rect"].split()   # reaches it again
+    assert rows(fixed)[fbox["seq"]]["rect"] == moved_fixed       # the fixed net's: as it was
+    assert rows(fixed)[fwire["seq"]]["rect"] == fwire["rect"]
+    v = next(v for v in vias.rows(s.db, net) if v["source"] == f"net_wire:{net}/{box['seq']}")
+    b = [float(c) for c in full.split()]
+    assert (v["x"], v["y"]) == (round((b[0] + b[2]) / 2, 6), round((b[1] + b[3]) / 2, 6))
+    assert vias.square_crossings(s.db) == (0, 0)               # nothing more to do

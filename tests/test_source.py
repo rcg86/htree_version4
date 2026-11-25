@@ -106,10 +106,11 @@ def test_echo(session, script, capfd):
     session.eval(f"source -echo {path}")
     session.eval("flush stdout")
     out = session.out.getvalue()
-    assert "htree> puts hello\n" in out
+    # puts writes where the commands do (the session's output, the log), in order
+    assert "htree> puts hello\nhello\n" in out
     assert "htree> set x [expr {1 +\n 2}]\n" in out
     assert "a comment" not in out
-    assert capfd.readouterr().out == "hello\n"
+    assert capfd.readouterr().out == ""
 
 
 def test_errors(session, tmp_path):

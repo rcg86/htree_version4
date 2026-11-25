@@ -18,9 +18,10 @@ DESCRIPTION
         stretches of the net (its
         straps and the power straps it joined go back to route_pin's
         size). The
-        route_pin straps and pin wires route_net had named after the net
-        go back to SIGNAL, as they connect to nothing now (the straps keep
-        their size; route_pin made them). A leaf net keeps its stub's wire.
+        route_pin straps and pin wires on the net stay on it (route_pin
+        puts them on their pin's net; one whose pin is on another net now,
+        connect_pin, follows it, and one on no net goes back to SIGNAL; the
+        straps keep their size). A leaf net keeps its stub's wire.
 
     The report gives what each net lost. Nets that had no routing are
     counted; when none had any, a warning says nothing was removed.

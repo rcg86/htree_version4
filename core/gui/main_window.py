@@ -574,6 +574,7 @@ class MainWindow(QMainWindow):
         terminal; a failure also shows in the status bar. Returns (True when
         it ran, its output)."""
         session = self.session
+        session.log_command(cmd)
         out, session.out = session.out, io.StringIO()
         ok = True
         try:

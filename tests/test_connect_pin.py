@@ -105,7 +105,7 @@ def test_net_of_a_pin_is_an_object(design):
     # no such net; a spine's net is a spine_net, not a net
     for handle in ("net:nothing", "net:sp_L1_inv1_Y"):
         assert "HT4-022" in err(s, f"get_db {handle}")
-    assert "HT4-023" in err(s, "get_db net:clk .length")
+    assert "HT4-023" in err(s, "get_db net:clk .loads")              # a spine net's only
 
 
 def test_directions(design):
@@ -215,7 +215,8 @@ def test_spine_net_loads(design):
     # the first input pin onto the output of a spine cell: a load of the spine net
     s.eval("connect_pin -from sp_L2_inv1/Y -to {d1/A d2/B}")
     text = out_of(s)
-    assert "netlist only, route_net does not route to it" in text and text.rstrip().endswith("d2/B")
+    assert "netlist only, no wire yet; route_net routes the net to it too" in text and \
+        text.rstrip().endswith("d2/B")
     assert loads(s, "sp_L2_inv1_Y") == ["sp_L3_inv1", "sp_L3_inv2", "d1"]
     assert [(r["inst"], r["pin"], r["net"], r["driver"]) for r in s.db.connection_rows()] == \
         [("d2", "B", "sp_L2_inv1_Y", "sp_L2_inv1/Y")]
@@ -387,7 +388,7 @@ def test_read_db_of_schema_21(design, tmp_path):
     assert net(other, "d1/A") == "buf1_Y"
     other.eval(f"write_db -file {tmp_path}/new.db")
     con = sqlite3.connect(tmp_path / "new.db")
-    assert con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == "26"
+    assert con.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()[0] == "27"
     assert con.execute("SELECT inst, pin, net, driver FROM connection").fetchall() == \
         [("d1", "A", "buf1_Y", "buf1/Y")]
     con.close()

@@ -133,7 +133,8 @@ def test_compact_removes_stubs_routed_on_another_track(spine):
     spine.db.set_net_wires("other", [])
     spine.eval(f"route_track -net {ALL} -rule r -compact")
     text = out_of(spine)
-    assert "(HT4-279): route_track: removed the 4 wires, crossing boxes and shields of 4 " \
+    # each stub's wire and its crossing box on the leaf's strap (on its net from route_pin)
+    assert "(HT4-279): route_track: removed the 8 wires, crossing boxes and shields of 4 " \
         "stub(s) routed before on another track than the one kept free for them; " \
         "route_final_stub routes them again: stub:sp/stub1 stub:sp/stub2 " \
         "stub:sp/stub1_mirror stub:sp/stub2_mirror" in text

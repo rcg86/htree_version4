@@ -1,0 +1,22 @@
+# htree_builder 
+# started 2026-11-24 12:24:21 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+#read_tech -file ../tech.new.lef
+read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+read_spine_spec -file ./custom_spine.yaml
+read_def -file cf999.def
+# Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+# power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+read_pin_spec -file pin_routing_spec.yaml 
+# route_pin needs instances: it runs after create_spine below
+#route_pin -spec pin_routing_spec.yaml
+#create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+#create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+connect_pin -from ref_clk_ione_ctm3_clk_out_31_3_clock -to {ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31} -ref_cell INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04
+create_buffer_tree -from ref_clk_ione_ctm3_clk_out_31_3_clock -inverter_ref INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -name buffer_tree_ref_clk -topology shortest -distance 700
+gui_show 
+exit
+# ended 2026-11-24 23:12:47

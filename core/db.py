@@ -5,7 +5,7 @@ import sqlite3
 
 from core.lef import CellLef, TechLef
 
-SCHEMA_VERSION = 26  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
+SCHEMA_VERSION = 27  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_def; 6: tracks;
                      # 7: track assignments; 8: instances; 9: route rules;
                      # 10: level_pitch, deviation, built spines; 11: spine cell location;
                      # 12: named route rules with several layers, net route rules;
@@ -27,6 +27,9 @@ SCHEMA_VERSION = 26  # 2: read_lef; 3: lib pins/shapes; 4: spine specs; 5: read_
                      # 26: strap stretches (STRETCH_SCHEMA, strap.base_rect): a route
                      #     lengthens the strap, no extension piece (an older file's
                      #     pieces become stretches when it is read)
+                     # 27: spine links (LINK_SCHEMA): connect_spine
+                     #     -sink_spine_distance / -source_spine_stub_distance (an
+                     #     older file gets the table when it is read)
 
 SCHEMA = """
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -331,7 +334,7 @@ CREATE TABLE net_wire (
     seq INTEGER,                         -- 1, 2, ... per net
     kind TEXT,                           -- wire | extension | cross | shield |
                                          -- shield_ext | stub | stub_cross | stub_shield |
-                                         -- pg_ext | pg_cross (net pg:<inst>) |
+                                         -- pg_ext | pg_cross | pin_layer (net pg:<inst>) |
                                          -- via (stretch_wire) | insert_via (insert_vias),
                                          -- both under net auto_via:<wire handle>
     layer TEXT,                          -- a cross or a via: "<layer>/<layer>"
@@ -364,7 +367,7 @@ VIA_SCHEMA = """
 CREATE TABLE via_def (
     id INTEGER PRIMARY KEY,
     name TEXT UNIQUE NOT NULL,
-    source TEXT,                         -- lef | def
+    source TEXT,                         -- lef | def | gen (insert_vias, from a VIARULE)
     is_default TEXT,                     -- true | false (LEF: VIA <name> DEFAULT)
     via_rule TEXT,                       -- shapes generated from this VIARULE's parameters
     line INTEGER,
@@ -459,12 +462,36 @@ CREATE TABLE strap_stretch (
 CREATE INDEX strap_stretch_owner ON strap_stretch (owner);
 """
 SCHEMA += STRETCH_SCHEMA
+
+# Schema version 27. Kept apart as STRETCH_SCHEMA is.
+LINK_SCHEMA = """
+-- connect_spine -source_spine_stub_distance / -sink_spine_distance: a stub
+-- of one spine driving the root input of another through buffers: the
+-- source buffer (its input pin buffer_distance um from the stub) and the
+-- sink buffer (its output pin sink_distance um from the root input); NULL:
+-- none. length: not used (a route length, before the sink buffer).
+CREATE TABLE spine_link (
+    id INTEGER PRIMARY KEY,
+    from_spine TEXT NOT NULL,
+    stub TEXT NOT NULL,
+    to_spine TEXT NOT NULL UNIQUE,       -- one link drives a spine
+    length REAL,
+    buffer TEXT,
+    buffer_distance REAL,
+    sink_buffer TEXT,
+    sink_distance REAL
+);
+"""
+SCHEMA += LINK_SCHEMA
 STRETCH_KINDS = ("extension", "shield_ext", "pg_ext")
 
 LAYER_COLUMNS = ["name", "type", "direction", "pitch_x", "pitch_y", "offset_x", "offset_y",
                  "width", "min_width", "max_width", "area", "min_enclosed_area",
                  "min_step", "min_step_max_edges", "min_spacing", "lef_text"]
 REMOVED_LAYERS = "tech:removed_layers"      # meta key: names, blank separated (remove_layer)
+CELL_KIND = "cell_kind:"                    # meta key prefix: <lib cell> -> buffer | inverter
+PIN_SPEC = "pin_spec:"                      # meta key prefix: <inst> -> route_pin's spec (JSON)
+PIN_SPEC_DEF = "pin_spec_def:"              # meta key prefix: <name> -> a named spec (read_pin_spec)
 
 
 def _num(value: float) -> str:
@@ -580,6 +607,19 @@ class Database:
                  for k, sh in enumerate(via.shapes, start=1)])
         return both
 
+    def add_generated_via(self, name, via_rule, extra, shapes):
+        """A via definition insert_vias generated from a VIARULE (source gen):
+        extra its DEF VIAS statements (LAYERS, CUTSIZE ... in microns)."""
+        with self.conn:
+            key = self.conn.execute(
+                "INSERT INTO via_def (name, source, is_default, via_rule, line, extra, text) "
+                "VALUES (?, 'gen', 'false', ?, NULL, ?, NULL)", (name, via_rule, extra)).lastrowid
+            self.conn.executemany(
+                "INSERT INTO via_def_shape (via_def_id, seq, layer, type, points, mask) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                [(key, k, sh.layer, sh.type, " ".join(_num(v) for v in sh.points), sh.mask)
+                 for k, sh in enumerate(shapes, start=1)])
+
     def via_def_names(self):
         return [r["name"] for r in self.conn.execute("SELECT name FROM via_def ORDER BY id")]
 
@@ -644,6 +684,63 @@ class Database:
         row = self.conn.execute("SELECT value FROM meta WHERE key = ?",
                                 (REMOVED_LAYERS,)).fetchone()
         return row["value"].split() if row else []
+
+    def set_pin_spec(self, inst, spec, source=None):
+        """Keep the pin routing spec route_pin routed an instance with (the
+        values in force, options applied) and the -spec file it came from,
+        so the instance's pin routes can be made again the same way."""
+        import json
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                              (PIN_SPEC + inst, json.dumps({"spec": spec, "file": source})))
+
+    def pin_spec(self, inst):
+        """(spec, -spec file or None) of set_pin_spec, or None."""
+        import json
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?",
+                                (PIN_SPEC + inst,)).fetchone()
+        if row is None:
+            return None
+        found = json.loads(row["value"])
+        return found["spec"], found["file"]
+
+    def set_pin_spec_defs(self, specs, source):
+        """Keep named pin routing specs {name: spec} (read_pin_spec), read
+        from the file source; one of a name kept already is replaced.
+        Returns the names replaced."""
+        import json
+        with self.conn:
+            had = set(self.pin_spec_def_names())
+            for name, spec in specs.items():
+                self.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                                  (PIN_SPEC_DEF + name, json.dumps({"spec": spec,
+                                                                    "file": source})))
+        return [n for n in specs if n in had]
+
+    def pin_spec_def(self, name):
+        """(spec, file) of a named pin routing spec, or None."""
+        import json
+        row = self.conn.execute("SELECT value FROM meta WHERE key = ?",
+                                (PIN_SPEC_DEF + name,)).fetchone()
+        if row is None:
+            return None
+        found = json.loads(row["value"])
+        return found["spec"], found["file"]
+
+    def pin_spec_def_names(self):
+        return [r["key"][len(PIN_SPEC_DEF):] for r in self.conn.execute(
+            "SELECT key FROM meta WHERE key LIKE ? ORDER BY rowid", (PIN_SPEC_DEF + "%",))]
+
+    def set_cell_kind(self, ref, kind):
+        """Keep that library cell ref is a buffer or an inverter, as the user
+        gave it (create_buffer_tree -buffer_ref / -inverter_ref)."""
+        with self.conn:
+            self.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)", (CELL_KIND + ref, kind))
+
+    def cell_kinds(self):
+        """{lib cell: buffer | inverter} of set_cell_kind."""
+        return {r["key"][len(CELL_KIND):]: r["value"] for r in self.conn.execute(
+            "SELECT key, value FROM meta WHERE key LIKE ?", (CELL_KIND + "%",))}
 
     def remove_layers(self, names):
         """Take the layers out of the tech data, atomically, and with them
@@ -941,11 +1038,13 @@ class Database:
     def legal_site(self, x: float, y: float, width: float, orient: str, site=None):
         """(x, y, row name) of the placement site nearest lower-left (x, y)
         for a cell width wide: in a row of the cell's site (when given) and
-        orientation (N in N rows, FS in FS rows), the cell inside the row;
+        orientation (N and FN in N rows, FS and S in FS rows), the cell inside the row;
         None when no row fits."""
         best = None
         query = "SELECT * FROM site_row WHERE orient = ?" + (" AND site = ?" if site else "") + \
             " ORDER BY ABS(y - ?) LIMIT 400"
+        from core.placement import row_orient
+        orient = row_orient(orient)          # FN in N rows, S in FS rows
         for r in self.conn.execute(query, (orient, site, y) if site else (orient, y)):
             step = r["step_x"] or 0.0
             last = r["x"] + (r["num_x"] - 1) * step if step else r["x"]
@@ -984,6 +1083,37 @@ class Database:
     def port_shape_rows(self, port_id: int):
         return self.conn.execute("SELECT * FROM port_shape WHERE port_id = ? ORDER BY seq",
                                  (port_id,)).fetchall()
+
+    def set_port_shapes(self, port_id: int, shapes, promoted=None):
+        """Replace a port's shapes with [(layer, type, points text)]
+        (promote_port_to_layer); promoted: the layer it was put on, kept
+        (promoted_ports) so write_def writes the port in PINS."""
+        with self.conn:
+            if promoted is not None:
+                name = self.conn.execute("SELECT name FROM port WHERE id = ?",
+                                         (port_id,)).fetchone()[0]
+                self.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                                  (PROMOTED + name, promoted))
+            self.conn.execute("DELETE FROM port_shape WHERE port_id = ?", (port_id,))
+            self.conn.executemany(
+                "INSERT INTO port_shape (port_id, seq, layer, type, points, mask) "
+                "VALUES (?, ?, ?, ?, ?, NULL)",
+                [(port_id, k, layer, kind, points)
+                 for k, (layer, kind, points) in enumerate(shapes, start=1)])
+
+    def promoted_ports(self):
+        """[port row] of the ports promote_port_to_layer put on a layer and
+        that are on it still (every shape on that layer: a read_def of the
+        design gives them their old shapes back), by name."""
+        out = []
+        for key, layer in self.conn.execute("SELECT key, value FROM meta ORDER BY key"):
+            if not key.startswith(PROMOTED):
+                continue
+            row = self.port_row(key[len(PROMOTED):])
+            shapes = self.port_shape_rows(row["id"]) if row is not None else []
+            if shapes and all(s["layer"] == layer for s in shapes):
+                out.append(row)
+        return out
 
     def port_extra(self, port_id: int):
         return [r[0] for r in self.conn.execute(
@@ -1582,12 +1712,30 @@ class Database:
             self.conn.execute("UPDATE net_wire SET via_def = ? WHERE id = ?", (via_def, row_id))
 
     def unname_pins(self, net: str, to: str = "SIGNAL"):
-        """Put the straps and pin wires route_net named after net back on to
-        (its routing is gone, so they connect to nothing). Returns how many."""
+        """The straps and pin wires on net, each back on the net its pin is on
+        now in the netlist (route_pin names them so; a pin connect_pin moved
+        follows it), or on to when the pin is on no net. Returns how many
+        changed net."""
+        from core import netlist
+        n = 0
         with self.conn:
-            n = self.conn.execute("UPDATE strap SET net = ? WHERE net = ?", (to, net)).rowcount
-            n += self.conn.execute("UPDATE pin_wire SET net = ? WHERE net = ?",
-                                   (to, net)).rowcount
+            wires = self.conn.execute("SELECT id, inst, pin, strap FROM pin_wire WHERE net = ?",
+                                      (net,)).fetchall()
+            for w in wires:
+                now = netlist.pin_net(self, w["inst"], w["pin"]) or to
+                if now != net:
+                    self.conn.execute("UPDATE pin_wire SET net = ? WHERE id = ?", (now, w["id"]))
+                    self._carry_pin(w["inst"], w["pin"], now)
+                    n += 1
+                if w["strap"] is not None:
+                    n += self.conn.execute("UPDATE strap SET net = ? WHERE inst = ? AND seq = ? "
+                                           "AND net = ? AND net != ?",
+                                           (now, w["inst"], w["strap"], net, now)).rowcount
+            n += self.conn.execute(          # straps no pin wire of net lands on
+                "UPDATE strap SET net = ? WHERE net = ? AND NOT EXISTS (SELECT 1 FROM pin_wire "
+                "p WHERE p.inst = strap.inst AND p.strap = strap.seq AND p.net = ?)",
+                (to, net, net)).rowcount
+        self.netlist = None
         return n
 
     def set_pin_net(self, inst: str, pin: str, strap: int, net: str):
@@ -1598,6 +1746,26 @@ class Database:
                               (net, inst, strap))
             self.conn.execute("UPDATE pin_wire SET net = ? WHERE inst = ? AND pin = ?",
                               (net, inst, pin))
+            self._carry_pin(inst, pin, net)
+
+    def _carry_pin(self, inst, pin, net):
+        """A pin wire put on net: the shapes kept with it go on net too, its
+        H1 piece (route_pin's pin_layer, under pg:<inst>, as wide as the pin
+        wire) and the vias insert_vias made on it (auto_via:pin_wire:...).
+        Inside the caller's transaction."""
+        w = self.conn.execute("SELECT rect FROM pin_wire WHERE inst = ? AND pin = ?",
+                              (inst, pin)).fetchone()
+        if w is None:
+            return
+        x1, _, x2, _ = (float(c) for c in w["rect"].split())
+        for r in self.conn.execute("SELECT id, rect FROM net_wire WHERE net = ? AND kind = ?",
+                                   (f"pg:{inst}", PIN_LAYER)).fetchall():
+            a1, _, a2, _ = (float(c) for c in r["rect"].split())
+            if abs(a1 - x1) < 1e-6 and abs(a2 - x2) < 1e-6:
+                self.conn.execute("UPDATE net_wire SET shield_net = ? WHERE id = ?",
+                                  (net, r["id"]))
+        self.conn.execute("UPDATE net_wire SET shield_net = ? WHERE net = ?",
+                          (net, f"auto_via:pin_wire:{inst}/{pin}"))
 
     def net_wire_rows(self, net=None):
         if net is None:
@@ -1685,6 +1853,20 @@ class Database:
         return self.conn.execute("SELECT * FROM strap WHERE inst = ? ORDER BY seq",
                                  (inst,)).fetchall()
 
+    def set_spine_link(self, from_spine, stub, to_spine, buffer, buffer_distance,
+                       sink_buffer, sink_distance):
+        """The link of connect_spine to to_spine (replacing the one it had)."""
+        with self.conn:
+            self.conn.execute("DELETE FROM spine_link WHERE to_spine = ?", (to_spine,))
+            self.conn.execute("INSERT INTO spine_link (from_spine, stub, to_spine, buffer, "
+                              "buffer_distance, sink_buffer, sink_distance) "
+                              "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                              (from_spine, stub, to_spine, buffer, buffer_distance,
+                               sink_buffer, sink_distance))
+
+    def spine_link_rows(self):
+        return self.conn.execute("SELECT * FROM spine_link ORDER BY id").fetchall()
+
     def stretch_rows(self, owner=None, inst=None):
         """The strap stretches (strap_stretch) of an owner net, or of an
         instance's straps, or all."""
@@ -1753,7 +1935,7 @@ class Database:
             except sqlite3.DatabaseError as exc:
                 raise SchemaMismatch(f"not an htree database ({exc})")
             found = row[0] if row else "none"
-            if found not in (str(SCHEMA_VERSION), "25", "24", "23", "22", "21", "20"):
+            if found not in (str(SCHEMA_VERSION), "26", "25", "24", "23", "22", "21", "20"):
                 raise SchemaMismatch(f"schema version {found}, expected {SCHEMA_VERSION}")
             conn = self._new_memory()
             src.backup(conn)
@@ -1773,6 +1955,13 @@ class Database:
                 conn.execute("ALTER TABLE net_wire ADD COLUMN via_def TEXT")
             if "status" not in columns:
                 conn.execute("ALTER TABLE net_wire ADD COLUMN status TEXT")
+            if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'spine_link'"
+                            ).fetchone() is None:
+                conn.executescript(LINK_SCHEMA)
+            links = [r[1] for r in conn.execute("PRAGMA table_info(spine_link)")]
+            for column, kind in (("sink_buffer", "TEXT"), ("sink_distance", "REAL")):
+                if column not in links:
+                    conn.execute(f"ALTER TABLE spine_link ADD COLUMN {column} {kind}")
             if conn.execute("SELECT 1 FROM sqlite_master WHERE name = 'strap_stretch'"
                             ).fetchone() is None:
                 conn.executescript(STRETCH_SCHEMA)
@@ -1802,6 +1991,11 @@ class Database:
 
 STUB = "_stub"
 CARRIED = ("stub", "stub_cross")   # their shield_net is the signal net they carry, not power
+# route_pin: a piece of each layer between the pin layer and the pin wire layer (H1
+# between D12 and H2) under a pin wire, the cell's height (net pg:<inst>, shield_net
+# the pin's net, signal or power)
+PIN_LAYER = "pin_layer"
+PROMOTED = "port_promoted:"      # meta key prefix: a port promote_port_to_layer moved
 
 
 def stub_owner(net):

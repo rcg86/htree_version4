@@ -5,6 +5,8 @@ NAME
 SYNOPSIS
     route_net -net <nets> -rule <route_rule> [-via_weight <um>]
               [-shield] [-shield_nets {<left/above> <right/below>}]
+              [-min_routing_distance <um> [-max_routing_distance <um>]]
+              [-force] [-eco]
 
 DESCRIPTION
     Routes each net on two layers of the route rule: its first horizontal
@@ -69,25 +71,58 @@ DESCRIPTION
 
     Nets of no spine. -net also takes a net that is no spine's (net:<name>;
     get_db pin:<inst>/<pin> .net gives it): the net of an input port of
-    the design, or one connect_pin or add_buffer_on_net made. It needs
-    one driver (the port, or an output pin) and one or more input pins
-    of instances on it: a net without is left as it is (HT4-265; without
+    the design, or one connect_pin, connect_spine or add_buffer_on_net
+    made. It needs one driver (an input port, or an output pin) and one
+    or more loads: input pins of instances, or output ports of the design
+    (the net of a buffer that drives a port). A net without is left as it
+    is (HT4-265; without
     a message when it only matched a pattern). The ends are the pins on
     the net, whichever pin of its cell each is, with their pin routes as
     above (steps a and b). The pins of spine cells are pins as any
     other: the net of a port on the input of the root of a spine is
     routed to that pin.
-    A port has no pin route. The route ends at the track crossing
-    nearest the centre of the port's shapes that is inside the boundary.
-    It is connected to the port only where a wire of the route lies on a
-    shape of the port, on the layer of that shape; the report then says
-    'connected on <layer>'. A port on a layer below the rule's, or beside
-    the tracks, is not connected (HT4-266): no wire and no via is made
-    down to a port.
-    A spine net is routed to the loads of the spine net as before
-    (get_db spine_net:... .loads): a pin connect_pin put on a leaf's net,
-    or by a pin that is not the first input of its cell, is in the
-    netlist only.
+    A port has no pin route.
+      On a layer of the rule: the route ends at the track crossing
+      nearest the centre of the port's shapes that is inside the
+      boundary. When a wire of the route lies on a shape of the port, on
+      the layer of that shape, it is connected ('connected on <layer>').
+      When it does not, but a wire on the track of the crossing in that
+      layer would overlap the shape, the route goes on along that track
+      to the middle of the shape (a crossing box at the crossing when the
+      route comes to it on the other layer), clear of other nets by the
+      layer's spacing; connected too.
+      On no layer of the rule (below it, on the die edge): left to the
+      top level. The route stops at the track crossing nearest the port
+      that is at least 1 um (x plus y) from its shapes, so nothing of it
+      lies over the port; not connected (HT4-266). No wire and no via is
+      made down to a port. promote_port_to_layer puts a port on a layer
+      of the rule.
+    A pin route_pin gave no strap (its net comes from the side) is
+    reached on the strap layer: along the track its pin wire was extended
+    to, from a crossing with a vertical signal track near it, the wire
+    then extended over the pin wire, with an H2/IA crossing box for the
+    via ("connected on its pin wire, along the track"). Step a keeps each
+    such pin's way out (from the first vertical track left of its cell to
+    the first right of it) free of other nets' strap extensions.
+    A spine net is routed to the loads of the spine net (get_db
+    spine_net:... .loads) and to the input pins connect_pin or
+    connect_spine put on it besides (a pin on a leaf's net, a pin that is
+    not the first input of its cell, a buffer of connect_spine). With
+    -force a fixed net keeps its route and only these are routed to it.
+
+    Side pins. A pin route_pin gave no strap is reached along the track its
+    pin wire was extended to; the stretch of that track over the pin wire
+    is kept free of every other net, so another net's wire cannot run over
+    the place the pin is reached at.
+
+    Routing direction. A cell routed with a pin spec that has
+    routing_direction (route_pin, read_pin_spec) is reached only that way:
+    vertical, along the vertical layer onto its strap (from above or below;
+    a side pin of it by a via from the vertical layer); horizontal, along
+    the horizontal layer onto its side pin's track (from the left or the
+    right; a strap of it by a via from the horizontal layer). With no way
+    in that direction the pin is not routed (HT4-174, "in the routing
+    direction of its pin specs").
 
     Overlap at layer changes. Each wire end is extended by half the width
     of the other layer, so where a horizontal and a vertical wire meet they
@@ -210,6 +245,40 @@ DESCRIPTION
     it and can change it), so write_def writes every via. Printed: the
     definitions given, per layer pair, with the number of nets and vias;
     HT4-297 when no definition of a pair fits some of the vias.
+    Before the definitions are chosen, every crossing box is made the
+    full crossing of its net's two wires: the vertical wire's width by the
+    horizontal wire's width, so each via sits in the middle of the
+    crossing. A routed wire that stops short of the other wire's far edge
+    is lengthened to it (no further than the box is long); straps, pin
+    wires and pins are not. Fixed nets are left. Printed: how many boxes
+    moved and wires lengthened.
+    A via of a crossing box that its net's definition does not fit (its
+    pads past the metal there) while another of the same layers does gets
+    that one as its own, kept on the box as insert_vias -via_ref keeps one
+    (of those that fit, the first in the order above); the net's
+    assignment stays. Every net's vias are looked at, not only the nets
+    routed. Printed: how many vias, per layer pair.
+
+    Route length (-min_routing_distance, -max_routing_distance). Each net
+    is routed the shortest way first. When the wire from its driver to its
+    nearest load is shorter than -min_routing_distance, it is routed again
+    as a hairpin: from the driver's crossing a straight leg out (down,
+    up, left or right; a leg along the horizontal layer first leaves the
+    cell's straps up or down its track), a jog of one track, then the
+    shortest way to the loads, back past the driver (over its strap, not
+    connected to it). The leg is the shortest that makes the length at
+    least -min_routing_distance. Of the four ways and the two jog sides,
+    the one whose length is in -min_routing_distance ..
+    -max_routing_distance, then with the fewest turns (layer changes:
+    the way where the tracks are free, so the route needs no more jogs),
+    then the length nearest -min_routing_distance. The report gives the
+    length, the way and leg, the turns and the length to each load. A
+    route the shortest way already long enough is kept; one longer than
+    -max_routing_distance, or one no hairpin on free tracks can make long
+    enough, is routed the shortest way with a warning (HT4-300). A
+    length a little over -max_routing_distance (the leg steps a whole
+    track) is said too. Shields, power links and vias follow the route
+    as made.
 
 OPTIONS
     -net <nets>
@@ -232,6 +301,42 @@ OPTIONS
     -shield_nets {<left/above> <right/below>}
         Shield nets for a layer with no track assignment (implies
         -shield). Default {VDD_SOC VSS}.
+    -min_routing_distance <um>
+        The least length of the wire from each net's driver to its
+        nearest load, along the route (the drops from the tracks to the
+        strap centres not counted). A shorter route goes out and back:
+        see "Route length".
+    -max_routing_distance <um>
+        The most that length may be; with -min_routing_distance. Default
+        -min_routing_distance + 10. A wider window (e.g. 2600 .. 2700)
+        leaves the router more ways to make it.
+    -force
+        Route the fixed nets given too (set_db .route_status fixed;
+        without it they are left, HT4-286), keeping every shape they have:
+        their wires, their stubs' wires, shields, vias and lengthened
+        straps. Only the pins not on the route yet (an input pin
+        connect_pin or connect_spine put on the net, a strap still on
+        SIGNAL) are routed, from the nearest point of the existing wires;
+        only those new wires, their crossing boxes, shields and power links
+        are added. The net stays fixed.
+    -eco
+        Mend the nets that are open or shorted, keep the rest. Of the nets
+        of -net (without -net: every net), those check_drc finds a signal
+        open on (a piece cut off from the driver: wires, straps, pins) or
+        in a short are routed, and only from where their routing stops: every
+        shape the net has stays (as -force keeps them), the pieces cut off
+        and their pins are reached from the nearest point of it, and only
+        the new wires, their crossing boxes, extensions and shields are
+        added. A net in a short has its own route wires in the short taken
+        out first (not a fixed wire, nor a strap, pin route, stub wire or
+        shield: those are said, HT4-312), then is completed as an open one.
+        Nets with no open and no short are not touched. After routing, the
+        nets are checked again: what is left is said (HT4-312). Not with
+        -force or -min_routing_distance. Fixed nets (set_db .route_status
+        fixed, as a flow leaves the whole design) are mended too: their
+        shapes stay, and they stay fixed; only a wire fixed on its own is
+        not taken out of a short. -net is optional with -eco: every net,
+        the stubs left to route_final_stub (an open one is said).
     -help
         Print the definition, usage, options and an example of the command.
 
@@ -326,8 +431,10 @@ EXAMPLES
     net:clk_in
 
 ERRORS
-    HT4-001  missing -net or -rule, a bad -via_weight, or -shield_nets
-             not two nets
+    HT4-001  missing -net or -rule, a bad -via_weight, -shield_nets
+             not two nets, a -min_routing_distance or -max_routing_distance
+             that is not above 0, the most below the least, or
+             -max_routing_distance alone
     HT4-025  no tech data loaded (read_tech)
     HT4-170  no net matches a -net word, or a cell has no signal input
              or output pin
@@ -351,12 +458,19 @@ ERRORS
     HT4-175  a rule layer has no DEF tracks in its direction, or its track
              assignment leaves no signal track
     HT4-265  WARN: a net of no spine is not routed: no driver, more than
-             one, no input pin on it, or its port has no shapes and no
+             one, no input pin or output port on it, or a port of it has
+             no shapes and no
              location
     HT4-266  WARN: the route of a port's net ends near the port, not
-             connected to it
+             connected to it (left to the top level)
     HT4-287  WARN: a fixed wire is not on a signal track (or every
              crossing on it is blocked): the route does not join it
+    HT4-300  WARN: a route cannot be made -min_routing_distance ..
+             -max_routing_distance long (routed the shortest way), or
+             is a little longer than -max_routing_distance
+    HT4-312  WARN: -eco: a short it does not mend (a strap, pin route,
+             stub wire, shield or fixed wire of the net), a stub with no
+             wire, or an open or short left after routing
     HT4-286  WARN: a fixed net (set_db .route_status fixed) is not
              routed again; its routes stay and block the others
     HT4-297  WARN: vias that no definition of their layer pair fits

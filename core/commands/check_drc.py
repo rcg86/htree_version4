@@ -1,6 +1,7 @@
 """check_drc [-check_shorts_only | -check_spacing_only | -check_open_only]
 [-layer_range <bottom>:<top>] [-file <file> [-overwrite]]: check the routing
-the tool made for shorts, spacing and width violations, and opens.
+the tool made for shorts, spacing and width violations, opens, and the way
+the cells' pins are reached (routing direction).
 
     check_drc
     check_drc -check_shorts_only -layer_range H2:IA
@@ -24,7 +25,7 @@ SUMMARY = "Check the routing for shorts, spacing and width violations, and opens
 # Options and their kind (value | flag), also used by <tab> completion.
 OPTIONS = {"-check_shorts_only": "flag", "-check_spacing_only": "flag",
            "-check_open_only": "flag", "-layer_range": "value",
-           "-file": "value", "-overwrite": "flag"}
+           "-file": "value", "-overwrite": "flag", "-direction_jog": "value"}
 
 USAGE = 1
 BAD_RANGE = 247
@@ -40,7 +41,9 @@ ROWS = [(drc.SHORT, "", "Shorts"),
         (drc.SPACING, drc.CUSTOM, "Custom spacing (route rules)"),
         (drc.WIDTH, drc.CUSTOM, "Custom width (route rules)"),
         (drc.OPEN, "signal", "Opens, signal nets"),
-        (drc.OPEN, "power", "Opens, power nets")]
+        (drc.OPEN, "power", "Opens, power nets"),
+        (drc.DIRECTION, drc.MIXED, "Routing direction, heterogeneous (a cell reached both ways)"),
+        (drc.DIRECTION, drc.AGAINST, "Routing direction, against the cell's pin spec")]
 
 
 def run(session, argv):
@@ -70,7 +73,18 @@ def run(session, argv):
                                     shorts=shorts, spacing=spacing)
     if opens:
         found += drc.check_opens(design, order, layers)
-    ran = [r for r in ROWS if {drc.SHORT: shorts, drc.OPEN: opens}.get(r[0], spacing)]
+    direction = not only and layers is None      # the whole routing, every check
+    if direction:
+        try:
+            jog = float(opts.get("-direction_jog", drc.JOG))
+        except ValueError:
+            jog = -1.0
+        if not jog >= 0:
+            raise HtreeError(USAGE, f"check_drc: -direction_jog must be a length in um, 0 or "
+                             f"more, got '{opts['-direction_jog']}'")
+        found += drc.check_direction(db, jog)
+    ran = [r for r in ROWS if {drc.SHORT: shorts, drc.OPEN: opens,
+                               drc.DIRECTION: direction}.get(r[0], spacing)]
 
     head = _checked(design, tech, order, layers, shorts or spacing, opens)
     table = _summary(found, ran, order)

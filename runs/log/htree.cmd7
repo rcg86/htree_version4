@@ -1,0 +1,53 @@
+# htree_builder 
+# started 2026-11-24 05:18:02 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+#read_tech -file ../tech.new.lef
+read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+read_spine_spec -file ./custom_spine.yaml
+read_def -file cf999.def
+# Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+# power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+read_pin_spec -file pin_routing_spec.yaml 
+# route_pin needs instances: it runs after create_spine below
+#route_pin -spec pin_routing_spec.yaml
+#create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+#create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+### create mgt clock main spine
+#
+create_spine -name mgt_clk_spine_ver_main -spec_name custom_spine_4000 -location {5697 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_ver_main -clearance {0 0 0 10} -moves {head bottom down 2075.14 left 87.84 down 3381.12 up 1008 down 201.6 up 201.6 down 103.68}
+create_spine -name mgt_clk_spine_bot -spec_name custom_spine_v5p2 -location {5681 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_bot -clearance {0 0 0 18} -moves {head bottom down 4064.38 left 92 down 3035.52}
+create_spine -name mgt_clk_spine_top -spec_name custom_spine_v5p2 -location {5681 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_top -clearance {0 0 0 18} -moves {head top up 195.06}
+move_spine_to_boundary -spine mgt_clk_spine_top -clearance {0 0 0 18} -moves {head top up 783.36}
+set_place_constraint -ref_name INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -space_x 3 -space_y 5
+legalize_placement -inst [get_db insts mgt_clk_spine*]
+route_pin -inst [get_db [get_db insts mgt_clk_spine*] .name] -spec_name vertical_routing
+route_net -net [get_db [get_db nets mgt_clk_spine*] .name] -rule rule1 -shield
+route_track -compact -net [get_db [get_db nets mgt_clk_spine*] .name ] -rule rule1 -shield -shield_nets {VDD_SOC VSS}
+route_final_stub -stub [get_db [get_db stub mgt_clk_spine*] .name] -rule rule1 -shield
+move_obj [get_db spine mgt_clk_spine_bot ] -direction +y -distance 10 -legal
+gui_show 
+write_db test3.db
+write_db test3.db -ver
+write_db test3.db -overwrite 
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y_stub/6} -delta {-0.004 -0.085}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y_stub/3} -delta {0 -0.226}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y_stub/6} -delta {-0.00825 -0.72}
+delete_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y_stub/6}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {0 -0.085}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {-0.00825 0}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {0.00825 0}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {0 0.72}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {0 -0.72}
+move_wire -wires {net_wire:mgt_clk_spine_bot_L3_inv2_Y/2} -delta {0 0.72}
+move_wire -wires {pin_wire:mgt_clk_spine_bot_L2_inv1/A} -delta {-0.384 0.4285}
+move_wire -wires {pin_wire:mgt_clk_spine_bot_L2_inv1/A} -delta {0.384 0.00375}
+move_wire -wires {pin_wire:mgt_clk_spine_bot_L2_inv1/A} -delta {-0.384 -0.002}
+move_wire -wires {pin_wire:mgt_clk_spine_bot_L2_inv1/A} -delta {0.256 0.00375}
+exit
+# ended 2026-11-24 07:05:36

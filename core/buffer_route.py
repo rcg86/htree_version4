@@ -126,10 +126,15 @@ def tree(adj, start):
     return dist, parent
 
 
-def plan(db, net, plain, cell, pin_in, pin_out, grid, first, step, out):
+def plan(db, net, plain, cell, pin_in, pin_out, grid, first, step, out, count=None,
+         spread=False):
     """The buffers of a routed net of no spine: SimpleNamespaces with name
     (set later), point, dist, line, upstream (unit vector toward the driver),
-    up / down (label: None for the net, else the buffer before), loads."""
+    up / down (label: None for the net, else the buffer before), loads.
+    count: at most that many in a row from the driver (plan.capped: the
+    points left without one); spread: count of them every L / (count + 1) um,
+    L the way along the route to the farthest load."""
+    plan.capped, plan.ways, plan.start = 0, {}, None
     lines, adj = graph(db, net, grid.h, grid.v)
     if not adj:
         raise HtreeError(260, f"add_buffer_on_net: net {net} has no signal wires on "
@@ -149,6 +154,11 @@ def plan(db, net, plain, cell, pin_in, pin_out, grid, first, step, out):
             if k not in parent:
                 break
             k = parent[k][0]
+    plan.ways = {key: dist.get(node) for key, node in loads.items()}   # um along the route
+    plan.start = start
+    if spread:
+        first = step = max([dist[node] for node in loads.values() if node in dist] + [0.0]) \
+            / (count + 1) or 1e18
     bufs = []
     label = {start: None}
     for k in sorted(dist, key=dist.get):     # parents first
@@ -168,13 +178,16 @@ def plan(db, net, plain, cell, pin_in, pin_out, grid, first, step, out):
             d = first + n * step
             if d > b + TOL or d >= far.get(k, -1.0) - TOL:
                 break
-            if d > a + TOL:
+            if d > a + TOL and count is not None and (cur.depth if cur else 0) >= count:
+                plan.capped += 1             # max buffer count reached: no more in this row
+            elif d > a + TOL:
                 at = pa + sign * (d - a)
                 x, y = (at, line.c) if line.horizontal else (line.c, at)
                 buf = SimpleNamespace(name=None, net=None, point=(x, y), dist=d, line=line,
                                       upstream=(-sign, 0.0) if line.horizontal else (0.0, -sign),
                                       up=cur, loads=[], index=len(bufs), at=at, sign=sign,
-                                      edge=(min(pa, pb), max(pa, pb)), slid=0.0)
+                                      edge=(min(pa, pb), max(pa, pb)), slid=0.0,
+                                      depth=(cur.depth if cur else 0) + 1)
                 bufs.append(buf)
                 line.spans.append((min(lo, at), max(lo, at), cur))
                 cur, lo = buf, at

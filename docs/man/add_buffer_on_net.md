@@ -6,6 +6,9 @@ SYNOPSIS
     add_buffer_on_net -net <nets> -ref_cell <lib_cell> -distance <um>
                       [-first_distance <um>] [-last_distance <um>]
                       [-name <suffix>] [-spec <yaml>]
+                      [-buffer_count <n> [-spread]]
+    add_buffer_on_net -net <nets> -ref_cell <lib_cell> -buffer_count <n>
+                      -spread [-name <suffix>] [-spec <yaml>]
 
 DESCRIPTION
     Puts instances of -ref_cell on the nets of a built spine (create_spine
@@ -185,6 +188,23 @@ OPTIONS
         The Manhattan distance from the output pin of the last buffer
         before a load to the input pin of the load. Default: no buffer
         is placed for the loads.
+    -buffer_count <n>
+        At most n buffers in a row from the driver to any load (each
+        branch of a net counts its own row). The buffers go every
+        -distance um as without it; once the n-th is placed, the points
+        past it get none: HT4-307 (max buffer count reached) names the
+        net and the points left, and the command goes on with the rest
+        (the other nets, legalizing, the report). E.g. -buffer_count 3
+        -distance 100 on a net 700 um long: buffers at 100, 200 and 300
+        um, the 3 points at 400, 500, 600 um left.
+    -spread
+        With -buffer_count n: the n buffers spread evenly instead, the
+        way from the driver to the farthest load (L) cut into n + 1
+        equal parts, a buffer every L / (n + 1) um. E.g. 600 um and
+        -buffer_count 3: 4 parts, buffers at 150, 300 and 450 um. A
+        branch that ends nearer gets only the points on it. -distance is
+        not needed (if given it is not used); not with -first_distance
+        or -last_distance.
     -name <suffix>
         The suffix of the buffer names: <driver>_<suffix><n>. Default:
         buf. On a routed net, the prefix: <name>_<n> (default
@@ -192,6 +212,9 @@ OPTIONS
     -spec <yaml>
         On a routed net: the pin routing spec route_pin gives the
         buffers (as route_pin -spec). Default: route_pin's defaults.
+    -spec_name <name>
+        On a routed net: a named pin routing spec for the buffers (as
+        route_pin -spec_name: read by read_pin_spec, or one of -spec).
     -help
         Print the definition, usage, options and an example of the command.
 
@@ -241,8 +264,11 @@ EXAMPLES
         load d1/A: on rep_4_Y, behind rep_4
 
 ERRORS
-    HT4-001  -net, -ref_cell or -distance missing, a distance that is not
-             a number above 0, a bad suffix, or an unknown option
+    HT4-001  -net, -ref_cell or -distance missing (-distance: unless
+             -spread), a distance that is not a number above 0, a bad
+             suffix, a -buffer_count that is not a whole number above 0,
+             -spread without -buffer_count or with -first_distance or
+             -last_distance, or an unknown option
     HT4-026  no physical library loaded (read_lef)
     HT4-256  no net of that name
     HT4-257  the cell is not in the library, or has no SIZE, signal input
@@ -261,6 +287,8 @@ ERRORS
     HT4-263  more than 500 buffers on one net: check -distance
     HT4-264  WARN: the buffers are not on placement sites: the design has
              no rows, or legalize_placement failed (its message follows)
+    HT4-307  WARN: max buffer count reached: -buffer_count buffers in a
+             row, the points past them left without one
 
 SEE ALSO
     create_spine, create_inst, connect_pin, legalize_placement,

@@ -311,16 +311,18 @@ def test_beyond_the_tracks_warns(tech_session, write_lef):
 
 
 def test_connected_straps_take_the_net_name(spine):
-    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "SIGNAL"
+    # route_pin puts them on the net of their pin already (the netlist says it)
+    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "sp_L1_inv1_Y"
     spine.eval("route_net -net sp_L1_inv1_Y -rule r")
     assert "now net sp_L1_inv1_Y: strap:sp_L1_inv1/3 pin_wire:sp_L1_inv1/Y" in out_of(spine)
     for h in ("strap:sp_L1_inv1/3", "pin_wire:sp_L1_inv1/Y", "strap:sp_L2_inv1/5",
               "pin_wire:sp_L2_inv1/A"):
         assert spine.eval(f"get_db {h} .net") == "sp_L1_inv1_Y"
-    assert spine.eval("get_db strap:sp_L1_inv1/5 .net") == "SIGNAL"    # not this net's
+    # its input's strap: on the root net (A's net), not this one
+    assert spine.eval("get_db strap:sp_L1_inv1/5 .net") == "sp_primary_input"
     assert spine.eval("get_db strap:sp_L1_inv1/1 .net") == "VSS"
-    spine.eval("route_pin -inst sp_L1_inv1")                         # straps rebuilt
-    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "SIGNAL"
+    spine.eval("route_pin -inst sp_L1_inv1")                         # straps rebuilt:
+    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "sp_L1_inv1_Y"   # their nets again
 
 
 def test_write_def(spine, tmp_path):
@@ -351,7 +353,7 @@ def test_write_def(spine, tmp_path):
     nets = path.read_text().split("\nNETS ")[1]
     assert "- sp_L1_inv1_Y ( sp_L1_inv1 Y ) ( sp_L2_inv1 A ) + USE CLOCK ;" in nets
     assert "RECT" not in nets and "SPECIALNETS" not in path.read_text()
-    assert "HT4-001" in err(spine, f"write_def -output {path} -sections pins")
+    assert "HT4-001" in err(spine, f"write_def -output {path} -sections wires")
     assert "HT4-001" in err(spine, "write_def")
 
 
@@ -614,14 +616,14 @@ def test_delete_route(spine, tmp_path):
     assert "wire" in kinds("sp_L3_inv1_Y")
     assert spine.eval("get_db stub:sp/stub1 .net_wires") == ""
     assert spine.eval("get_db stubs") == "stub:sp/stub1 stub:sp/stub2"        # still there
-    # a spine net: its route_net wires go, its straps go back to SIGNAL
+    # a spine net: its route_net wires go; its straps stay on it (their pin's net)
     assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "sp_L1_inv1_Y"
     assert spine.eval("delete_route -nets spine_net:sp/sp_L1_inv1_Y") == \
         "spine_net:sp/sp_L1_inv1_Y"
-    assert "back on SIGNAL" in out_of(spine)
+    assert "back on SIGNAL" not in out_of(spine)
     assert spine.db.net_wire_rows("sp_L1_inv1_Y") == []
-    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "SIGNAL"
-    assert spine.eval("get_db pin_wire:sp_L1_inv1/Y .net") == "SIGNAL"
+    assert spine.eval("get_db strap:sp_L1_inv1/3 .net") == "sp_L1_inv1_Y"
+    assert spine.eval("get_db pin_wire:sp_L1_inv1/Y .net") == "sp_L1_inv1_Y"
     assert spine.eval("get_db spine_net:sp/sp_L1_inv1_Y .route_rule") == "route_rule:r"
     assert spine.eval("get_db spine_net:sp/sp_L1_inv1_Y .driver") == "inst:sp_L1_inv1"
     # nothing left: a warning; unknown: an error

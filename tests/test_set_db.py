@@ -30,9 +30,12 @@ def rules(session):
 
 
 def test_nets_lists_every_spine_net_and_stub(built):
-    # stubs are nets too; get_db stubs lists only them
+    # stubs are nets too; get_db stubs lists only them; then the nets of no spine (the
+    # root net); get_db net is the same list
     assert built.eval("get_db nets") == built.eval("get_db spine:sp1 .spine_nets") + " " + \
-        built.eval("get_db stubs")
+        built.eval("get_db stubs") + " net:sp1_primary_input"
+    assert built.eval("get_db net") == built.eval("get_db nets")
+    assert built.eval("get_db nets sp1_primary*") == "net:sp1_primary_input"
     assert built.eval("get_db stubs") == "stub:sp1/stub1 stub:sp1/stub2"
     assert built.eval("get_db nets *L3*") == \
         "spine_net:sp1/sp1_L3_inv1_Y spine_net:sp1/sp1_L3_inv2_Y"
@@ -40,7 +43,7 @@ def test_nets_lists_every_spine_net_and_stub(built):
 
 
 def test_every_net_starts_on_the_default_rule(built):
-    assert rules(built) == ["default"] * 6               # 4 nets, 2 stubs
+    assert rules(built) == ["default"] * 7               # 4 nets, 2 stubs, the root net
     assert built.eval("get_db spine_net:sp1/sp1_L1_inv1_Y .route_rule") == "route_rule:default"
 
 
@@ -57,16 +60,16 @@ def test_set_route_rule_on_matching_nets(built):
 
 def test_set_all_nets_handle_value_and_attr_without_dot(built):
     built.eval("set_db [get_db nets] route_rule route_rule:rule1")
-    assert rules(built) == ["rule1"] * 6
+    assert rules(built) == ["rule1"] * 7
     built.eval("set_db stub:sp1/stub2 .route_rule default")      # a stub keeps its own
-    assert rules(built) == ["rule1"] * 5 + ["default"]
+    assert rules(built) == ["rule1"] * 5 + ["default", "rule1"]
 
 
 def test_back_to_default(built):
     built.eval("set_db [get_db nets] .route_rule rule1")
     built.eval("set_db [get_db nets *L1*] .route_rule default")
     assert built.eval("get_db spine_net:sp1/sp1_L1_inv1_Y .route_rule") == "route_rule:default"
-    assert rules(built).count("rule1") == 5
+    assert rules(built).count("rule1") == 6
 
 
 def test_errors_change_nothing(built):
@@ -77,7 +80,7 @@ def test_errors_change_nothing(built):
     assert "HT4-022" in err(built, "set_db spine_net:sp1/none .route_rule rule1")
     assert "HT4-001" in err(built, "set_db [get_db nets] .route_rule")
     assert "HT4-001" in err(built, "set_db notahandle .route_rule rule1")
-    assert rules(built) == ["default"] * 6
+    assert rules(built) == ["default"] * 7
 
 
 def test_no_objects_warns(built):

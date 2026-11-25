@@ -108,11 +108,13 @@ def test_get_db_dot_tech_dumps_like_tech(tech_session):
 
 def test_command_options(session):
     assert comp(session, "route_net -") == ["-net ", "-rule ", "-via_weight ", "-shield ",
-                                            "-shield_nets ", "-help "]
+                                            "-shield_nets ", "-min_routing_distance ",
+                                            "-max_routing_distance ", "-force ", "-eco ", "-help "]
     assert comp(session, "route_net -n") == ["-net "]
-    assert comp(session, "route_pin -s") == ["-spec ", "-spacing "]
-    assert comp(session, "route_net -net a -rule r -") == ["-via_weight ", "-shield ",
-                                                           "-shield_nets ", "-help "]
+    assert comp(session, "route_pin -s") == ["-spec ", "-spec_name ", "-spacing "]
+    assert comp(session, "route_net -net a -rule r -") == [
+        "-via_weight ", "-shield ", "-shield_nets ", "-min_routing_distance ",
+        "-max_routing_distance ", "-force ", "-eco ", "-help "]
     assert comp(session, "puts [route_net -r") == ["-rule "]
     assert comp(session, "get_db -") == ["-if ", "-help "]
     assert comp(session, "select_obj -") == ["-help "]
@@ -141,7 +143,7 @@ def test_selected_offers_the_selected_types(tech_session, write_lef):
     got = strip(comp(s, "get_db [get_db selected] ."))
     assert ".place_status" in got and ".kind" not in got and ".min_width" not in got
     assert strip(comp(s, "get_db selected .pl")) == [".place_status"]
-    assert strip(comp(s, "set_db [get_db selected] .")) == [".place_status", ".status"]
+    assert strip(comp(s, "set_db [get_db selected] .")) == [".place_status", ".status", ".pin_spec"]
     assert strip(comp(s, "set_db [get_db selected] .place_status ")) == \
         ["placed", "fixed", "cover"]
     s.eval("deselect_obj inst:sp_L1_inv1")

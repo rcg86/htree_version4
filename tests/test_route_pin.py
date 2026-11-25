@@ -348,9 +348,11 @@ def test_max_strap_extension(placed, write_lef):
 def test_shipped_spec_loads():
     """runs/pin_routing_spec.yaml is meant to be edited: only check it is valid."""
     from conftest import ROOT
-    from core.commands.route_pin import load_spec
-    spec = load_spec(str(ROOT / "runs" / "pin_routing_spec.yaml"))
-    assert spec["nets"] and spec["width"] > 0 and spec["pins"]["layer"]
+    from core.commands.route_pin import load_specs
+    specs = load_specs(str(ROOT / "runs" / "pin_routing_spec.yaml"))      # named specs
+    assert specs and all(name for name in specs)
+    for spec in specs.values():
+        assert spec["nets"] and spec["width"] > 0 and spec["pins"]["layer"]
 
 
 def test_spec_file(placed, write_lef):
@@ -385,6 +387,8 @@ def test_spec_file(placed, write_lef):
     ("pin_routing:\n  pins: {nets: [VDD]}", "pin_routing.pins.nets must map"),
     ("pin_routing:\n  pins: {lyr: D12}", "pin_routing.pins.lyr is not a spec key"),
     ("pin_routing: [", "not valid YAML"),
+    ("pin_routing:\n  cell_pattern: []", "pin_routing.cell_pattern must be a library cell"),
+    ("pin_routing:\n  cell_pattern: 3", "pin_routing.cell_pattern must be a library cell"),
 ])
 def test_bad_spec(placed, write_lef, body, text):
     msg = err(placed, f"route_pin -inst u1 -spec {write_lef(body, 'b.yaml')}")
@@ -413,3 +417,57 @@ def test_dump_spec(placed, tmp_path):
     # the dumped file routes like the options did
     placed.eval(f"route_pin -inst u1 -spec {path}")
     assert placed.eval("get_db strap:u1/1 .width") == "0.36"
+
+
+def test_cell_pattern(placed, write_lef):
+    # only instances of a cell the spec's cell_pattern matches are routed
+    s = placed
+    s.eval(f"read_lef -file {{{write_lef(CELL_LEF.replace('INV_RP', 'BUF_RP'), 'b.lef')}}}")
+    s.eval("create_inst -ref_cell BUF_RP -location {10 0} -name u2")
+    out_of(s)
+    spec = write_lef("pin_routing:\n  cell_pattern: INV_*\n", "p.yaml")
+    s.eval(f"route_pin -inst {{u1 u2}} -spec {spec}")
+    text = out_of(s)
+    assert "1 instance(s) not routed, their cell matches no cell_pattern of the spec " \
+           "(INV_*): u2 (cells: BUF_RP)" in text
+    assert s.eval("get_db inst:u1 .straps") != "" and s.eval("get_db inst:u2 .straps") == ""
+    # none matches: a warning, nothing routed
+    assert s.eval(f"route_pin -inst u2 -spec {spec}") == ""
+    assert "HT4-306" in out_of(s)
+    # a list of patterns; no cell_pattern: every cell
+    spec = write_lef("pin_routing:\n  cell_pattern: [NAND*, 'BUF_?P']\n", "l.yaml")
+    s.eval(f"route_pin -inst u2 -spec {spec}")
+    assert s.eval("get_db inst:u2 .straps") != ""
+    s.eval("route_pin -inst {u1 u2}")
+    assert "not routed" not in out_of(s)
+
+
+def test_cell_pattern_dumped(placed, tmp_path, write_lef):
+    from core.commands.route_pin import load_spec
+    spec = write_lef("pin_routing:\n  cell_pattern: INV12M3Mx2Fx7Dx_D*_N_S7P94TSL_C60L04\n",
+                     "p.yaml")
+    path = tmp_path / "d.yaml"
+    placed.eval(f"route_pin -dump {path} -spec {spec}")
+    assert load_spec(str(path))["cell_pattern"] == ["INV12M3Mx2Fx7Dx_D*_N_S7P94TSL_C60L04"]
+    assert "cell_pattern: INV12M3Mx2Fx7Dx_D*_N_S7P94TSL_C60L04" in path.read_text()
+    placed.eval(f"route_pin -dump {path} -overwrite")
+    assert "cell_pattern: '*'" in path.read_text()
+    assert load_spec(str(path))["cell_pattern"] == ["*"]
+
+
+def test_signal_pin_routes_are_on_their_net_from_route_pin(placed):
+    # the netlist knows each pin's net: route_pin puts the signal pin wire and the strap
+    # it lands on on that net at once, so their vias are the net's (no SIGNAL left)
+    s = placed
+    s.eval("create_inst -ref_cell INV_RP -location {10 0} -name u2")
+    s.eval("connect_pin -from u1/Y -to u2/A")
+    out_of(s)
+    s.eval("route_pin -inst {u1 u2}")
+    assert "on their nets (netlist): Y u1_Y" in out_of(s)
+    assert s.db.pin_wire_row("u1", "Y")["net"] == "u1_Y"
+    assert s.db.pin_wire_row("u2", "A")["net"] == "u1_Y"
+    k = s.db.pin_wire_row("u1", "Y")["strap"]
+    assert s.db.strap_row("u1", k)["net"] == "u1_Y"
+    # a pin on no net stays SIGNAL; power pins keep their net
+    assert s.db.pin_wire_row("u1", "A")["net"] == "SIGNAL"
+    assert s.db.pin_wire_row("u1", "VDD")["net"] == "VDD_SOC"

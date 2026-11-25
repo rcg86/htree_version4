@@ -38,6 +38,8 @@ ROOTS = {
     "lib_cell": lambda db: objects.get_attr(db, "library_physical", "lib_cells"),
     "spine_specs": lambda db: _spine_specs(db),
     "spine_spec": lambda db: _spine_specs(db),
+    "pin_route_specs": lambda db: _pin_route_specs(db),
+    "pin_route_spec": lambda db: _pin_route_specs(db),
     "design": lambda db: _design(db),
     "designs": lambda db: _design(db),
     "ports": lambda db: objects.get_attr(db, _design(db)[0], "ports"),
@@ -61,8 +63,8 @@ ROOTS = {
     "pin_wire": lambda db: [f"pin_wire:{r['inst']}/{r['pin']}" for r in db.pin_wire_rows()],
     "net_wires": lambda db: [f"net_wire:{r['net']}/{r['seq']}" for r in db.net_wire_rows()],
     "net_wire": lambda db: [f"net_wire:{r['net']}/{r['seq']}" for r in db.net_wire_rows()],
-    "nets": lambda db: _nets(db) + _stubs(db),
-    "net": lambda db: _nets(db) + _stubs(db),
+    "nets": lambda db: _nets(db) + _stubs(db) + _plain_nets(db),
+    "net": lambda db: _nets(db) + _stubs(db) + _plain_nets(db),
     "stubs": lambda db: _stubs(db),
     "stub": lambda db: _stubs(db),
     "via_defs": lambda db: [f"via_def:{n}" for n in db.via_def_names()],
@@ -70,6 +72,11 @@ ROOTS = {
     "vias": lambda db: [vias.handle(r) for r in vias.rows(db)],
     "via": lambda db: [vias.handle(r) for r in vias.rows(db)],
 }
+
+
+def _pin_route_specs(db):
+    """The named pin routing specs read_pin_spec read."""
+    return [f"pin_route_spec:{n}" for n in db.pin_spec_def_names()]
 
 
 def _design(db):
@@ -94,6 +101,16 @@ def _stubs(db):
 def _nets(db):
     """Every net of every built spine."""
     return [h for s in db.spine_names() for h in objects.get_attr(db, f"spine:{s}", "spine_nets")]
+
+
+def _plain_nets(db):
+    """Every net of no spine with an instance pin on it (net:<name>): a
+    spine's root net, a port's that connect_pin put loads on, and the nets
+    connect_pin, connect_spine, add_buffer_on_net and create_buffer_tree
+    made. The nets of the design's other ports (nothing on them: the DEF's
+    thousands) are not listed; get_db net:<name> or port .net reaches them."""
+    from core import netlist
+    return [f"net:{n}" for n in netlist.plain_nets(db)]
 
 
 def _singleton(db, handle):
@@ -137,6 +154,13 @@ def run(session, argv):
         handles = _design(db)                     # 'designs' lists without printing
         _dump_design(db, handles[0], session.out)
         return tuple(handles)
+    if target == "pin_route_spec" and second is None and expr is None:
+        handles = _pin_route_specs(db)            # 'pin_route_specs' lists without printing
+        if not handles:
+            info("get_db: no pin routing spec read (read_pin_spec -file <yaml>)", session.out)
+        for handle in handles:
+            _dump_pin_route_spec(db, handle, session.out)
+        return tuple(handles)
     if target == "spine_spec" and second is None and expr is None:
         handles = _spine_specs(db)                # 'spine_specs' lists without printing
         for handle in handles:
@@ -156,9 +180,14 @@ def run(session, argv):
     if second is not None and not second.startswith("."):
         if tail:
             raise HtreeError(USAGE, f"get_db: name pattern '{second}' cannot follow an attribute path")
-        # its own name, or its whole one: stub4 or mgt_clk/stub4 (spine_net, stub, pin ...)
-        handles = [h for h in handles if fnmatchcase(_name(h), second)
-                   or fnmatchcase(h.partition(":")[2], second)]
+        # its own name, or its whole one: stub4 or mgt_clk/stub4 (spine_net, stub, pin ...);
+        # a Tcl list of names or patterns: the matches of each in turn, each object once
+        found = {}
+        for pattern in session.split_list(second) or [second]:
+            for h in handles:
+                if fnmatchcase(_name(h), pattern) or fnmatchcase(h.partition(":")[2], pattern):
+                    found.setdefault(h)
+        handles = list(found)
         second = None
 
     if second is not None and second != ".*":
@@ -343,6 +372,17 @@ def _dump_library(db, out):
         for row in extras:
             first = row["text"].splitlines()[0] if row["text"] else ""
             info(f"  {os.path.basename(row['file'])}:{row['line']:<6} {row['kind']:<20}: {first}", out)
+
+
+def _dump_pin_route_spec(db, handle, out):
+    info(handle, out)
+    for attr in objects.PIN_ROUTE_SPEC_ATTRS:
+        if attr in ("obj_type", "name"):
+            continue
+        value = objects.get_attr(db, handle, attr)
+        if attr == "insts":
+            value = f"{len(value)} instance(s) routed with it"
+        info(f"  {attr:<20}: {objects.format_value(value)}", out)
 
 
 def _dump_spine_spec(db, handle, out):

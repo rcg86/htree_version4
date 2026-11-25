@@ -251,12 +251,12 @@ def test_every_net_and_stub_has_its_vias(routed):
         assert found[0] in lst(s, f"get_db spine_net:sp/{net} .vias")
         assert stack(s, found) == [("cross", "IA", "C6", "IB")]
     # via handles follow the routing. A net that loses its route loses its
-    # crossings, and its pin wires and straps are SIGNAL again: so are their vias
+    # crossings; its pin wires and straps stay on it (their pin's net): their vias too
     signal = len(vias.rows(s.db, "SIGNAL"))
     assert len(lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias")) == 20
     s.eval("delete_route -nets sp_L2_inv1_Y")
-    assert lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias") == []
-    assert len(vias.rows(s.db, "SIGNAL")) == signal + 17
+    assert len(lst(s, "get_db spine_net:sp/sp_L2_inv1_Y .vias")) == 17     # the pins'
+    assert len(vias.rows(s.db, "SIGNAL")) == signal
     assert len(lst(s, "get_db vias")) == 107 - 3
 
 
@@ -475,8 +475,11 @@ def test_get_obj_in_area(routed):
     kinds = Counter(h.partition(":")[0] for h in inside)
     # 4 pin wires with a strap stack of 3 each and a pin stack of 2 on each pin
     # rectangle (6: Y and VDD have two), and the first crossing of the L1 route; the
-    # route lengthens the strap there, so no wire of it lies inside
-    assert kinds == {"inst": 1, "pin": 6, "strap": 7, "pin_wire": 4, "via": 25}
+    # route lengthens the strap there, so no wire of it lies inside. The root net: its
+    # input's pin route (route_pin puts it on that net) lies inside. The H1 piece route_pin
+    # put under each pin wire (net_wire pg:sp_L1_inv1/<n>, the cell's height)
+    assert kinds == {"inst": 1, "pin": 6, "strap": 7, "pin_wire": 4, "via": 25, "net": 1,
+                     "net_wire": 4}
     assert inside[0] == "inst:sp_L1_inv1" and inside[1].startswith("pin:sp_L1_inv1/")
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -enclosed") == inside
     assert lst(s, "get_obj_in_area -area {2 5 -2 -5}") == inside          # corners either way
@@ -486,11 +489,13 @@ def test_get_obj_in_area(routed):
     assert both[-1] == "inst:sp_L1_inv1" and len(both) == 26
     assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type {via pins}")[0].startswith("via:")
     # a net is inside when all its wires and vias are: none is here
-    assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type nets") == []
+    # inside: the root net (its input's pin route); touching: the L1 route too
+    assert lst(s, "get_obj_in_area -area {-2 -5 2 5} -type nets") == ["net:sp_primary_input"]
     touching = lst(s, "get_obj_in_area -area {-2 -5 2 5} -type nets -touching")
-    assert touching == ["spine_net:sp/sp_L1_inv1_Y"]
+    assert set(touching) == {"spine_net:sp/sp_L1_inv1_Y", "net:sp_primary_input"}
     everything = lst(s, "get_obj_in_area -area {-100 -100 100 100} -type nets")
-    assert everything == lst(s, "get_db nets")
+    assert set(everything) == set(lst(s, "get_db nets -if {.route_status != unrouted}")) | \
+        {"net:sp_primary_input"}
 
 
 def test_get_obj_in_area_touching_and_enclosed(routed):
@@ -524,7 +529,9 @@ def test_get_obj_in_area_touching_and_enclosed(routed):
     source = s.eval(f"get_db {via} .source")
     assert source not in got("-100 -100 100 100")
     # a stub is its own wire
-    assert set(got("-100 -100 100 100", kind="nets")) == set(lst(s, "get_db nets"))
+    # nets with shapes: the routed ones, and the root net (its input's pin route)
+    assert set(got("-100 -100 100 100", kind="nets")) == \
+        set(lst(s, "get_db nets -if {.route_status != unrouted}")) | {"net:sp_primary_input"}
     area = s.eval(f"get_db {lst(s, 'get_db stub:sp/stub1 .net_wires')[0]} .rect")
     assert got(area, kind="nets") == ["stub:sp/stub1"]
     x, y = area.split()[:2]

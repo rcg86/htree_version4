@@ -2,7 +2,7 @@ NAME
     write_def - write the instances and the routing as DEF
 
 SYNOPSIS
-    write_def -output <file> [-sections {components specialnets nets}]
+    write_def -output <file> [-sections {components pins specialnets nets}]
               [-overwrite]
 
 DESCRIPTION
@@ -14,10 +14,24 @@ DESCRIPTION
     DIEAREA) comes from the DEF read with read_def: its design name,
     units and die area. Coordinates are written in those units.
 
-    Sections, in this order (components and specialnets by default):
+    Sections, in this order (components, pins and specialnets by
+    default). Before them, VIAS: the vias insert_vias generated, when
+    the written vias use some.
       COMPONENTS   every instance (create_inst, create_spine -build): cell,
                    + PLACED, + FIXED or + COVER (its .place_status, set
                    with set_db), lower-left corner, orientation.
+      PINS         the ports promote_port_to_layer put on a routing layer,
+                   only those, and only when there are some: each with its
+                   new shape and layer in place of the old ones, its net,
+                   direction and use, about its placement point (the
+                   port's own when placed N, else the lower left of its
+                   shape), + FIXED unless it was PLACED or COVER:
+
+                   - q + NET q_out + DIRECTION OUTPUT
+                     + LAYER IB ( -1440 -1440 ) ( 1440 1440 )
+                     + FIXED ( 40320 30240 ) N ;
+
+                   A port read_def gave its old shapes again is left out.
       SPECIALNETS  the routing. First each routed signal net (the spine
                    nets, and the nets of no spine with a pin on them),
                    then each power net that has shapes of htree4:
@@ -78,8 +92,8 @@ DESCRIPTION
 OPTIONS
     -output <file>
         DEF file to write. Required.
-    -sections {components specialnets nets}
-        Sections to write. Default components and specialnets.
+    -sections {components pins specialnets nets}
+        Sections to write. Default components, pins and specialnets.
     -overwrite
         Replace -output if it exists.
     -help

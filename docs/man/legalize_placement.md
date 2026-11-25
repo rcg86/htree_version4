@@ -10,8 +10,9 @@ DESCRIPTION
         line in its MACRO; rows of other sites at the same place, such as
         _2x or _pg sites, are not used; a cell with no SITE, or a SITE no
         row has, takes rows of any site);
-      - of the instance's orientation: N cells in N rows, FS cells in FS
-        rows;
+      - of the instance's orientation: N and FN cells in N rows, FS and S
+        cells in FS rows (FN and S are N and FS mirrored about the y axis:
+        the cells of a mirrored spine);
       - with the cell inside the row, at a whole number of the row's site
         steps from its origin;
       - overlapping no other instance (abutting is fine);
@@ -22,9 +23,12 @@ DESCRIPTION
         one where it does. With no such site near enough the nearest
         free site is taken.
     The nearest is by x + y distance, at most one cell width + height from
-    where the instance is: a legalization, not a re-placement. An instance
-    with no free site within that stays where it is (warning HT4-212), for
-    example one outside the die.
+    where the instance is: a legalization, not a re-placement. On a crowded
+    spot (another cell on it already: two buffers made at one point) with
+    no free site that near, it looks two, four ... up to 32 cell widths +
+    heights away, the nearest free site there. An instance with no free
+    site within that stays where it is (warning HT4-212), for example one
+    outside the die.
 
     Instances already on a legal, free site do not move. Fixed or cover
     instances (set_db .place_status fixed) never move, and the others keep
@@ -117,7 +121,7 @@ RETURN VALUE
 EXAMPLES
     htree> legalize_placement -inst [get_db inst]
     legalize_placement: 33 instance(s) moved onto sites (up to 0.259 um), 0 already legal, 0 fixed (not moved)
-    **WARN: (HT4-212): no free site of the cell's site and orientation within one cell width + height of temp_mirror_L7_inv6; left where they are
+    **WARN: (HT4-212): no free site of the cell's site and orientation within 32 cell widths + heights of temp_mirror_L7_inv6; left where they are
 
 ERRORS
     HT4-001  missing -inst

@@ -91,6 +91,7 @@ class Strap:
     label: str = ""              # written on it when labels are on; default the net
     outline: bool = False        # a route_net crossing box: drawn as an outline
     cls: str = "signal"          # signal | power | ground (net_class)
+    under: bool = False          # route_pin's piece under a pin wire: drawn below it
 
 
 @dataclass
@@ -342,7 +343,12 @@ def net_wire_strap(r) -> Strap:
     their power net."""
     cross = r["kind"].endswith("cross") or r["kind"] in ("via", "insert_via")
     shield = r["shield_net"] if r["kind"] in ("shield", "shield_ext", "stub_shield", "pg_ext",
+                                              "pg_grid",
                                               "via", "insert_via") else None
+    if r["kind"] == "pin_layer":         # route_pin's piece under a pin wire: on the pin's net
+        return Strap(f"net_wire:{r['net']}/{r['seq']}", r["shield_net"] or r["net"], r["layer"],
+                     tuple(float(v) for v in r["rect"].split()),
+                     cls=net_class(r["shield_net"] or r["net"]), under=True)
     return Strap(f"net_wire:{r['net']}/{r['seq']}", shield or r["net"], r["layer"].split("/")[0],
                  tuple(float(v) for v in r["rect"].split()), label=shield or "",
                  outline=cross, cls=net_class(r["shield_net"] or r["net"]))

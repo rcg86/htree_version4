@@ -794,3 +794,23 @@ def test_tools_move_shift_arrow_moves_a_selected_via_a_track(window):
     assert "IB has no DEF TRACKS X" in w.statusBar().currentMessage()
     w.undo_edit()
     assert rect(s, "net_wire:n1/2") == pytest.approx((2.82, 6.3, 3.18, 6.66))
+
+
+
+def test_tools_delete_deletes_a_fixed_wire(window):
+    # Delete on the selection deletes it even when it is fixed (set_db .route_status
+    # fixed); Undo Edit puts it back, still fixed
+    s, w = window
+    (net, seq), = s.db.add_net_wires([("n1", "wire", "IA", "0 20 10 20.36", None, None)])
+    row = s.db.net_wire_row(net, seq)
+    s.db.set_wire_fixed(row["id"], True)
+    handle = f"net_wire:{net}/{seq}"
+    w.on_select([handle], "replace")
+    w.act_delete.trigger()
+    text = s.out.getvalue()
+    assert "HT4-286" not in text
+    assert f"delete_wire: deleted 1 wire(s), 1 of them of fixed nets (they stay fixed): " \
+           f"{handle}" in text
+    assert s.db.net_wire_row(net, seq) is None
+    w.act_undo_edit.trigger()
+    assert s.db.net_wire_row(net, seq)["status"] == "fixed"

@@ -3,8 +3,9 @@ NAME
     vertical wire from each pin to a strap of its net
 
 SYNOPSIS
-    route_pin -inst <insts> [-spec <yaml>] [-layer <layer>]
-              [-nets {net ...}] [-width <width>] [-spacing <spacing>]
+    route_pin -inst <insts> [-spec_name <name> | -spec <yaml> [-spec_name <name>]]
+              [-layer <layer>] [-nets {net ...}] [-width <width>]
+              [-spacing <spacing>]
     route_pin -dump <yaml> [-overwrite] [-spec <yaml>] [-layer <layer>]
               [-nets {net ...}] [-width <width>] [-spacing <spacing>]
 
@@ -32,7 +33,12 @@ DESCRIPTION
         the cell about the x axis (N to FS) so swaps their straps;
         legalize_placement turns a cell so its input faces the net coming
         in. With fewer SIGNAL straps than signal pins, the pins left over
-        are not routed (warning).
+        are not routed (warning). The netlist knows each pin's net, so a
+        signal pin wire and the SIGNAL strap it lands on are put on that net
+        at once ("on their nets (netlist)"): their vias (pin to pin wire,
+        pin wire to strap) are the net's and get their definitions now, and
+        route_net, delete_route and check_drc see them as the net's. A pin
+        on no net stays SIGNAL.
     Vias. A pin wire has a via to its strap and one to every rectangle
     of its pin under it: a pin of two rectangles is connected at both.
     The rectangles are the pin's shapes on the highest tech layer below
@@ -54,6 +60,7 @@ DESCRIPTION
     runs/pin_routing_spec.yaml holds the defaults above, to edit:
 
         pin_routing:
+          cell_pattern: '*'
           width: 0.72
           spacing: 0.72
           max_strap_extension: 3
@@ -73,6 +80,49 @@ DESCRIPTION
     -spec, -layer, -nets, -width and -spacing) to a file in this layout,
     with comments, to edit and give back with -spec. It needs no -inst
     and routes nothing. Comments of a -spec file are not carried over.
+
+    cell_pattern (default *: every cell) says which cells the spec is
+    for: a glob on the library cell name (* any text, ? one character,
+    [..] one of), or a list of them, case sensitive. An instance whose
+    cell matches none is not routed: the report lists it with its cell,
+    and HT4-306 warns when no instance is left to route. For example
+        cell_pattern: INV12M3Mx2Fx7Dx_D*_N_S7P94TSL_C60L04
+        cell_pattern: [INV12M3*, 'BUF_?P']
+    (quote a pattern with ? or [ in a [..] list.)
+
+    routing_direction (default null: either way) says how the nets come to
+    the cells of the spec, and route_net keeps to it: vertical, from above
+    or below (onto a strap along the vertical layer; no side pins are made
+    for such a cell); horizontal, from the left or the right (onto a side
+    pin along the horizontal layer, or onto a strap from the horizontal
+    layer). A net that cannot reach a pin that way is not routed to it
+    (HT4-174 says "in the routing direction of its pin specs").
+
+    pins.horizontal_layer none (a net reached from the left or the right:
+    horizontal_routing): no straps at all. Each pin of pins.nets gets its
+    pin wire on vertical_layer alone. A signal pin whose net has a wire on
+    the horizontal signal layer already across the pin's column within
+    reach (its route, or the stub wire of a leaf's net under the cell) has
+    its pin wire go on to that wire: joined there (route_pin's pin vias),
+    nothing left to route. A leaf's output whose stub is not routed yet
+    goes on to the track route_final_stub would lay the stub on as things
+    are (its stub plan; the signal track nearest the stub's line when no
+    route rule is made yet), when that line runs across the pin's
+    column within reach; that track is kept for the stub: no other pin of
+    a cell the stub crosses lands on it. These targets are taken first,
+    the other pins' tracks are looked for after. A signal pin's wire goes on to the
+    nearest signal track of the horizontal signal layer (the track
+    assignment's) free across the cell and out past its edge on the side
+    its net comes from, as a side pin's, and route_net brings the net in
+    along that track onto it. A power pin's wire goes on to the nearest
+    track the track assignment gives its net on that layer (VDD_SOC, VSS):
+    insert_pg_grid -layer IA lays the power wire there, and insert_vias
+    -bottom_layer H2 -top_layer IA joins the pin wire to it (until then
+    check_drc reports it as a power open; route_net -shield does not join
+    a pin with no strap). Both extensions keep clear of other nets' shapes
+    on the pin wire layer; with no track near (two cell heights + 10 um) a
+    wire covers its pin only. nets and width do not apply; a key left out
+    still means the built-in IA, so write none.
 
     max_strap_extension (default 3, microns, >= 0) is how far route_net
     may extend a strap past each instance edge to meet the vertical wire of
@@ -117,6 +167,59 @@ DESCRIPTION
     it and can change it), so write_def writes every via. Printed: the
     definitions given, per layer pair, with the number of nets and vias;
     HT4-297 when no definition of a pair fits some of the vias.
+    Before the definitions are chosen, every crossing box is made the
+    full crossing of its net's two wires: the vertical wire's width by the
+    horizontal wire's width, so each via sits in the middle of the
+    crossing. A routed wire that stops short of the other wire's far edge
+    is lengthened to it (no further than the box is long); straps, pin
+    wires and pins are not. Fixed nets are left. Printed: how many boxes
+    moved and wires lengthened.
+    A via of a crossing box that its net's definition does not fit (its
+    pads past the metal there) while another of the same layers does gets
+    that one as its own, kept on the box as insert_vias -via_ref keeps one
+    (of those that fit, the first in the order above); the net's
+    assignment stays. Every net's vias are looked at, not only the nets
+    routed. Printed: how many vias, per layer pair.
+
+    A piece of each layer between the pin layer and the pin wire layer
+    (pins.layer and pins.vertical_layer: H1, between D12 and H2) under
+    every pin wire: as wide as the pin wire, from the bottom of the cell
+    to its top, on the pin's net (power or signal). The vias from the pin
+    up to its pin wire then land on metal of every layer they join, as
+    Innovus draws a clock pin's H1. It is a net_wire of kind pin_layer
+    under pg:<inst> (as optimize_pg_connection's
+    pieces are kept), so it moves with the instance, goes when route_pin
+    routes the instance again (made again with the new pin wires), and
+    optimize_pg_connection keeps it. write_def writes it on the pin's net.
+    It is not a crossing for stretch_wire's auto vias or insert_vias: the
+    pin's via stack goes through it already.
+
+    Pins reached from the side. A signal pin whose net comes from the
+    left or the right gets no strap. Where the net comes from: for an
+    input pin the nearest of its driver, the stubs its driver drives and
+    the net's routed wires; for an output pin the nearest of its loads and
+    the stubs it drives. From the side when that point is farther from
+    the pin along x than along y. Its pin wire (H2) is extended to the
+    nearest signal track of the strap layer (IA) within the strap stack's
+    height of the stack, clear of the cell's other straps by the route
+    rule's width and spacing (at least the straps' own), and with a free
+    way out on that track to the first vertical signal track past the
+    cell's edge on that side (other cells' straps and side pins, other
+    nets' wires). route_net brings its wire along the track onto the pin
+    wire, with an H2/IA crossing box for the via, and keeps that way free
+    of other nets' strap extensions. With no such track the pin keeps its
+    strap, and the report says so. The other straps are numbered on, top
+    first. A pin whose net comes from above or below keeps its strap.
+
+    Pin vias. After the instances are routed, route_pin runs insert_vias
+    from the pin wire layer to the strap layer (H2 to IA by default) over
+    each of them (the box of its straps and pin wires), so a pin wire is
+    joined to every strap of its net it crosses: a signal pin wire to its
+    strap, a power pin wire to both straps of its net. One line reports
+    how many vias were inserted and how many crossings had theirs
+    already; the vias then get their definitions with the rest
+    (Via definitions). An instance left as it is (on a fixed net) gets
+    none.
 
 OPTIONS
     -inst <insts>
@@ -130,8 +233,28 @@ OPTIONS
     -overwrite
         With -dump, replace the file if it exists.
     -spec <yaml>
-        Pin routing spec file (a 'pin_routing:' section). Default: the
-        built-in spec above.
+        Pin routing spec file (a 'pin_routing:' section). Default (no
+        -spec, no -spec_name): each instance its own spec, the one set_db
+        inst:<name> .pin_spec gave it or the one it was last routed with,
+        else the built-in spec above; its old pin routes and pin vias are
+        removed and made again with it. A file of named specs (pin_routing:
+        {vertical_routing: {...}, horizontal_routing: {...}}) needs
+        -spec_name when it names more than one.
+    -spec_name <name>
+        A named spec: one read_pin_spec read into the database (no -spec),
+        or one of the -spec file. The instance keeps the name (get_db
+        inst:<name> .pin_spec) and the spec's values, so legalize_placement
+        can make its pin routes again.
+        auto: each instance the named spec (of -spec's file, else of those
+        read_pin_spec read) whose routing_direction is the way its nets
+        run there: from the middle of the cell to every other pin and port
+        on the nets of its pins (the cell before it and the cells after
+        it), the x distances summed against the y ones; horizontal when x
+        is more, else vertical (also a cell on no net). The first spec of
+        each direction is taken. On a comb-shaped die the cells of a
+        buffer tree down the spine get the vertical spec, those along the
+        arms the horizontal one. The report lists which spec each got. An
+        error when no named spec has the direction an instance needs.
     -layer <layer>
         Tech layer of the straps (overrides pins.horizontal_layer).
         Default IA. A warning is given if the
@@ -187,17 +310,8 @@ ERRORS
              wires), or a layer not in its direction in tech
     HT4-164  WARN: strap or pin wire edges off the manufacturing grid
     HT4-165  WARN: strap centres not on the layer's tracks
+    HT4-301  WARN: insert_vias failed over the instances (its message
+             follows); the pin routes are made
     HT4-166  WARN: a pin is missing from the cell, has no shape on the
              pin layer, or its net has no strap in the stack; more signal
-             pins than SIGNAL straps; a pin shape not under its wire
-    HT4-167  the -spec file cannot be read, is not valid YAML, has no
-             'pin_routing:' section, or has an unknown key or a bad value;
-             the -dump file cannot be written
-    HT4-168  the -dump file exists (use -overwrite)
-    HT4-286  WARN: an instance with straps or pin wires on a fixed
-             net is not routed again (set_db .route_status fixed)
-    HT4-297  WARN: vias that no definition of their layer pair fits
-
-SEE ALSO
-    create_inst, create_route_rule, assign_track_for_route, get_db,
-    gui_show, assign_via_for_route
+             pins than 

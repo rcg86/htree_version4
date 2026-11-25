@@ -3,8 +3,9 @@ NAME
     ports through a buffer, to the nearest stub of a spine (the netlist)
 
 SYNOPSIS
-    connect_spine -from <spine> -to <spines | pins | ports>
-                  [-ref_name <lib_cell> -distance <um> [-name <prefix>]]
+    connect_spine -from <spine | stubs> -to <spines | pins | ports>
+                  [-ref_cell <lib_cell> -distance <um> [-name <prefix>]]
+                  [-sink_spine_distance <um>] [-source_spine_stub_distance <um>]
 
 DESCRIPTION
     Makes the spine given with -from the driver of what -to names: each
@@ -29,8 +30,9 @@ DESCRIPTION
                    instance (a buffer, say). Any other direction is an
                    error (HT4-251).
       a port       port:<design>/<port> or <port>, an output port of the
-                   design (or an inout one). It needs -ref_name and
-                   -distance. An input port is an error (HT4-251).
+                   design (or an inout one). It needs -ref_cell and
+                   -distance or -source_spine_stub_distance. An input
+                   port is an error (HT4-251).
 
     The nearest stub. Each of -to picks its stub on its own, so two of
     them may pick the same one: a stub can drive any number. The distance
@@ -45,7 +47,7 @@ DESCRIPTION
 
     A port. A stub does not drive a port itself: a buffer goes between
     them. For each port of -to the command makes an instance of
-    -ref_name, puts its input pin on the net of the stub nearest to the
+    -ref_cell, puts its input pin on the net of the stub nearest to the
     port and its output pin on the net of the port (get_db
     port:<design>/<port> .net), which it then drives: get_db net:<net>
     .driver gives pin:<buffer>/<output pin>, .ports the port. No net is
@@ -67,7 +69,12 @@ DESCRIPTION
                    edge of the die: the cell is across the edge, and the
                    legalization takes it off the edge). A port whose
                    stub is nearer than -distance gets its buffer at the
-                   stub, and the report says so. The cell has the
+                   stub, and the report says so. With
+                   -source_spine_stub_distance in place of -distance:
+                   the centre of the input pin of the buffer that far
+                   from the nearest point of the stub, on the way to
+                   the port, the same way round (a port nearer than it:
+                   the buffer at the port). The cell has the
                    orientation of the leaf that drives the stub, and its
                    corner is on the manufacturing grid.
       On sites     the buffers are then legalized (legalize_placement
@@ -98,6 +105,36 @@ DESCRIPTION
     that an earlier connect_spine put on another stub moves to the new
     one.
 
+    Which stub. -from is a spine (all its stubs) or stubs of one spine
+    (stub:<spine>/<stub> handles, e.g. from get_db ... .stubs -if
+    {.name == stub2}): only those stubs are chosen from. Each -to takes the
+    nearest of them, x plus y from the stub's centre line. Give one stub to
+    have that stub.
+
+    Buffers to a spine. A spine of -to can be driven through one or two
+    buffers (-ref_cell; plain instances of no spine), on the way from its
+    stub to its root input:
+        stub -> source buffer -> sink buffer -> root input(s)
+      - -source_spine_stub_distance <um>: the source buffer,
+        <prefix>_<spine> (-name, default buf), its input pin that far
+        (x plus y) from the stub.
+      - -sink_spine_distance <um>: the sink buffer, <prefix>_<spine>_sink,
+        its output pin that far (x plus y) from the root input (the middle
+        of the two roots of a mirrored spine).
+    Either or both. Each buffer is placed with the orientation of the
+    stub's leaf, then put on the nearest free site (legalize_placement),
+    so a pin can end up a little farther than asked. The stub's net goes
+    to the first buffer's input; each buffer drives a net of its own,
+    <buffer>_<output pin>, the next buffer's input or the root input pins
+    (both of a mirrored spine). The two distances together must be less
+    than the straight way from the stub to the root input. get_db
+    spine:<to> .link_buffer and .link_sink_buffer give the buffers.
+    The same command again (the same stub, the same buffers asked for,
+    still there and connected) keeps them. Else new buffers are made; the
+    old ones are left on their nets, with a warning (HT4-299).
+    -distance is for output ports only (where a port's buffer goes): with
+    no port in -to it is an error that names the spine options.
+
     Loops. A spine cannot drive itself: -to may not hold the -from spine,
     a pin of one of its cells, or a spine or pin whose instance drives
     the -from spine through any number of cells (HT4-268).
@@ -105,10 +142,13 @@ DESCRIPTION
     Everything is checked before anything is changed: on an error nothing
     is connected and no buffer is made.
 
-    Routing. A leaf's net keeps its stub as its only load for route_net
-    (get_db spine_net:<spine>/<net> .loads): the connections made here are
-    in the netlist only, and route_net does not route the stub's net to
-    these pins. The routing of the stub's net is as it was. So is that of
+    Routing. The connections are made in the netlist only: no wire. A
+    leaf's net keeps its stub as its load in the spine (get_db
+    spine_net:<spine>/<net> .loads); route_net routes the stub's net to the
+    pins connected here as well. When the net is fixed, route_net -force
+    keeps its wires (and its stub's) and adds only the way from them to
+    these pins. Until then the routing of the stub's net is as it was. So
+    is that of
     a net a pin was taken off: a routed net of no spine (a port's, a
     buffer's) still has its wires to the pin (HT4-254); route it again.
     The buffer of a port gets no pin routes (run route_pin on it), and
@@ -117,29 +157,44 @@ DESCRIPTION
     route_net').
 
 OPTIONS
-    -from <spine>
-        The spine whose stubs drive: one built spine. Required.
+    -from <spine | stubs>
+        What drives: one built spine (its stubs), or one or more stubs of
+        one spine (stub: handles). Required.
     -to <spines | pins | ports>
         The spines, input pins and output ports to connect, as a Tcl
         list. Required.
-    -ref_name <lib_cell>
-        The library cell of the buffers of the ports, or its handle.
-        Required with a port in -to.
     -ref_cell <lib_cell>
-        The same as -ref_name, under the name the other commands give
-        the option. One of the two, not both.
+        The library cell of the buffers (of the ports, and of the spines
+        with -source_spine_stub_distance or -sink_spine_distance), or its
+        handle. Required with a port in -to.
     -distance <um>
         The distance from a port to the output pin of its buffer, in x
-        plus y, microns, above 0. Required with a port in -to.
+        plus y, microns, above 0. Ports only. A port needs this or
+        -source_spine_stub_distance.
+    -source_spine_stub_distance <um>
+        A source buffer for each spine of -to: its input pin this far
+        (x plus y, microns, above 0) from the stub. For a port of -to
+        without -distance: its buffer's input pin this far from the stub,
+        on the way from the stub to the port. Needs -ref_cell.
+    -sink_spine_distance <um>
+        A sink buffer for each spine of -to: its output pin this far
+        (x plus y, microns, above 0) from the spine's root input. Needs
+        -ref_cell.
     -name <prefix>
         The prefix of the buffer names. Default: buf.
     -help
         Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
-    The handles of the pins of -to (pin:<inst>/<pin>): the root input
-    pins of the spines, the pins given, and for a port the input pin of
-    its buffer.
+    With -source_spine_stub_distance or -sink_spine_distance: two names
+    per spine of -to, in order: the source buffer (lindex 0) and the sink
+    buffer (lindex 1); an empty element for one not asked for.
+        htree> set b [connect_spine -from ... -to ... -source_spine_stub_distance 5 ...]
+        htree> lindex $b 0
+        spine_connect_bot_mgt_clk_clk_spine_bot
+    Else the handles of the pins of -to (pin:<inst>/<pin>): the root
+    input pins of the spines, the pins given, and for a port the input
+    pin of its buffer.
 
 EXAMPLES
     htree> connect_spine -from sp -to {sp2 spine:sp3 buf1/A}
@@ -149,7 +204,7 @@ EXAMPLES
       spine sp3   stub2  sp_L3_inv2_Y    47.472  sp3_L1_inv1/A sp3_mirror_L1_inv1/A
       pin buf1/A  stub1  sp_L3_inv1_Y    23.192  buf1/A
       disconnected first: sp2_L1_inv1/A from net net, sp3_L1_inv1/A from net net, sp3_mirror_L1_inv1/A from net net
-      netlist only: no wire is made, and route_net does not route a leaf's net to these pins
+      netlist only: no wire is made; route_net routes the stub's net to these pins (route_net -force on a fixed net: to them only, its wires kept)
     pin:sp2_L1_inv1/A pin:sp3_L1_inv1/A pin:sp3_mirror_L1_inv1/A pin:buf1/A
     htree> get_db pin:sp2_L1_inv1/A .net
     spine_net:sp/sp_L3_inv1_Y
@@ -157,7 +212,7 @@ EXAMPLES
     inst:sp_L3_inv2
     htree> connect_spine -from sp2 -to sp
     **ERROR: (HT4-268): connect_spine: spine sp is in spine sp2 or drives it (sp_L1_inv1): its stub cannot drive it
-    htree> connect_spine -from sp -to {q top} -ref_name INV_RP -distance 10 -name out
+    htree> connect_spine -from sp -to {q top} -ref_cell INV_RP -distance 10 -name out
     connect_spine: spine sp (2 stub(s)) -> 2 of -to, 2 pin(s) connected, 2 buffer(s) made
       To        Stub   Net           Distance  Pins
       port q    stub1  sp_L3_inv1_Y     91.36  out_q/A
@@ -166,19 +221,38 @@ EXAMPLES
         Port  Buffer   Drives                Centre          From port
         q     out_q    out_q/Y -> net q_net  {90.36 9.989}   10
         top   out_top  out_top/Y -> net top  {20.36 89.989}  10
-      netlist only: no wire is made, and route_net does not route a leaf's net to these pins, nor the net of an output port
+      netlist only: no wire is made; route_net routes the stub's net to these pins (route_net -force on a fixed net: to them only, its wires kept); it does not route the net of an output port
       Next: legalize_placement, route_pin -inst {out_q out_top}
     pin:out_q/A pin:out_top/A
     htree> get_db net:q_net .driver
     pin:out_q/Y
-    htree> connect_spine -from sp2 -to q -ref_name INV_RP -distance 10
+    htree> connect_spine -from sp2 -to q -ref_cell INV_RP -distance 10
     **ERROR: (HT4-269): connect_spine: port q is driven already, by out_q/Y: take that off first (disconnect_pin -pin out_q/Y)
 
+    A source buffer 5 um from the stub and a sink buffer 6 um from the
+    spine's input:
+    htree> connect_spine -from sp -to sp2 -source_spine_stub_distance 5 -sink_spine_distance 6 -ref_cell INV_RP -name lb
+    connect_spine: spine sp (2 stub(s)) -> 1 of -to, 1 pin(s) connected
+      To         Stub   Net           Distance  Pins
+      spine sp2  stub1  sp_L3_inv1_Y    32.521  sp2_L1_inv1/A
+      disconnected first: sp2_L1_inv1/A from net sp2_primary_input
+      links (stub -> source buffer -> sink buffer -> root input):
+        To         Stub   Straight  Source buffer                Sink buffer
+        spine sp2  stub1  32.521    lb_sp2 (5 um from the stub)  lb_sp2_sink (6 um from the input)
+      ...
+    lb_sp2 lb_sp2_sink
+
 ERRORS
-    HT4-001  -from or -to missing, -from with more than one spine, an
-             unknown option; with a port in -to: -ref_name or -distance
-             missing, -ref_name and -ref_cell both given, a distance
-             that is not a number above 0, or a bad prefix
+    HT4-001  -from or -to missing, -from with more than one spine or
+             stubs of more than one spine, an
+             unknown option (-ref_name: the option is -ref_cell); with a
+             port in -to: -ref_cell missing, or both -distance and
+             -source_spine_stub_distance missing, a distance that is not
+             a number above 0, or a bad prefix; -distance with no port
+             in -to; -source_spine_stub_distance with neither a spine nor
+             a port in -to, -sink_spine_distance with no spine in -to,
+             either without -ref_cell, or the two not less than the way
+             from stub to input
     HT4-022  no built spine of that name, or -to names neither a spine,
              a pin nor a port
     HT4-026  a port in -to and no physical library loaded (read_lef)
@@ -198,6 +272,8 @@ ERRORS
              spine or pin that drives it
     HT4-269  a -to port is nowhere (no shapes, no location), or is
              driven already by another pin
+    HT4-299  WARN: the buffers of a spine's link before are left on their
+             nets (another stub, or other buffers asked for)
 
 SEE ALSO
     connect_pin, disconnect_pin, create_spine, add_buffer_on_net,

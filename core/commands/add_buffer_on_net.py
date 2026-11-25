@@ -1,6 +1,7 @@
 """add_buffer_on_net -net <nets> -ref_cell <lib_cell> -distance <um>
-[-first_distance <um>] [-last_distance <um>] [-name <suffix>]: put buffers
-on nets, at even distances along their centre lines.
+[-first_distance <um>] [-last_distance <um>] [-name <suffix>]
+[-buffer_count <n> [-spread]]: put buffers on nets, at even distances along
+their centre lines.
 
     add_buffer_on_net -net sp_L1_inv1_Y -ref_cell INV_RP -first_distance 30 -distance 100
 
@@ -16,6 +17,13 @@ branch. With -last_distance, each load also gets a last buffer: on the net,
 at the first point back from the load where the output pin of the buffer is
 that far, in x plus y, from the input pin of the load. No buffer of the row
 above comes after the last of them.
+
+-buffer_count n: at most n buffers in a row from the driver to any load;
+the points past the n-th are left without one (HT4-307: max buffer count
+reached) and the rest of the command goes on. -spread (with -buffer_count,
+no -distance needed): the n buffers spread evenly instead, the net cut into
+n + 1 equal parts, every L / (n + 1) um from the driver, L the way to its
+farthest load (a branch nearer than that gets those of the points on it).
 
 Each buffer is an instance of -ref_cell centred on its point, a member of
 the spine (it moves with it), and drives a new spine net with the part of
@@ -48,7 +56,8 @@ SUMMARY = "Put buffers on nets at even distances along their centre lines"
 # Options and their kind (value | flag), also used by <tab> completion.
 OPTIONS = {"-net": "value", "-ref_cell": "value", "-distance": "value",
            "-first_distance": "value", "-last_distance": "value", "-name": "value",
-           "-spec": "value"}
+           "-spec": "value", "-spec_name": "value", "-buffer_count": "value",
+           "-spread": "flag"}
 
 USAGE = 1
 NO_NET = 256
@@ -60,6 +69,7 @@ OVERLAP = 261
 OUTSIDE = 262
 TOO_MANY = 263
 NOT_LEGAL = 264
+MAX_COUNT = 307              # WARN: -buffer_count reached, the points past it left
 LIMIT = 500                  # buffers on one net: more is taken for a wrong -distance
 LEVEL = "buffer"             # the level of a buffer among the members of its spine
 TOL = 1e-6
@@ -67,14 +77,39 @@ TOL = 1e-6
 
 def run(session, argv):
     opts, _ = parse_options(NAME, argv, OPTIONS)
-    missing = [o for o in ("-net", "-ref_cell", "-distance") if o not in opts]
+    spread = opts["-spread"]
+    missing = [o for o in ("-net", "-ref_cell") + (() if spread else ("-distance",))
+               if o not in opts]
     if missing:
         raise HtreeError(USAGE, f"add_buffer_on_net: {' and '.join(missing)} required. Usage: "
                          f"add_buffer_on_net -net <nets> -ref_cell <lib_cell> -distance <um> "
-                         f"[-first_distance <um>] [-last_distance <um>] [-name <suffix>]")
-    step = _um(opts, "-distance")
-    first = _um(opts, "-first_distance") if "-first_distance" in opts else step
+                         f"[-first_distance <um>] [-last_distance <um>] [-name <suffix>] "
+                         f"[-buffer_count <n> [-spread]]")
+    count = None
+    if "-buffer_count" in opts:
+        text = opts["-buffer_count"]
+        if not text.isdigit() or int(text) < 1:
+            raise HtreeError(USAGE, f"add_buffer_on_net: -buffer_count must be a whole number "
+                             f"above 0, got '{text}'")
+        count = int(text)
+    if spread:
+        if count is None:
+            raise HtreeError(USAGE, "add_buffer_on_net: -spread needs -buffer_count (the "
+                             "buffers to spread)")
+        both = [o for o in ("-first_distance", "-last_distance") if o in opts]
+        if both:
+            raise HtreeError(USAGE, f"add_buffer_on_net: -spread places the buffers itself: "
+                             f"not with {' '.join(both)}")
+        if "-distance" in opts:
+            _um(opts, "-distance")
+            info(f"add_buffer_on_net: -spread: -distance {opts['-distance']} is not used", out=
+                 session.out)
+        step = first = None
+    else:
+        step = _um(opts, "-distance")
+        first = _um(opts, "-first_distance") if "-first_distance" in opts else step
     last = _um(opts, "-last_distance") if "-last_distance" in opts else None
+    limit = count, spread
     suffix = opts.get("-name", "buf")
     if not suffix or "/" in suffix or any(c.isspace() for c in suffix):
         raise HtreeError(USAGE, f"add_buffer_on_net: -name '{suffix}' must not be empty or "
@@ -111,7 +146,10 @@ def run(session, argv):
     routed_made = []
     for net in on_route:                 # along the wires, cut and routed again
         routed_made += _on_route(session, net, cell, ref, pin_in, pin_out, first, step,
-                                 opts.get("-name", f"{net.prefix}_buf"), opts.get("-spec"))
+                                 opts.get("-name", f"{net.prefix}_buf"),
+                                 [w for o in ("-spec", "-spec_name") if o in opts
+                                  for w in (o, opts[o])],
+                                 limit)
     if on_route and not nets and not plain:
         return tuple(f"inst:{n}" for n in routed_made)
 
@@ -122,7 +160,7 @@ def run(session, argv):
     taken = set(db.inst_names())
     net_names = set(netlist.spine_nets(db)) | set(netlist.roots(db).values())
     net_names |= {r["net"] for r in db.connection_rows() if r["net"]}
-    snakes, plans, none = {}, [], []
+    snakes, plans, none, capped = {}, [], [], []
     insts, members, new_nets, cut, moved, links, made = [], [], [], [], [], [], []
     for spine, row in nets:
         if spine["name"] not in snakes:
@@ -133,7 +171,8 @@ def run(session, argv):
         snake = snakes[spine["name"]]
         orient = db.inst_row(row["driver"])["orient"] or "N"
         top, bufs = _plan(db, snake, row, first, step, last,
-                          _pin_offset(db, cell, pin_out, orient))
+                          _pin_offset(db, cell, pin_out, orient), limit)
+        capped += [(row["name"], top.capped)] if top.capped else []
         if not bufs:
             none.append(f"{row['name']} ({_num(round(_far(top), 3))} um to its farthest load)")
             continue
@@ -157,7 +196,8 @@ def run(session, argv):
     for net in plain:                    # of no spine: instances and connections
         row = net.row
         top, bufs = _plan_net(db, net, first, step, last,
-                              _pin_offset(db, cell, pin_out, net.orient))
+                              _pin_offset(db, cell, pin_out, net.orient), limit)
+        capped += [(row["name"], top.capped)] if top.capped else []
         if not bufs:
             none.append(f"{row['name']} ({_num(round(_far(top), 3))} um to its farthest load)")
             continue
@@ -176,15 +216,22 @@ def run(session, argv):
             made.append(b.net)
         plans.append((row, top, bufs))
     if none:
-        warn(SKIPPED, f"add_buffer_on_net: no buffer on {' ; '.join(none)}: the first would be "
-             f"{_num(first)} um from the driver"
-             + (f", the last {_num(last)} um from the pin of a load" if last else ""), out)
+        warn(SKIPPED, f"add_buffer_on_net: no buffer on {' ; '.join(none)}: "
+             + ("the net has no length to spread them on" if spread else
+                f"the first would be {_num(first)} um from the driver"
+                + (f", the last {_num(last)} um from the pin of a load" if last else "")), out)
+    _warn_capped(capped, count, out)
     if not plans:
         return tuple(f"inst:{n}" for n in routed_made)
 
-    info(f"add_buffer_on_net: {ref} every {_num(step)} um, the first {_num(first)} um from "
-         f"the driver" + (f", the last {_num(last)} um from the pin of each load (x + y, "
-                          f"from the output pin of the buffer)" if last else ""), out)
+    if spread:
+        info(f"add_buffer_on_net: {count} {ref} spread evenly on each net, every 1/{count + 1} "
+             f"of the way from the driver to its farthest load", out)
+    else:
+        info(f"add_buffer_on_net: {ref} every {_num(step)} um, the first {_num(first)} um from "
+             f"the driver" + (f", the last {_num(last)} um from the pin of each load (x + y, "
+                              f"from the output pin of the buffer)" if last else "")
+             + (f", at most {count} in a row" if count else ""), out)
     db.add_net_buffers(insts, members, new_nets, cut, moved, links)
     names = [i[0] for i in insts]
     legal = db.has_site_rows()
@@ -211,7 +258,8 @@ def run(session, argv):
     return tuple(f"inst:{n}" for n in routed_made + names)
 
 
-def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spec):
+def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spec,
+              limit=(None, False)):
     """Buffers on a routed net of no spine (core/buffer_route.py): placed
     under the route every step um along it, the wires cut there and the
     pieces put on the buffers' nets, then route_pin on the buffers and
@@ -227,11 +275,23 @@ def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spe
                          f"(route_net sets it): route it with route_net first")
     grid = route_net.Grid(db, route_net._rule_layers(db, rule))
     lines, adj, bufs, top_loads = br.plan(db, name, net, cell, pin_in, pin_out, grid, first,
-                                          step, out)
+                                          step, out, *limit)
+    _warn_capped([(name, br.plan.capped)] if br.plan.capped else [], limit[0], out)
     if not bufs:
-        warn(SKIPPED, f"add_buffer_on_net: no buffer on {name}: no point {_num(first)} + k x "
-             f"{_num(step)} um along its route lies before its last load", out)
+        ways = ", ".join(f"{k} " + ("not reached" if d is None else f"{_num(round(d, 3))} um")
+                         for k, d in br.plan.ways.items())
+        start = br.plan.start
+        warn(SKIPPED, f"add_buffer_on_net: no buffer on {name}: "
+             + (f"its route has no length to spread them on: along its {len(lines)} signal "
+                f"wire(s) on {grid.h.name}/{grid.v.name} from the point nearest the driver "
+                f"({{{_num(round(start[0], 3))} {_num(round(start[1], 3))}}}, the driver "
+                f"{net.driver.text} at {{{_num(round(net.root[0], 3))} "
+                f"{_num(round(net.root[1], 3))}}}) to the point nearest each load: {ways}"
+                if limit[1] else
+                f"no point {_num(first)} + k x {_num(step)} um along its route lies before "
+                f"its last load"), out)
         return []
+    step = step or bufs[0].dist          # -spread: the parts, for how far a buffer may slide
     if len(bufs) > LIMIT:
         raise HtreeError(TOO_MANY, f"add_buffer_on_net: {len(bufs)} buffers on net {name}, "
                          f"more than {LIMIT}: check -distance ({_num(step)} um)")
@@ -297,7 +357,7 @@ def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spe
     names = [b.name for b in bufs]
     if db.has_site_rows():
         legalize_placement.run(session, ["-inst", " ".join(names)])
-    route_pin.run(session, ["-inst", " ".join(names)] + (["-spec", spec] if spec else []))
+    route_pin.run(session, ["-inst", " ".join(names)] + list(spec or []))  # -spec, -spec_name
 
     # cut the wires: each buffer's gap on every wire of its line
     gaps = {id(line): [] for line in lines}
@@ -340,6 +400,14 @@ def _on_route(session, net, cell, ref, pin_in, pin_out, first, step, prefix, spe
     _report_route(db, name, bufs, top_loads, pin_out, out)
     _check_place(db, names, out)
     return names
+
+
+def _warn_capped(capped, count, out):
+    """HT4-307 for the nets [(name, points left)] -buffer_count stopped."""
+    if capped:
+        warn(MAX_COUNT, f"add_buffer_on_net: max buffer count reached ({count} in a row from "
+             f"the driver): no buffer on the point(s) past it on "
+             + ", ".join(f"{n} ({k} left)" for n, k in capped), out)
 
 
 def _report_route(db, name, bufs, top_loads, pin_out, out):
@@ -445,7 +513,8 @@ class Piece:
         self.pieces = []             # the buffers this one drives
 
 
-def split(segs, root, loads, first, step, last=None, pins=None, lines=None):
+def split(segs, root, loads, first, step, last=None, pins=None, lines=None, count=None,
+          spread=False):
     """Cut a net at its buffer points. segs: its centre lines ((along,
     across), (along, across)), each along or across the spine; root: the
     point of its driver; loads: {name: point}. Points off the lines count
@@ -458,7 +527,12 @@ def split(segs, root, loads, first, step, last=None, pins=None, lines=None):
     puts the stretch of a centre line from u to v, as [(point, point)]
     (default: where it is). The piece of the driver gets .missed, [(load,
     'near' | 'far')]: the loads without such a buffer, as the driver is
-    nearer than last or the net does not come that near the point."""
+    nearer than last or the net does not come that near the point.
+
+    count: at most that many buffers in a row from the driver; .capped on
+    the piece of the driver is the points left without one. spread: count
+    buffers every L / (count + 1) um, L the way to the farthest load (first
+    and step are not used)."""
     segs = [s for s in segs if _len(*s) > TOL]
     if any(abs(a[0] - b[0]) > TOL and abs(a[1] - b[1]) > TOL for a, b in segs):
         raise ValueError("a centre line that runs neither along nor across the spine")
@@ -495,11 +569,13 @@ def split(segs, root, loads, first, step, last=None, pins=None, lines=None):
     lost = [str(name) for node, names in at.items() if node not in dist for name in names]
     if lost:
         raise ValueError(f"no centre line leads from the driver to {' '.join(lost)}")
+    if spread:
+        first = step = max([dist[node] for node in at] + [0.0]) / (count + 1) or 1e18
     children = {}
     for v in sorted(parent):
         children.setdefault(parent[v], []).append(v)
     top, bufs = Piece(), []
-    top.missed = []
+    top.missed, top.capped = [], 0
     ends = {}                        # node: (the row ends before, the last buffer) of its loads
     for node, names in at.items():
         way = _way(node, parent, dist, lines or (lambda u, v: [(u, v)])) if last else []
@@ -529,6 +605,9 @@ def split(segs, root, loads, first, step, last=None, pins=None, lines=None):
             cur, a = piece, u
             here = [(name, dist[v]) for name in at.get(v, ())]
             for c in _cuts(dist[u], dist[v], below[v], first, step):
+                if count is not None and cur.depth >= count:
+                    top.capped += 1          # max buffer count reached: no more in this row
+                    continue
                 if c > dist[v] - TOL:        # on the node: its loads are before the buffer
                     p = v
                     cur.loads += here
@@ -659,7 +738,7 @@ def _nearest(seg, p):
 
 # -- a net of the database ---------------------------------------------------------------
 
-def _plan(db, snake, row, first, step, last, out_pin):
+def _plan(db, snake, row, first, step, last, out_pin, limit=(None, False)):
     """split() for a spine_net row. The loads are its instances, and the
     connect_pin rows on it as ('connection', id, '<inst>/<pin>'). The last
     distance is measured in the layout, from the output pin of a buffer
@@ -695,7 +774,7 @@ def _plan(db, snake, row, first, step, last, out_pin):
                 pins[key] = _pin_centre(db, r["inst"], r["pin"])
         top, bufs = split(segs, spot(row["driver"]), loads, first, step, last,
                           {k: (x - out_pin[0], y - out_pin[1]) for k, (x, y) in pins.items()},
-                          lambda u, v: snake.seg_lines(u + v))
+                          lambda u, v: snake.seg_lines(u + v), *limit)
     except ValueError as exc:
         raise HtreeError(BAD_ROUTE, f"add_buffer_on_net: net {row['name']}: {exc}")
     top.pins = pins
@@ -768,13 +847,13 @@ def tree(root, pins):
     return segs + [(p, on(p)) for p in dict.fromkeys(pts) if abs(p[1 - axis] - mid) > TOL]
 
 
-def _plan_net(db, net, first, step, last, out_pin):
+def _plan_net(db, net, first, step, last, out_pin, limit=(None, False)):
     """split() for a Plain, on tree(), in the layout. The piece of the driver
     gets .pins as _plan gives them."""
     try:
         top, bufs = split(tree(net.root, net.pins.values()), net.root, net.pins, first, step,
                           last, {k: (x - out_pin[0], y - out_pin[1])
-                                 for k, (x, y) in net.pins.items()})
+                                 for k, (x, y) in net.pins.items()}, None, *limit)
     except ValueError as exc:
         raise HtreeError(BAD_ROUTE, f"add_buffer_on_net: net {net.row['name']}: {exc}")
     top.pins = net.pins

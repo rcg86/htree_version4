@@ -1,24 +1,41 @@
 NAME
-    connect_pin - connect input pins to an output pin or an input port
-    (the netlist)
+    connect_pin - connect input pins, and output ports through a buffer, to
+    an output pin or an input port (the netlist)
 
 SYNOPSIS
-    connect_pin -from <pin | port> -to <pins> [-disconnect]
+    connect_pin -from <pin | port> -to <pins | ports> [-disconnect]
+                [-ref_cell <lib_cell> [-distance <um>] [-name <prefix>]]
 
 DESCRIPTION
     Connects the pins of -to to the driver given with -from. Only the
     netlist changes: get_db pin:<inst>/<pin> .net shows it, write_logical
-    writes it. No wire is made, moved or removed.
+    writes it. No wire is made, moved or removed. An output port in -to
+    also gets a placed buffer (below).
 
     The driver (-from) is one of:
       an output pin of an instance   pin:<inst>/<pin> or <inst>/<pin>
       an input port of the design    port:<design>/<port> or <port>
                                      (an input port drives the nets
                                      inside the design)
-    The loads (-to) are input pins of instances, one or a Tcl list. Any
-    other direction is an error (HT4-251): an input pin or an output port
-    as -from, a pin that is not an input (output, inout, a power pin
-    without a direction) or a port in -to. Everything is checked before
+    The loads (-to) are input pins of instances and output ports of the
+    design, one or a Tcl list. Any other direction is an error (HT4-251):
+    an input pin or an output port as -from, a pin that is not an input
+    (output, inout, a power pin without a direction) or an input port in
+    -to.
+
+    An output port. A net does not join a driver and an output port
+    straight: each output port of -to is driven through a buffer, always
+    (-ref_cell is then required). The buffer is an instance of -ref_cell,
+    oriented N, its output pin -distance um (default 10, x + y) from the
+    port on the way to the driver (inside the design boundary where it
+    can), then put on a site (legalize_placement). Its input goes on the
+    net of the driver, its output on the net of the port: it drives the
+    port. Its name is <prefix>_<port> (-name, default buf; a bit of a bus
+    d[3] gives buf_d_3; _2, _3 ... when taken). A port driven already is an
+    error (HT4-308); with -disconnect its driver is taken off it first. A
+    port on the driver's net is an error too (HT4-308): the buffer needs
+    two nets. -ref_cell is taken to be what you say it is: one inverter
+    inverts the port's signal (all_fanout counts it). Everything is checked before
     anything is changed: on an error nothing is connected.
 
     The net. There is no net option: a net is known by its driver, and the
@@ -67,16 +84,26 @@ OPTIONS
     -from <pin | port>
         The driver: one output pin of an instance or one input port of
         the design. Required.
-    -to <pins>
-        The input pins to connect, as a Tcl list. Required.
+    -to <pins | ports>
+        The input pins and output ports to connect, as a Tcl list.
+        Required.
     -disconnect
-        Take a -to pin that is on another net off that net first.
-        Without it such a pin is an error.
+        Take a -to pin that is on another net off that net first, and a
+        -to port's driver off the port. Without it either is an error.
+    -ref_cell <lib_cell>
+        The cell of the buffer of each output port of -to. Required when
+        -to has an output port.
+    -distance <um>
+        How far the buffer's output pin is from its port, x + y. Default
+        10.
+    -name <prefix>
+        The prefix of the buffer names: <prefix>_<port>. Default buf.
     -help
         Print the definition, usage, options and an example of the command.
 
 RETURN VALUE
-    The handles of the -to pins (pin:<inst>/<pin>).
+    The handles of the -to pins (pin:<inst>/<pin>), then the buffer of
+    each -to port (inst:<name>).
 
 EXAMPLES
     htree> connect_pin -from port:top/clk -to buf1/A
@@ -94,10 +121,18 @@ EXAMPLES
     buf1_Y
     htree> connect_pin -from sp_L2_inv1/Y -to {dummy1/A dummy2/A}
     connect_pin: net sp_L2_inv1_Y: sp_L2_inv1/Y -> dummy1/A dummy2/A
+    htree> connect_pin -from [get_db ports clk] -to [get_db ports q] -ref_cell INV_RP
+    **WARN: (HT4-264): connect_pin: no placement rows (read_def a DEF with ROW statements), so the buffers are on the manufacturing grid, not on sites: run legalize_placement on them once the rows are read
+    connect_pin: net clk: port clk -> buf_q/A
+      output ports, each driven through a buffer (its output pin from the port, x + y; as placed):
+        port q: buf_q (INV_RP) at {90.36 9.989}, 10 um; buf_q/Y -> net q_net
+      Next: legalize_placement, route_pin -inst {buf_q}, then route_net -net {clk q_net}
+    inst:buf_q
 
 ERRORS
-    HT4-001  -from or -to missing, -from with more than one pin, or an
-             unknown option
+    HT4-001  -from or -to missing, -from with more than one pin, an
+             output port in -to without -ref_cell, a -distance that is
+             not above 0, a bad -name, or an unknown option
     HT4-022  no such pin or port, or an object that is neither
     HT4-251  wrong direction: -from is not an output pin or an input
              port, or a -to pin is not an input pin of an instance
@@ -105,6 +140,11 @@ ERRORS
     HT4-253  a -to pin is on another net; use -disconnect
     HT4-254  WARN: a net with routing got or lost a pin; its routing is
              not changed
+    HT4-257  -ref_cell is not in the library, or has no SIZE, signal
+             input or signal output pin
+    HT4-264  WARN: the buffers are not on placement sites
+    HT4-308  a -to port is driven already (use -disconnect), is on the
+             driver's net, or has no place
 
 SEE ALSO
     disconnect_pin, connect_spine, create_inst, create_spine, route_net,

@@ -421,8 +421,8 @@ class LayoutCanvas(QGraphicsView):
             item.setData(CLASS_KEY, st.cls)
             item.setData(LAYER_KEY, st.layer)
             item.setData(NET_KEY, st.net)
-            item.setZValue(7 if st.outline else 6 if st.handle.startswith("net_wire:")
-                           else 5 if st.label else 4)
+            item.setZValue(7 if st.outline else 3.5 if st.under else
+                           6 if st.handle.startswith("net_wire:") else 5 if st.label else 4)
             self.strap_items.setdefault(st.layer, []).append(item)
             self.owner_items.setdefault(st.handle, []).append(item)
 

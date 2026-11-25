@@ -1,0 +1,224 @@
+# htree_builder 
+# started 2026-11-24 11:49:58 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+Log: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.log14
+Commands: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.cmd14
+htree> connect_pin -from ref_clk_ione_ctm3_clk_out_31_3_clock -to {ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31} -ref_cell INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04
+**ERROR: (HT4-022): connect_pin: no pin or port 'ref_clk_ione_ctm3_clk_out_31_3_clock' (get_db inst:<inst> .pins and get_db ports list them)
+htree> #read_tech -file ../tech.new.lef
+htree> read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+**WARN: (HT4-013): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 23)
+**WARN: (HT4-013): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 24)
+**WARN: (HT4-013): 1 CLEARANCEMEASURE statement(s) not modeled, kept verbatim (first at line 25)
+**WARN: (HT4-013): 1 USEMINSPACING statement(s) not modeled, kept verbatim (first at line 26)
+**WARN: (HT4-013): 1 FIXEDMASK statement(s) not modeled, kept verbatim (first at line 34)
+**WARN: (HT4-013): 4 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 36)
+**WARN: (HT4-013): 40 VIARULE statement(s) not modeled, kept verbatim (first at line 4553)
+Reading tech LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef'
+  LEF version : 5.8
+  DB units    : 4000
+  Layer range : D12 .. IB (-min_layer D12, -max_layer IB); 54 of the 75 layers of the file left out
+  Layers      : 21 (D12 DH H1 N1 H2 HG G1 T1 G2 GI IA II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM IB)
+  Vias        : 190 (190 DEFAULT); 216 left out, a layer of theirs is not in the range
+htree> read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+**WARN: (HT4-063): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 2)
+**WARN: (HT4-063): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 3)
+**WARN: (HT4-063): 1 SITE statement(s) not modeled, kept verbatim (first at line 5)
+**WARN: (HT4-063): 1 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 11)
+Reading cell LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef'
+  LEF version : 5.8
+  Cells       : 6 added
+  Pins        : 36, ports 294, shapes 294
+  Pin layers  : S11(192) D12(42) M1(12) NW(24) PSUB(24)
+  In tech     : D12
+**WARN: (HT4-064): 252 pin shape(s) on layers not in tech: S11 M1 NW PSUB. They are kept but ignored in calculations
+htree> read_spine_spec -file ./custom_spine.yaml
+Reading spine spec '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/custom_spine.yaml'
+  custom_spine_4000       : line 3, levels L1(3) L2(1) L3(2) L4(4), 10 cells
+  custom_spine_h5p2       : line 51, levels L1(1) L2(1) L3(2), 4 cells
+  custom_spine_v5p2       : line 91, levels L1(1) L2(1) L3(2), 4 cells
+htree> read_def -file cf999.def
+Reading DEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/cf999.def'
+  Design      : cf999 (DEF 5.8, 4000 units/micron)
+  Boundary    : polygon, 26 points, bbox 0 0 5704.56 14144.08
+  Pins        : 110728, shapes 110725
+  Rows        : 167043 (ln04lpp_sc_s7p94t_c60 ln04lpp_sc_s7p94t_c60_2x ln04lpp_sc_s7p94t_c60_pg)
+  Tracks      : 56 patterns on 19 layers (IB IA G2 G1 H2 H1 D12 D11 D10 D9 D8 D7 D6 LB F5 F4 M3 M2 M1)
+  Tracks tech : IB IA G2 G1 H2 H1 D12, tech layers without tracks: DH N1 HG T1 GI II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM
+  Vias        : 2 (DH_POWER_VIA_0 N1_POWER_VIA_0)
+  Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) PINPROPERTIES BLOCKAGES
+  Pin layers  : D6(2084) D8(16404) D12(17251) D9(8404) D11(11762) G1(2880) H1(2712) D7(2284) G2(8108) D10(21584) H2(17252)
+  In tech     : D12 G1 H1 G2 H2
+**WARN: (HT4-093): 62522 pin shape(s) on layers not in tech: D6 D8 D9 D11 D7 D10. They are kept but ignored in calculations
+htree> # Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+htree> # power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+htree> assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IA (horizontal, DEF TRACKS Y): 19645 tracks, y 0.36 .. 14144.04
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 2456 tracks, first at y 0.36
+  VSS         : 2456 tracks, first at y 3.24
+  signal      : 4911 tracks, first at y 1.8
+  blank (NA)  : 9822 tracks, first at y 1.08
+htree> assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IB (vertical, DEF TRACKS X): 7923 tracks, x 0.36 .. 5704.2
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 991 tracks, first at x 0.36
+  VSS         : 990 tracks, first at x 3.24
+  signal      : 1981 tracks, first at x 1.8
+  blank (NA)  : 3961 tracks, first at x 1.08
+htree> create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+Route rule rule1, IA: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+Route rule rule1, IB: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+  route rule rule1 layers: IA IB
+route_rule:rule1
+htree> read_pin_spec -file pin_routing_spec.yaml 
+read_pin_spec: 2 pin routing spec(s) from 'pin_routing_spec.yaml':
+  vertical_routing: cells *, 6 straps (VSS VDD_SOC SIGNAL VSS SIGNAL VDD_SOC), width 0.36, spacing 0.36, on IA from H2
+  horizontal_routing: cells *, no straps: H2 pin wires only (pins.horizontal_layer none)
+  route_pin -inst <insts> -spec_name <name>
+vertical_routing horizontal_routing
+htree> # route_pin needs instances: it runs after create_spine below
+htree> #route_pin -spec pin_routing_spec.yaml
+htree> #create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+htree> #create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+htree> 
+htree> 
+htree> 
+htree> connect_pin -from ref_clk_ione_ctm3_clk_out_31_3_clock -to {ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31} -ref_cell INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04
+legalize_placement: 7 instance(s) moved onto sites (up to 2.56 um), 0 already legal, 0 fixed (not moved)
+legalize_placement: pin access: every signal pin of the 7 instance(s) has a track to be reached on
+connect_pin: net ref_clk_ione_ctm3_clk_out_31_3_clock: port ref_clk_ione_ctm3_clk_out_31_3_clock -> buf_ref_clk_ctm3_eyp0_clk_out_30_clock/A buf_ref_clk_ctm3_iose_local_clk_29/A buf_ref_clk_ctm3_scp_local_clk_28/A buf_ref_clk_ctm3_scp_clk_out_29_clock/A buf_ref_clk_ctm3_tlp_clk_out_31_clock/A buf_ref_clk_ctm3_ione_local_clk_30/A buf_ref_clk_ctm3_gpp_local_clk_31/A
+  output ports, each driven through a buffer (its output pin from the port, x + y; as placed):
+    port ref_clk_ctm3_eyp0_clk_out_30_clock: buf_ref_clk_ctm3_eyp0_clk_out_30_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 889.409}, 10.216 um; buf_ref_clk_ctm3_eyp0_clk_out_30_clock/Y -> net ref_clk_ctm3_eyp0_clk_out_30_clock
+    port ref_clk_ctm3_iose_local_clk_29: buf_ref_clk_ctm3_iose_local_clk_29 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5562.84 10.061}, 9.984 um; buf_ref_clk_ctm3_iose_local_clk_29/Y -> net ref_clk_ctm3_iose_local_clk_29
+    port ref_clk_ctm3_scp_local_clk_28: buf_ref_clk_ctm3_scp_local_clk_28 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 3433.473}, 10.176 um; buf_ref_clk_ctm3_scp_local_clk_28/Y -> net ref_clk_ctm3_scp_local_clk_28
+    port ref_clk_ctm3_scp_clk_out_29_clock: buf_ref_clk_ctm3_scp_clk_out_29_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 3429.409}, 10.06 um; buf_ref_clk_ctm3_scp_clk_out_29_clock/Y -> net ref_clk_ctm3_scp_clk_out_29_clock
+    port ref_clk_ctm3_tlp_clk_out_31_clock: buf_ref_clk_ctm3_tlp_clk_out_31_clock (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {10.38 10068.969}, 10.012 um; buf_ref_clk_ctm3_tlp_clk_out_31_clock/Y -> net ref_clk_ctm3_tlp_clk_out_31_clock
+    port ref_clk_ctm3_ione_local_clk_30: buf_ref_clk_ctm3_ione_local_clk_30 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5702.4 13708.789}, 9.4 um; buf_ref_clk_ctm3_ione_local_clk_30/Y -> net ref_clk_ctm3_ione_local_clk_30
+    port ref_clk_ctm3_gpp_local_clk_31: buf_ref_clk_ctm3_gpp_local_clk_31 (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04) at {5702.4 10221.369}, 12.488 um; buf_ref_clk_ctm3_gpp_local_clk_31/Y -> net ref_clk_ctm3_gpp_local_clk_31
+  Next: route_pin -inst {buf_ref_clk_ctm3_eyp0_clk_out_30_clock buf_ref_clk_ctm3_iose_local_clk_29 buf_ref_clk_ctm3_scp_local_clk_28 buf_ref_clk_ctm3_scp_clk_out_29_clock buf_ref_clk_ctm3_tlp_clk_out_31_clock buf_ref_clk_ctm3_ione_local_clk_30 buf_ref_clk_ctm3_gpp_local_clk_31}, then route_net -net {ref_clk_ione_ctm3_clk_out_31_3_clock ref_clk_ctm3_eyp0_clk_out_30_clock ref_clk_ctm3_iose_local_clk_29 ref_clk_ctm3_scp_local_clk_28 ref_clk_ctm3_scp_clk_out_29_clock ref_clk_ctm3_tlp_clk_out_31_clock ref_clk_ctm3_ione_local_clk_30 ref_clk_ctm3_gpp_local_clk_31}
+inst:buf_ref_clk_ctm3_eyp0_clk_out_30_clock inst:buf_ref_clk_ctm3_iose_local_clk_29 inst:buf_ref_clk_ctm3_scp_local_clk_28 inst:buf_ref_clk_ctm3_scp_clk_out_29_clock inst:buf_ref_clk_ctm3_tlp_clk_out_31_clock inst:buf_ref_clk_ctm3_ione_local_clk_30 inst:buf_ref_clk_ctm3_gpp_local_clk_31
+htree> 
+htree> 
+htree> connect_pin -help
+NAME
+    connect_pin - connect input pins, and output ports through a buffer, to
+    an output pin or an input port (the netlist)
+
+SYNOPSIS
+    connect_pin -from <pin | port> -to <pins | ports> [-disconnect]
+                [-ref_cell <lib_cell> [-distance <um>] [-name <prefix>]]
+
+DESCRIPTION
+    Connects the pins of -to to the driver given with -from. Only the
+    netlist changes: get_db pin:<inst>/<pin> .net shows it, write_logical
+    writes it. No wire is made, moved or removed. An output port in -to
+    also gets a placed buffer (below).
+
+OPTIONS
+    -from <pin | port>
+        The driver: one output pin of an instance or one input port of
+        the design. Required.
+    -to <pins | ports>
+        The input pins and output ports to connect, as a Tcl list.
+        Required.
+    -disconnect
+        Take a -to pin that is on another net off that net first, and a
+        -to port's driver off the port. Without it either is an error.
+    -ref_cell <lib_cell>
+        The cell of the buffer of each output port of -to. Required when
+        -to has an output port.
+    -distance <um>
+        How far the buffer's output pin is from its port, x + y. Default
+        10.
+    -name <prefix>
+        The prefix of the buffer names: <prefix>_<port>. Default buf.
+    -help
+        Print the definition, usage, options and an example of the command.
+
+EXAMPLE
+    htree> connect_pin -from port:top/clk -to buf1/A
+    connect_pin: net clk: port clk -> buf1/A
+      a net of no spine: route_net -net net:clk -rule <rule> routes it
+
+Run 'man connect_pin' for the full manual page.
+htree> 
+
+create_buffer_tree  create_inst         create_route_rule   create_spine
+
+-buffer_ref    -distance      -from          -help          -inverter_ref  -name
+htree> create_buffer_tree -from ref_clk_ione_ctm3_clk_out_31_3_clock -inverter_ref INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04 -distance 500 -name buf_tree
+**WARN: (HT4-304): create_buffer_tree: buf_tree_19 at {5561.28 9848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_20 at {5561.28 9348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_21 at {5561.28 8848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_22 at {5561.28 8348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_23 at {5561.28 7848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_24 at {5561.28 7348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_25 at {5561.28 6848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_26 at {5561.28 6348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_27 at {5561.28 5848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_28 at {5561.28 5348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_29 at {5561.28 4848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_30 at {5561.28 4348.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_31 at {5561.28 3848.452125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_50 at {8.82 3400.912125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_51 at {8.82 2900.912125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_52 at {8.82 2400.912125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_53 at {8.82 1900.912125} is not inside the design boundary
+**WARN: (HT4-304): create_buffer_tree: buf_tree_54 at {8.82 1400.912125} is not inside the design boundary
+legalize_placement: 40 instance(s) moved onto sites (up to 2.032 um), 0 already legal, 0 fixed (not moved)
+**WARN: (HT4-212): no free site of the cell's site and orientation within one cell width + height of buf_tree_19 buf_tree_20 buf_tree_21 buf_tree_22 buf_tree_23 buf_tree_24 buf_tree_25 buf_tree_26 buf_tree_27 buf_tree_28 buf_tree_29 buf_tree_30 buf_tree_31 buf_tree_50 buf_tree_51 buf_tree_52 buf_tree_53 buf_tree_54; left where they are
+**WARN: (HT4-288): legalize_placement: 36 signal pin(s) with no track route_net can reach them on (the nets to route again are not counted as in the way):
+    buf_tree_19/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_19/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_20/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_20/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_21/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_21/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_22/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_22/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_23/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_23/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_24/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_24/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_25/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_25/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_26/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_26/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_27/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_27/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_28/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_28/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_29/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_29/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_30/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_30/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_31/A (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_31/Y (no strap yet: the cell): x 5560.2 outside the design; x 5563.08 outside the design; x 5565.96 outside the design
+    buf_tree_50/A (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_50/Y (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_51/A (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_51/Y (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_52/A (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_52/Y (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_53/A (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_53/Y (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_54/A (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+    buf_tree_54/Y (no strap yet: the cell): x 7.56 outside the design; x 10.44 outside the design; x 13.32 outside the design
+create_buffer_tree: port ref_clk_ione_ctm3_clk_out_31_3_clock (net ref_clk_ione_ctm3_clk_out_31_3_clock) -> 7 sink(s): 58 cell(s), 58 inverter(s) (INV12M3Mx2Fx7Dx_D48_N_S7P94TSL_C60L04), 0 buffer(s) (no -buffer_ref), one every 500 um of the tree
+  one more inverter before 3 sink(s) to keep their polarity: buf_tree_56 buf_tree_57 buf_tree_58
+  Sink                                      Way        Inverters  Buffers  Inverters after  Last cell
+  buf_ref_clk_ctm3_eyp0_clk_out_30_clock/A  18512.392  37         0        1                buf_tree_55
+  buf_ref_clk_ctm3_iose_local_clk_29/A      13839.28   27         0        1                buf_tree_38
+  buf_ref_clk_ctm3_scp_local_clk_28/A       15968.328  31         0        1                buf_tree_49
+  buf_ref_clk_ctm3_scp_clk_out_29_clock/A   15972.392  31         0        1                buf_tree_49
+  buf_ref_clk_ctm3_tlp_clk_out_31_clock/A   9332.832   19         0        1                buf_tree_58
+  buf_ref_clk_ctm3_ione_local_clk_30/A      0.992      1          0        1                buf_tree_56
+  buf_ref_clk_ctm3_gpp_local_clk_31/A       3488.412   7          0        1                buf_tree_57
+**WARN: (HT4-262): create_buffer_tree: not inside the design boundary: buf_tree_19 buf_tree_20 buf_tree_21 buf_tree_22 buf_tree_23 buf_tree_24 buf_tree_25 buf_tree_26 buf_tree_27 buf_tree_28 buf_tree_29 buf_tree_30 buf_tree_31 buf_tree_50 buf_tree_51 buf_tree_52 buf_tree_53 buf_tree_54
+  netlist and placement only: route_pin -inst {buf_tree_*}, route_net next
+buf_tree_1 buf_tree_2 buf_tree_3 buf_tree_4 buf_tree_5 buf_tree_6 buf_tree_7 buf_tree_8 buf_tree_9 buf_tree_10 buf_tree_11 buf_tree_12 buf_tree_13 buf_tree_14 buf_tree_15 buf_tree_16 buf_tree_17 buf_tree_18 buf_tree_19 buf_tree_20 buf_tree_21 buf_tree_22 buf_tree_23 buf_tree_24 buf_tree_25 buf_tree_26 buf_tree_27 buf_tree_28 buf_tree_29 buf_tree_30 buf_tree_31 buf_tree_32 buf_tree_33 buf_tree_34 buf_tree_35 buf_tree_36 buf_tree_37 buf_tree_38 buf_tree_39 buf_tree_40 buf_tree_41 buf_tree_42 buf_tree_43 buf_tree_44 buf_tree_45 buf_tree_46 buf_tree_47 buf_tree_48 buf_tree_49 buf_tree_50 buf_tree_51 buf_tree_52 buf_tree_53 buf_tree_54 buf_tree_55 buf_tree_56 buf_tree_57 buf_tree_58
+htree> gui_show 
+GUI opened. Commands typed here update the layout.
+htree> 
+htree> exit
+# ended 2026-11-24 12:02:26

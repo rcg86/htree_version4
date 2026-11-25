@@ -1,0 +1,69 @@
+# htree_builder 
+# started 2026-11-24 08:15:28 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+#read_tech -file ../tech.new.lef
+read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+read_spine_spec -file ./custom_spine.yaml
+read_def -file cf999.def
+# Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+# power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+read_pin_spec -file pin_routing_spec.yaml 
+# route_pin needs instances: it runs after create_spine below
+#route_pin -spec pin_routing_spec.yaml
+#create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+#create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+### create mgt clock main spine
+#
+create_spine -name mgt_clk_spine_ver_main -spec_name custom_spine_4000 -location {5697 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_ver_main -clearance {0 0 0 10} -moves {head bottom down 2075.14 left 87.84 down 3381.12 up 1008 down 201.6 up 201.6 down 103.68}
+create_spine -name mgt_clk_spine_bot -spec_name custom_spine_v5p2 -location {5681 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_bot -clearance {0 0 0 18} -moves {head bottom down 4064.38 left 92 down 3035.52}
+move_obj [get_db spine mgt_clk_spine_bot ] -direction +y -distance 10 -legal
+create_spine -name mgt_clk_spine_top -spec_name custom_spine_v5p2 -location {5681 10066.7}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-x} -mirror
+move_spine_to_boundary -spine mgt_clk_spine_top -clearance {0 0 0 18} -moves {head top up 195.06}
+move_spine_to_boundary -spine mgt_clk_spine_top -clearance {0 0 0 18} -moves {head top up 783.36}
+set_place_constraint -ref_name INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -space_x 3 -space_y 5
+legalize_placement -inst [get_db insts mgt_clk_spine*]
+route_pin -inst [get_db [get_db insts mgt_clk_spine*] .name] -spec_name vertical_routing
+route_net -net [get_db [get_db nets mgt_clk_spine*] .name] -rule rule1 -shield
+route_track -compact -net [get_db [get_db nets mgt_clk_spine*] .name ] -rule rule1 -shield -shield_nets {VDD_SOC VSS}
+route_final_stub -stub [get_db [get_db stub mgt_clk_spine*] .name] -rule rule1 -shield
+insert_vias -bottom_layer D12 -top_layer H2
+copy_obj -from [get_db spine mgt_clk_spine_ver_main] -name soc_clk_spine_ver_main -x_shift -35 -y_shift 0
+move_obj [get_db spine soc_clk_spine_ver_main ] -direction +y -distance 35 -legal
+copy_obj -from [get_db spine mgt_clk_spine_bot] -name soc_clk_bot -x_shift -35 -y_shift 0
+move_obj [get_db spine soc_clk_bot] -direction +y -distance 35 -legal
+copy_obj -from [get_db spine mgt_clk_spine_top ] -name soc_clk_top -x_shift -35 -y_shift 0
+move_obj [get_db spine soc_clk_top ] -direction +y -distance 35 -legal
+check_drc -check_shorts_only 
+check_drc -check_open_only 
+check_drc -check_open_only -layer_range D12:H2
+check_drc -check_open_only -layer_range D12:IA
+check_drc -check_open_only -layer_range D12:IB
+check_drc -check_open_only -layer_range D12:IB -direction_jog 
+check_drc -check_open_only -layer_range D12:IB -direction_jog 1
+### spine 1 horizontal (y = 10095)
+create_spine -name mgt_clk_hor1 -spec_name custom_spine_h5p2 -location {2700 10079}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {+y} -mirror
+create_spine -name soc_clk_hor1 -spec_name custom_spine_h5p2 -location {2730 10057}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-y} -mirror
+set_place_constraint -ref_name INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -space_x 3 -space_y 5
+legalize_placement -inst [get_db insts *clk_hor*]
+route_pin -inst [get_db [get_db insts *clk_hor*] .name] -spec_name horizontal_routing
+route_net -net [get_db [get_db nets *clk_hor*] .name] -rule rule1 -shield
+route_track -compact -net [get_db [get_db nets *clk_hor*] .name ] -rule rule1 -shield -shield_nets {VDD_SOC VSS}
+route_final_stub -stub [get_db [get_db stub *clk_hor*] .name] -rule rule1 -shield
+insert_vias -bottom_layer D12 -top_layer H2
+assign_via_for_route
+get_db ports mgt_clk_ctm2_iose_local_clk_25
+select_obj [get_db ports mgt_clk_ctm2_iose_local_clk_25]
+gui_show 
+connect_spine -help
+get_db spine mgt_clk_spine_bot
+connect_spine -from [get_db spine mgt_clk_spine_bot] -to mgt_clk_ctm2_iose_local_clk_25 -ref_name INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -source_spine_stub_distance 10 -name mgt_clk_spine_bot__mgt_clk_ctm2_iose_local_clk_25
+connect_spine -from [get_db spine mgt_clk_spine_bot] -to mgt_clk_ctm2_iose_local_clk_25 -ref_name INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -source_spine_stub_distance 10 -name mgt_clk_spine_bot__mgt_clk_ctm2_iose_local_clk_25
+connect_spine -from [get_db spine mgt_clk_spine_bot] -to mgt_clk_ctm2_iose_local_clk_25 -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -source_spine_stub_distance 10 -name mgt_clk_spine_bot__mgt_clk_ctm2_iose_local_clk_25
+connect_spine -from [get_db spine mgt_clk_spine_bot] -to [get_db ports mgt_clk_ctm2_iose_local_clk_25] -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -source_spine_stub_distance 10 -name mgt_clk_spine_bot__mgt_clk_ctm2_iose_local_clk_25
+exit
+# ended 2026-11-24 08:50:32

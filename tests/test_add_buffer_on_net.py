@@ -864,3 +864,100 @@ def test_last_distance_on_a_routed_net_changes_nothing(routed_port):
     assert "HT4-001" in err(s, ROUTED_ADD + " -last_distance 20")
     assert [tuple(r) for r in s.db.net_wire_rows()] == wires
     assert not [n for n in s.db.inst_names() if n.startswith("rep_")]
+
+
+# -- -buffer_count and -spread ------------------------------------------------------------
+
+def test_buffer_count_stops_the_row():
+    # every 100 um on 1000 um would be 9 buffers: 3 of them, the 6 points past left
+    top, bufs = split(LINE, (0, 0), {"x": (1000, 0)}, 100, 100, count=3)
+    assert dists(bufs) == [100, 200, 300] and top.capped == 6
+    assert bufs[-1].loads == [("x", pytest.approx(1000))]       # the load behind the 3rd
+    top, bufs = split(LINE, (0, 0), {"x": (300, 0)}, 100, 100, count=3)
+    assert dists(bufs) == [100, 200] and top.capped == 0        # fewer: nothing left
+    # in a row from the driver: each branch has its own
+    top, bufs = split(TEE, (0, 0), {"a": (10, -100), "b": (10, 100)}, 30, 30, count=2)
+    assert sorted(b.dist for b in bufs) == pytest.approx([30, 30, 60, 60])
+    assert max(b.depth for b in bufs) == 2 and top.capped == 2   # 90 um on each branch
+
+
+def test_spread_cuts_the_net_into_equal_parts():
+    # 600 um, 3 buffers: 4 parts of 150 um
+    top, bufs = split(LINE, (0, 0), {"x": (600, 0)}, None, None, count=3, spread=True)
+    assert dists(bufs) == [150, 300, 450] and top.capped == 0
+    # branches: the parts of the way to the farthest load; a nearer branch gets fewer
+    top, bufs = split(TEE, (0, 0), {"a": (10, -100), "b": (10, 40)}, None, None, count=2,
+                      spread=True)
+    by = {}
+    for b in bufs:
+        by.setdefault(b.at[1] < 0, []).append(b.dist)
+    assert by[True] == pytest.approx([110 / 3, 220 / 3]) and by[False] == pytest.approx([110 / 3])
+
+
+def test_buffer_count_on_a_net(long):
+    s = long
+    made = lst(s, ADD + " -buffer_count 2")                      # 4 without it
+    text = out_of(s)
+    assert made == ["inst:sp_L2_inv1_buf1", "inst:sp_L2_inv1_buf2"]
+    assert "(HT4-307): add_buffer_on_net: max buffer count reached (2 in a row from the " \
+           "driver): no buffer on the point(s) past it on sp_L2_inv1_Y (2 left)" in text
+    assert "at most 2 in a row" in text and "Added 2 buffer(s) on 1 net(s)" in text
+    assert "load sp_L3_inv2: behind 2 buffer(s)" in text
+
+
+def test_spread_on_a_net(long):
+    s = long
+    made = lst(s, "add_buffer_on_net -net sp_L2_inv1_Y -ref_cell INV_RP -buffer_count 3 "
+                  "-spread")
+    text = out_of(s)
+    assert len(made) == 3 and "HT4-307" not in text
+    assert "3 INV_RP spread evenly on each net, every 1/4 of the way" in text
+    # the net is 203.88 um to sp_L3_inv2: a buffer every 50.97 um
+    for k in (1, 2, 3):
+        assert float(attr(s, f"sp_L2_inv1_buf{k}_Y" if k < 3 else "sp_L2_inv1_buf2_Y",
+                          "length")) == pytest.approx(50.97, abs=1e-3)
+
+
+def test_buffer_count_and_spread_on_a_routed_net(routed_port):
+    s = routed_port
+    assert lst(s, ROUTED_ADD + " -buffer_count 2") == ["inst:rep_1", "inst:rep_2"]
+    text = out_of(s)
+    assert "(HT4-307)" in text and "clk_in (" in text and "left)" in text
+    assert "clk_in: 2 buffer(s) along its route" in text
+
+
+def test_spread_on_a_routed_net(routed_port):
+    s = routed_port
+    made = lst(s, "add_buffer_on_net -net clk_in -ref_cell INV_RP -buffer_count 1 -spread "
+                  "-name rep")
+    assert made == ["inst:rep_1"] and "HT4-307" not in out_of(s)
+
+
+@pytest.mark.parametrize("opts, text", [
+    ("-distance 50 -buffer_count 0", "-buffer_count must be a whole number above 0"),
+    ("-distance 50 -buffer_count 2.5", "-buffer_count must be a whole number above 0"),
+    ("-spread", "-spread needs -buffer_count"),
+    ("-buffer_count 2", "-distance required"),
+    ("-buffer_count 2 -spread -first_distance 30", "not with -first_distance"),
+    ("-buffer_count 2 -spread -last_distance 30", "not with -last_distance"),
+])
+def test_buffer_count_errors(long, opts, text):
+    msg = err(long, f"add_buffer_on_net -net sp_L2_inv1_Y -ref_cell INV_RP {opts}")
+    assert "HT4-001" in msg and text in msg
+    assert lst(long, "get_db insts") == lst(long, "get_db spine:sp .insts")
+
+
+def test_spread_on_a_route_without_length_says_why(routed_port):
+    # the net's routing gone but for a stub of wire at the port: every load and the
+    # driver meet the route at one point, so there is no length to spread on
+    s = routed_port
+    rows = s.db.net_wire_rows("clk_in")
+    s.db.delete_wires([("net_wire", r["id"]) for r in rows])
+    s.db.add_net_wires([("clk_in", "wire", "IB", "1.08 399 1.8 399.3", None, None)])
+    assert lst(s, "add_buffer_on_net -net clk_in -ref_cell INV_RP -buffer_count 1 -spread "
+                  "-name rep") == []
+    text = out_of(s)
+    assert "(HT4-259): add_buffer_on_net: no buffer on clk_in: its route has no length to " \
+           "spread them on: along its 1 signal wire(s) on IA/IB from the point nearest the " \
+           "driver ({1.44 399.15}, the driver port clk at {3 400}) to the point nearest each " \
+           "load: sp_L1_inv1/A 0 um, d1/A 0 um" in text

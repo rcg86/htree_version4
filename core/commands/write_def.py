@@ -1,11 +1,17 @@
-"""write_def -output <file> [-sections {components specialnets nets}] [-overwrite]:
+"""write_def -output <file> [-sections {components pins specialnets nets}] [-overwrite]:
 write what htree4 added to the design as DEF 5.8, for read_def (incremental),
 in the form Innovus writes routed clock and power nets.
 
     write_def -output htree.def
     write_def -output comps.def -sections components
 
+VIAS: the via definitions insert_vias generated from a VIARULE of the
+tech that the written vias use, as + VIARULE ... + ROWCOL (only when there
+are some; the LEF vias are not repeated).
 COMPONENTS: the instances (create_inst, create_spine -build), PLACED.
+PINS: the ports promote_port_to_layer put on a routing layer (only those, and
+only when there are some): each with its new shape and layer in place of the
+old, its net, direction and use, about its placement point.
 SPECIALNETS (default): the routing, as special wiring.
   - Each routed signal net (the spine nets, and the nets of no spine with a
     pin on them): its route_net wires and strap extensions, its stub's
@@ -34,6 +40,7 @@ design whose nets were not made by write_logical's script.
 import os
 
 from core import netlist, vias
+from core.db import PIN_LAYER
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -47,22 +54,22 @@ EXISTS = 180
 WRITE_FAILED = 181
 LEFT_OUT = 182
 NO_VIA_DEF = 183
-SECTIONS = ["components", "specialnets", "nets"]
-DEFAULT = ["components", "specialnets"]     # nets: the routing is in specialnets
+SECTIONS = ["components", "pins", "specialnets", "nets"]
+DEFAULT = ["components", "pins", "specialnets"]     # nets: the routing is in specialnets
 STATUS = {"placed": "PLACED", "fixed": "FIXED", "cover": "COVER"}   # .place_status
 SIGNAL = "SIGNAL"                # route_pin's placeholder net for signal straps
 ORIENT = {"N": "N", "S": "S", "E": "E", "W": "W", "FN": "FN", "FS": "FS", "FE": "FE",
           "FW": "FW", "R0": "N", "R180": "S", "MX": "FS", "MY": "FN"}
 # The net_wire kinds written: a signal net's own shapes, and those on a power net.
 SIGNAL_KINDS = ("wire", "extension", "stub")
-POWER_KINDS = ("shield", "stub_shield", "shield_ext", "pg_ext")
+POWER_KINDS = ("shield", "stub_shield", "shield_ext", "pg_ext", "pg_grid")
 
 
 def run(session, argv):
     opts, _ = parse_options(NAME, argv, OPTIONS)
     if "-output" not in opts:
         raise HtreeError(USAGE, "write_def: -output is required. Usage: write_def -output "
-                         "<file> [-sections {components specialnets nets}] [-overwrite]")
+                         "<file> [-sections {components pins specialnets nets}] [-overwrite]")
     sections = [w.lower() for w in session.split_list(opts.get("-sections",
                                                                " ".join(DEFAULT)))]
     bad = [w for w in sections if w not in SECTIONS]
@@ -104,6 +111,14 @@ def def_text(db, sections):
         lines.insert(-1, "DIEAREA " + " ".join(f"( {dbu(pts[k])} {dbu(pts[k + 1])} )"
                                                 for k in range(0, len(pts), 2)) + " ;")
     counts = {}
+    nets, undefined = special_nets(db) if "specialnets" in sections else ([], 0)
+    generated = _generated_vias(db, nets)
+    if generated:
+        counts["vias"] = len(generated)
+        lines.append(f"VIAS {len(generated)} ;")
+        for row in generated:
+            lines += _via_lines(row, dbu)
+        lines += ["END VIAS", ""]
     if "components" in sections:
         rows = db.inst_rows()
         counts["components"] = len(rows)
@@ -113,9 +128,15 @@ def def_text(db, sections):
             lines.append(f"  - {r['name']} {r['ref_cell']} + {status} ( {dbu(r['x'])} "
                          f"{dbu(r['y'])} ) {ORIENT.get(r['orient'] or 'N', 'N')} ;")
         lines += ["END COMPONENTS", ""]
-    undefined = 0
+    if "pins" in sections:
+        ports = db.promoted_ports()
+        if ports:
+            counts["pins"] = len(ports)
+            lines.append(f"PINS {len(ports)} ;")
+            for row in ports:
+                lines += _pin_lines(db, row, dbu)
+            lines += ["END PINS", ""]
     if "specialnets" in sections:
-        nets, undefined = special_nets(db)
         counts["specialnets"] = len(nets)
         lines.append(f"SPECIALNETS {len(nets)} ;")
         for net in nets:
@@ -177,6 +198,10 @@ def special_nets(db):
     for r in db.net_wire_rows():
         if r["kind"] in POWER_KINDS and r["shield_net"]:
             power_net(r["shield_net"]).shapes.append((r["layer"], r["rect"]))
+        elif r["kind"] == PIN_LAYER and r["shield_net"] in found:     # route_pin's H1 piece
+            found[r["shield_net"]].shapes.append((r["layer"], r["rect"]))
+        elif r["kind"] == PIN_LAYER and r["shield_net"] not in (None, SIGNAL):
+            power_net(r["shield_net"]).shapes.append((r["layer"], r["rect"]))
     undefined = 0
     for v in vias.rows(db):
         if v["net"] == SIGNAL:
@@ -190,6 +215,64 @@ def special_nets(db):
         net.use = _use(db, net)
     nets = [n for n in list(found.values()) + list(power.values()) if n.shapes or n.vias]
     return nets, undefined
+
+
+PIN_DIRECTIONS = {"in": "INPUT", "out": "OUTPUT", "inout": "INOUT", "feedthru": "FEEDTHRU"}
+
+
+def _pin_lines(db, row, dbu):
+    """A port of PINS as it is now (promote_port_to_layer): its net,
+    direction, use, and its shapes, each about its placement point; that
+    point is the port's own when it is placed N, else the lower left of its
+    shapes (placed N there)."""
+    shapes = db.port_shape_rows(row["id"])
+    v = [float(c) for s in shapes for c in s["points"].split()]
+    if row["x"] is not None and (row["orient"] or "N") == "N":
+        px, py = row["x"], row["y"]
+    else:
+        px, py = min(v[0::2]), min(v[1::2])
+    head = f"- {row['name']} + NET {row['net'] or row['name']}"
+    if (row["special"] or "").lower() == "true":
+        head += " + SPECIAL"
+    if row["direction"]:
+        head += f" + DIRECTION {PIN_DIRECTIONS.get(row['direction'], row['direction'].upper())}"
+    if row["use"]:
+        head += f" + USE {row['use'].upper()}"
+    lines = [head]
+    for s in shapes:
+        pts = [float(c) for c in s["points"].split()]
+        if s["type"] == "rect":
+            lines.append(f"  + LAYER {s['layer']} ( {dbu(pts[0] - px)} {dbu(pts[1] - py)} ) "
+                         f"( {dbu(pts[2] - px)} {dbu(pts[3] - py)} )")
+        else:
+            lines.append(f"  + POLYGON {s['layer']} " + " ".join(
+                f"( {dbu(pts[k] - px)} {dbu(pts[k + 1] - py)} )" for k in range(0, len(pts), 2)))
+    status = (row["status"] or "fixed").upper()
+    lines.append(f"  + {status if status in ('FIXED', 'PLACED', 'COVER') else 'FIXED'} "
+                 f"( {dbu(px)} {dbu(py)} ) N ;")
+    return lines
+
+
+def _generated_vias(db, nets):
+    """The via definitions insert_vias generated (source gen) that the vias
+    of nets use, in name order: written in VIAS, as the tech has only their
+    VIARULE."""
+    names = sorted({v[3] for n in nets for v in n.vias})
+    rows = [db.via_def_row(name) for name in names]
+    return [r for r in rows if r is not None and r["source"] == "gen"]
+
+
+def _via_lines(row, dbu):
+    """A generated via in VIAS: + VIARULE and its parameters, in database
+    units (LAYERS and ROWCOL as they are)."""
+    lines = [f"- {row['name']}", f" + VIARULE {row['via_rule']}"]
+    for line in (row["extra"] or "").splitlines():
+        key, *values = line.split()
+        if key not in ("LAYERS", "ROWCOL"):
+            values = [str(dbu(v)) for v in values]
+        lines.append(f" + {key} {' '.join(values)}")
+    lines[-1] += " ;"
+    return lines
 
 
 def _use(db, net):

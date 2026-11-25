@@ -31,7 +31,12 @@ DESCRIPTION
       - Which track: the one nearest the centre line on which the wire of
         every stub of the line keeps the rule spacing to the shapes of
         other nets on that layer (route_pin straps and pin wires, other
-        nets' wires and shields) over the whole stub. When it is blocked
+        nets' wires and shields) over the whole stub. A track the leaves'
+        pin wires with no strap reach already (route_pin -spec_name
+        horizontal_routing takes a leaf's output to its stub's track) is
+        tried first, the more leaves on it the sooner: the stub then lies
+        on the pin wire's end. A leaf's own straps and pin wires do not
+        keep its stub off a track (they are on its net). When it is blocked
         for one stub, the next tracks out on either side are tried, up to
         20 each way, for all the stubs of the line: they move together.
         The report gives the tracks of the spine, the number of stubs on
@@ -151,6 +156,19 @@ DESCRIPTION
     it and can change it), so write_def writes every via. Printed: the
     definitions given, per layer pair, with the number of nets and vias;
     HT4-297 when no definition of a pair fits some of the vias.
+    Before the definitions are chosen, every crossing box is made the
+    full crossing of its net's two wires: the vertical wire's width by the
+    horizontal wire's width, so each via sits in the middle of the
+    crossing. A routed wire that stops short of the other wire's far edge
+    is lengthened to it (no further than the box is long); straps, pin
+    wires and pins are not. Fixed nets are left. Printed: how many boxes
+    moved and wires lengthened.
+    A via of a crossing box that its net's definition does not fit (its
+    pads past the metal there) while another of the same layers does gets
+    that one as its own, kept on the box as insert_vias -via_ref keeps one
+    (of those that fit, the first in the order above); the net's
+    assignment stays. Every net's vias are looked at, not only the nets
+    routed. Printed: how many vias, per layer pair.
 
 OPTIONS
     -rule <route_rule>

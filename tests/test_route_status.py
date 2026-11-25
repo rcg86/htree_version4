@@ -106,8 +106,15 @@ def test_wire_edits_leave_a_fixed_net(routed):
     assert held(out_of(s), "move_wire", 1, "wire(s) of fixed nets")
     assert s.eval(f"stretch_wire -wire {strap} -edge right -to 90") == ""
     assert held(out_of(s), "stretch_wire", 1, "wire(s) of fixed nets")
+    # delete_wire (the GUI's Delete) deletes what it is given, fixed or not
     s.eval(f"delete_wire -wires {{{wire} {strap}}}")
-    assert held(out_of(s), "delete_wire", 2, "wire(s) of fixed nets")
+    text = out_of(s)
+    assert "delete_wire: deleted 2 wire(s), 2 of them of fixed nets (they stay fixed): " \
+           f"{wire} {strap}" in text and "HT4-286" not in text
+    assert wire not in [f"net_wire:{L1}/{r[2]}" for r in rows(s, L1)]
+    assert s.eval(f"get_db spine_net:sp/{L1} .route_status") == "fixed"
+    s.eval("delete_wire -undo")                            # back as they were
+    out_of(s)
     assert rows(s, L1) == keep
     straps = [tuple(r) for r in s.db.strap_rows() if r["net"] == L1]
     inst = straps[0][1]
@@ -131,7 +138,15 @@ def test_insert_vias_adds_none_on_a_fixed_net(routed):
     assert not [r for r in s.db.net_wire_rows() if r["net"].startswith(f"auto_via:net_wire:{L1}")]
     s.eval(f"set_db spine_net:sp/{L1} .route_status routed")
     s.eval(f"insert_vias -bottom_layer IA -top_layer IB -nets {L1}")
-    assert "Inserted      : 1 via(s)" in out_of(s)
+    assert "Inserted      : 2 via(s)" in out_of(s)        # each crossing of the net
+    # fixed again: its inserted vias are not removed and made again
+    s.eval(f"set_db spine_net:sp/{L1} .route_status fixed")
+    mine = lambda: [tuple(r) for r in s.db.net_wire_rows()           # noqa: E731
+                    if r["kind"] == "insert_via" and r["shield_net"] == L1]
+    keep = mine()
+    out_of(s)
+    s.eval(f"insert_vias -bottom_layer IA -top_layer IB -nets {L1}")
+    assert mine() == keep and "Removed" not in out_of(s)
 
 
 def test_a_spine_with_a_fixed_net_is_not_bent(routed):
@@ -190,8 +205,10 @@ def test_a_wire_fixed_alone(routed):
     assert status(s, other) == "routed"                    # nothing was set
     s.eval(f"move_wire -wires {handle} -delta {{0.72 0}}")
     assert held(out_of(s), "move_wire", 1, "wire(s) of fixed nets")
-    s.eval(f"delete_wire -wires {handle}")
-    assert held(out_of(s), "delete_wire", 1, "wire(s) of fixed nets")
+    s.eval(f"delete_wire -wires {handle}")                  # by hand: it goes, fixed or not
+    assert "1 of them of fixed nets" in out_of(s)
+    s.eval("delete_wire -undo")
+    assert status(s, handle) == "fixed"                      # back, still fixed
     s.eval(f"delete_route -nets {L2}")                      # the rest goes, the fixed wire stays
     assert [r["rect"] for r in s.db.net_wire_rows(L2) if r["kind"] != "stub"] == [rect]
     s.eval(f"set_db {handle} .route_status routed")
@@ -256,3 +273,44 @@ def test_a_via_steps_to_the_next_track(routed):
     assert (back["x"], back["y"]) == (pytest.approx(x), pytest.approx(y))
     pin = next(r for r in vias.rows(s.db, L1) if r["kind"] == "pin")
     assert "is the via of a pin" in err(s, f"move_wire -wires {vias.handle(pin)} -next_track up")
+
+
+def test_force_routes_a_fixed_net_on_to_its_new_pin(routed):
+    """-force: the fixed net keeps every shape; only the pin connect_pin put
+    on it is routed, from the route there is."""
+    s = routed
+    leaf = "sp_L3_inv1_Y"
+    s.eval(f"set_db spine_net:sp/{leaf} .route_status fixed")
+    s.eval("create_inst -name extra -ref_cell INV_RP -location {84 112}")
+    s.eval("route_pin -inst extra")
+    s.eval(f"connect_pin -from sp_L3_inv1/Y -to extra/A")
+    before = {(r["kind"], r["layer"], r["rect"]) for r in s.db.net_wire_rows(leaf) +
+              s.db.stub_wire_rows(leaf)}
+    straps = {(r["inst"], r["seq"]): r["rect"] for r in s.db.strap_rows() if r["net"] == leaf}
+    out_of(s)
+    s.eval(f"route_net -net {leaf} -rule r")
+    assert held(out_of(s), "route_net", 1, "fixed net(s)")       # without -force: left
+    s.eval(f"route_net -net {leaf} -rule r -force")
+    text = out_of(s)
+    assert "-force: 1 fixed net(s) keep every shape" in text
+    assert "shape(s) added to the fixed net" in text and "to extra/A" in text
+    after = {(r["kind"], r["layer"], r["rect"]) for r in s.db.net_wire_rows(leaf) +
+             s.db.stub_wire_rows(leaf)}
+    assert before < after                                      # all kept, some added
+    assert {k for k, _, _ in after - before} <= {"wire", "cross"}
+    assert all(s.db.strap_row(i, k)["rect"] == r for (i, k), r in straps.items())
+    assert s.db.strap_row("extra", s.db.pin_wire_row("extra", "A")["strap"])["net"] == leaf
+    assert s.eval(f"get_db spine_net:sp/{leaf} .route_status") == "fixed"
+    # again: nothing to add
+    s.eval(f"route_net -net {leaf} -rule r -force")
+    assert "every pin is on its route already; nothing added" in out_of(s)
+
+
+def test_route_and_unfixed_free_a_net_as_routed(routed):
+    s = routed
+    for word in ("route", "unfixed", "free", "ROUTED"):
+        s.eval(f"set_db [get_db nets] .route_status fixed")
+        assert s.db.fixed_nets()
+        s.eval(f"set_db [get_db nets] .route_status {word}")
+        assert not s.db.fixed_nets(), word
+    assert "must be fixed" in err(s, "set_db [get_db nets] .route_status open")

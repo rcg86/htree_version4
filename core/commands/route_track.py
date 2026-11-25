@@ -29,7 +29,8 @@ from core.commands import route_net
 NAME = "route_track"
 SUMMARY = "Route nets as route_net and report the tracks used; -compact packs the tracks"
 
-OPTIONS = dict(route_net.OPTIONS, **{"-compact": "flag"})
+OPTIONS = dict({k: v for k, v in route_net.OPTIONS.items() if k != "-eco"},   # route_net's
+               **{"-compact": "flag"})
 
 
 def run(session, argv):

@@ -152,6 +152,90 @@ def _pin_boxes(db):
     return boxes
 
 
+def via_rules(db, tech=None):
+    """{(bottom, cut, top): rule} of the tech's VIARULE ... GENERATE: rule a
+    dict of name, enclosure {routing layer: (a, b)} (the two overhangs, either
+    way round), cut (width, height) and pitch (x, y), centre to centre. The
+    pitch is the rule's SPACING (centre to centre, as LEF has it), at least
+    twice the cut: a cut as far from the next as it is wide (a SPACING no
+    larger than the cut would make the cuts touch). Of two rules of one
+    stack, the first."""
+    tech = tech or tech_layers(db)
+    out = {}
+    for r in db.conn.execute("SELECT text FROM tech_extra WHERE kind = 'VIARULE' ORDER BY seq"):
+        lines = [l.strip().rstrip(";").strip() for l in r["text"].splitlines()]
+        head = lines[0].split()
+        if "GENERATE" not in head[2:]:
+            continue
+        layer, enc, cut, spacing = None, {}, None, None
+        for line in lines[1:]:
+            w = line.split()
+            if not w:
+                continue
+            if w[0] == "LAYER":
+                layer = w[1]
+            elif w[0] == "ENCLOSURE" and layer is not None:
+                enc[layer] = (float(w[1]), float(w[2]))
+            elif w[0] == "RECT" and layer is not None:
+                v = [float(c) for c in w[1:5]]
+                cut = (layer, round(v[2] - v[0], 6), round(v[3] - v[1], 6))
+            elif w[0] == "SPACING" and "BY" in w:
+                spacing = (float(w[1]), float(w[3]))
+        if cut is None or spacing is None or len(enc) != 2 or \
+                any(l not in tech for l in [*enc, cut[0]]):
+            continue
+        bottom, top = sorted(enc, key=lambda l: tech[l][0])
+        stack = (bottom, cut[0], top)
+        if stack not in out:
+            out[stack] = {"name": head[1], "enclosure": enc, "cut": cut[1:],
+                          "pitch": (max(spacing[0], 2 * cut[1]), max(spacing[1], 2 * cut[2]))}
+    return out
+
+
+def fit_array(rule, stack, box, lower=None, upper=None):
+    """The generated via of rule with the most cuts that, centred on box,
+    has its cuts inside box and its pad on the stack's bottom layer inside
+    lower, on its top layer inside upper (None: inside box): (rows, columns,
+    bottom enclosure (x, y), top enclosure (x, y)), or None when not one cut
+    fits. Each layer's two overhangs are tried both ways round."""
+    bottom, _, top = stack
+    cx, cy = (box[0] + box[2]) / 2, (box[1] + box[3]) / 2
+    half = lambda r: (min(cx - r[0], r[2] - cx), min(cy - r[1], r[3] - cy))
+    room = [half(box), half(lower or box), half(upper or box)]
+    (cw, ch), (px, py) = rule["cut"], rule["pitch"]
+
+    def count(h, size, pitch):           # cuts in a row of half width h
+        return int((2 * h - size) / pitch + 1e-6) + 1 if 2 * h >= size - TOL else 0
+    best = None
+    a, b = rule["enclosure"][bottom], rule["enclosure"][top]
+    for eb in ((a[0], a[1]), (a[1], a[0])):
+        for et in ((b[0], b[1]), (b[1], b[0])):
+            hx = min(room[0][0], room[1][0] - eb[0], room[2][0] - et[0])
+            hy = min(room[0][1], room[1][1] - eb[1], room[2][1] - et[1])
+            cols, rows = count(hx, cw, px), count(hy, ch, py)
+            if rows and cols and (best is None or rows * cols > best[0] * best[1]):
+                best = (rows, cols, eb, et)
+    return best
+
+
+def generated(db, rule, stack, rows, cols, eb, et):
+    """The name of the via definition of rule with rows x cols cuts and the
+    enclosures eb (bottom) and et (top), made (source gen) when it is not
+    there: <rule>_<rows>x<cols>_<enclosures in nm>, as a DEF VIARULE via."""
+    from core.lef import generated_via_shapes
+    nm = lambda v: str(int(round(v * 1000)))
+    name = f"{rule['name']}_{rows}x{cols}_" + "_".join(nm(v) for v in (*eb, *et))
+    if db.via_def_row(name) is None:
+        (cw, ch), (px, py) = rule["cut"], rule["pitch"]
+        spacing = (round(px - cw, 6), round(py - ch, 6))
+        extra = (f"CUTSIZE {_num(cw)} {_num(ch)}\nLAYERS {' '.join(stack)}\n"
+                 f"CUTSPACING {_num(spacing[0])} {_num(spacing[1])}\n"
+                 f"ENCLOSURE {' '.join(_num(v) for v in (*eb, *et))}\nROWCOL {rows} {cols}")
+        db.add_generated_via(name, rule["name"], extra, generated_via_shapes(
+            stack, (cw, ch), spacing, (*eb, *et), (rows, cols)))
+    return name
+
+
 def compute(db):
     """The rows of the via table for the present routing: (net, seq, kind,
     via_def, bottom, cut, top, x, y, rect, source)."""
@@ -161,11 +245,26 @@ def compute(db):
     assigned = {(r["bottom"], r["top"], r["net"]): r["via_def"]
                 for r in db.via_assignment_rows()}
     rows, count, seen = [], Counter(), set()
+    # The vias of insert_vias come before the others at their crossing: a via
+    # derived there (a crossing box of the router, a pin wire on its pin) is
+    # not made for a layer change an inserted via makes.
+    inserted = {}
+    for r in db.net_wire_rows():
+        if r["kind"] == "insert_via" and "/" in r["layer"]:
+            a, b = r["layer"].split("/", 1)
+            for h in chain(up, tech, a, b):
+                inserted.setdefault((r["shield_net"] or r["net"], h[0], h[2]), []).append(
+                    _rect(r["rect"]))
 
     def add(net, kind, a, b, box, source, given=""):
         x, y = round((box[0] + box[2]) / 2, 6), round((box[1] + box[3]) / 2, 6)
         text = " ".join(_num(round(c, 6)) for c in box)
         hops = chain(up, tech, a, b)
+        if kind != "insert":
+            hops = [h for h in hops if not any(
+                _overlap(box, o) for o in inserted.get((net, h[0], h[2]), []))]
+            if not hops:
+                return
         if (net, hops[0][0], hops[-1][2], text) in seen:
             return                          # one layer change, written twice
         seen.add((net, hops[0][0], hops[-1][2], text))
@@ -387,6 +486,79 @@ def _directions(db):
             for r in db.conn.execute("SELECT name, direction FROM layer")}
 
 
+def square_crossings(db):
+    """Make every crossing box the full crossing of its net's two wires: of
+    the wire on its horizontal layer and the one on its vertical layer (the
+    net's shapes that overlap the box most), the box becomes the vertical
+    wire's x span by the horizontal wire's y span, so the via, at its
+    centre, sits in the middle of the crossing. A routed wire (net_wire)
+    that stops short of the other wire's far edge is lengthened to it, no
+    further than the box is long; a strap, pin wire or pin shape is not.
+    Boxes and wires of fixed nets (set_db .route_status) are left. Returns
+    (boxes moved, wires lengthened)."""
+    dirs = _directions(db)
+    fixed = db.fixed_nets()
+    shapes = {}                    # (net, layer) -> [[rect, net_wire row or None]]
+
+    def add(net, layer, rect, row=None):
+        shapes.setdefault((net, layer), []).append([rect, row])
+    rows_ = db.net_wire_rows()
+    for r in rows_:
+        if "/" not in r["layer"]:
+            add(r["shield_net"] or r["net"], r["layer"], _rect(r["rect"]),
+                None if r["status"] == "fixed" or r["net"] in fixed else r)
+    for net, per in net_shapes(db).items():   # straps, pin wires, pins: kept as they are
+        for layer, rects in per.items():
+            have = {tuple(s[0]) for s in shapes.get((net, layer), [])}
+            for rect in rects:
+                if tuple(rect) not in have:
+                    add(net, layer, rect)
+    moved, longer = 0, set()
+    for r in rows_:
+        if "/" not in r["layer"] or r["kind"] in ADDED or r["status"] == "fixed" or \
+                r["net"] in fixed:
+            continue
+        net, box = r["shield_net"] or r["net"], _rect(r["rect"])
+        wires = {}
+        for layer in r["layer"].split("/", 1):
+            near = [s for s in shapes.get((net, layer), [])
+                    if s[0][0] <= box[2] + TOL and s[0][2] >= box[0] - TOL and
+                    s[0][1] <= box[3] + TOL and s[0][3] >= box[1] - TOL]
+            if not near:
+                break
+
+            def area(s):
+                o = (max(s[0][0], box[0]), max(s[0][1], box[1]),
+                     min(s[0][2], box[2]), min(s[0][3], box[3]))
+                return max(o[2] - o[0], 0) * max(o[3] - o[1], 0)
+            way = dirs.get(layer)
+            if way not in ("horizontal", "vertical"):
+                break
+            if way in wires:               # two layers of one direction: no crossing
+                break
+            wires[way] = max(near, key=area)
+        if len(wires) != 2:
+            continue
+        h, v = wires["horizontal"], wires["vertical"]
+        full = (v[0][0], h[0][1], v[0][2], h[0][3])
+        reach = max(box[2] - box[0], box[3] - box[1])
+        for s, lo, hi in ((h, 0, 2), (v, 1, 3)):
+            rect = list(s[0])
+            want = (min(rect[lo], full[lo]), max(rect[hi], full[hi]))
+            if (rect[lo], rect[hi]) == want:
+                continue
+            if s[1] is None or rect[lo] - want[0] > reach + TOL or want[1] - rect[hi] > reach + TOL:
+                continue                   # not a routed wire of its own, or too far
+            rect[lo], rect[hi] = want
+            s[0] = tuple(rect)
+            db.set_wire_rect("net_wire", s[1]["id"], " ".join(_num(round(c, 6)) for c in rect))
+            longer.add(s[1]["id"])
+        if any(abs(a - b) > TOL for a, b in zip(full, box)):
+            db.set_wire_rect("net_wire", r["id"], " ".join(_num(round(c, 6)) for c in full))
+            moved += 1
+    return moved, len(longer)
+
+
 def auto_assign(db):
     """Give the vias with no definition one: for each net and layer pair
     that has no assignment (assign_via_for_route), neither of its own nor
@@ -397,6 +569,7 @@ def auto_assign(db):
     their layers do, the smallest pads, by name. Vias of net SIGNAL (straps no route_net
     connected yet) are left. Returns [(net, bottom, top, definition, vias
     it fits, vias)] of the assignments made."""
+    squared = square_crossings(db)
     tech = tech_layers(db)
     stacks = definition_layers(db, tech)
     have = {(r["bottom"], r["top"], r["net"]) for r in db.via_assignment_rows()}
@@ -406,8 +579,6 @@ def auto_assign(db):
                 (r["bottom"], r["top"], r["net"]) not in have and \
                 (r["bottom"], r["top"], "") not in have:
             groups.setdefault((r["net"], r["bottom"], r["cut"], r["top"]), []).append(r)
-    if not groups:
-        return []
     dirs = _directions(db)
     metal = net_shapes(db)
     shapes, rank = {}, {}
@@ -434,7 +605,57 @@ def auto_assign(db):
         best = max(sorted(names), key=score)
         db.set_via_assignment(bottom, cut, top, net, best)
         made.append((net, bottom, top, best, score(best)[0], len(vs)))
+    if any(squared):
+        made.append(("", "", "", "squared", *squared))
+    for (bottom, top), n in sorted(own_misfits(db, shapes, rank, metal).items()):
+        made.append(("", bottom, top, "", n, 0))    # vias given a definition of their own
     return made
+
+
+def own_misfits(db, shapes=None, rank=None, metal=None):
+    """Every via of a crossing box whose definition comes from its net's
+    assignment and does not fit there (its pads past the metal) gets one of
+    the same layers that fits, its own, kept on the box as insert_vias
+    -via_ref keeps one: the best ranked of them (auto_assign's ranks). A
+    definition the box names itself is left. Returns {(bottom, top): vias
+    changed}."""
+    stacks = definition_layers(db)
+    if shapes is None:
+        dirs = _directions(db)
+        shapes, rank = {}, {}
+        for name, stack in stacks.items():
+            if stack != UNKNOWN:
+                shapes[name] = definition_shapes(db, name)
+                pads = [p for l, _, p in shapes[name] if l in (stack[0], stack[2])]
+                area = sum((max(p[0::2]) - min(p[0::2])) * (max(p[1::2]) - min(p[1::2]))
+                           for p in pads)
+                cuts = sum(1 for l, _, _ in shapes[name] if l == stack[1])
+                default = (db.via_def_row(name)["is_default"] or "").lower() == "true"
+                rank[name] = (cuts, _along(shapes[name], dirs), -round(area, 9), default)
+    if metal is None:
+        metal = net_shapes(db)
+    boxes = {}
+    for r in db.net_wire_rows():
+        boxes[f"net_wire:{r['net']}/{r['seq']}"] = r
+    n = Counter()
+    for v in rows(db):
+        box = boxes.get(v["source"] or "")
+        name = v["via_def"]
+        if box is None or name not in shapes or name in (box["via_def"] or "").split():
+            continue
+        mine = metal.get(v["net"], {})
+        if fits(shapes[name], mine, v["bottom"], v["cut"], v["top"], v["x"], v["y"]):
+            continue
+        ok = [m for m, st in stacks.items() if st == (v["bottom"], v["cut"], v["top"]) and
+              m in shapes and fits(shapes[m], mine, v["bottom"], v["cut"], v["top"], v["x"], v["y"])]
+        if not ok:
+            continue
+        keep = [m for m in (box["via_def"] or "").split()
+                if stacks.get(m, UNKNOWN)[::2] != (v["bottom"], v["top"])]
+        db.set_net_wire_via_def(box["id"], " ".join(keep + [max(sorted(ok), key=lambda m: rank[m])]))
+        boxes[v["source"]] = db.net_wire_row(box["net"], box["seq"])
+        n[v["bottom"], v["top"]] += 1
+    return n
 
 
 def report_assigned(made, cmd, out):
@@ -443,18 +664,31 @@ def report_assigned(made, cmd, out):
     from core.messages import info, warn
     if not made:
         return
-    by = {}
+    by, own = {}, Counter()
     for net, bottom, top, name, fit, total in made:
+        if not net and name == "squared":   # square_crossings
+            info(f"{cmd}: {fit} crossing box(es) made the full crossing of their two wires, "
+                 f"{total} wire(s) lengthened to it: the vias in the middle", out)
+            continue
+        if not net:                      # vias given a definition of their own
+            own[bottom, top] += fit
+            continue
         k = by.setdefault((bottom, top, name), [0, 0, 0])
         k[0], k[1], k[2] = k[0] + 1, k[1] + fit, k[2] + total
-    info(f"{cmd}: via definitions given to {len({m[0] for m in made})} net(s) "
-         f"(assign_via_for_route lists them, and changes them):", out)
+    if by:
+        info(f"{cmd}: via definitions given to {len({m[0] for m in made if m[0]})} net(s) "
+             f"(assign_via_for_route lists them, and changes them):", out)
     for (bottom, top, name), (nets, fit, total) in sorted(by.items()):
         info(f"  {bottom}/{top}  {name}  {nets} net(s), {total} via(s)", out)
-        if fit < total:
-            warn(VIA_TOO_BIG, f"{cmd}: {total - fit} {bottom}/{top} via(s) larger than the "
-                 f"wires they join: no {bottom}/{top} definition fits them ({name} given)",
-                 out)
+    for (bottom, top), n in sorted(own.items()):
+        info(f"{cmd}: {n} {bottom}/{top} via(s) given a definition of their own: the one of "
+             f"their net does not fit them, another does", out)
+    for bottom, top in sorted({(b, t) for b, t, _ in by}):
+        unfit = sum(total - fit for (b, t, _), (_, fit, total) in by.items()
+                    if (b, t) == (bottom, top)) - own[bottom, top]
+        if unfit > 0:
+            warn(VIA_TOO_BIG, f"{cmd}: {unfit} {bottom}/{top} via(s) larger than the "
+                 f"wires they join: no {bottom}/{top} definition fits them", out)
 
 
 VIA_TOO_BIG = 297

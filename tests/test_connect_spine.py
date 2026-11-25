@@ -37,7 +37,7 @@ PORTS = """PINS 6 ;
   + LAYER IA ( -100 -100 ) ( 100 100 ) + FIXED ( 12000 -30000 ) N ;
 END PINS
 """
-BUF = "-ref_name INV_RP -distance 10 -name out"
+BUF = "-ref_cell INV_RP -distance 10 -name out"
 # The pins connect_spine -from sp -to {sp2 sp3 buf1/A} connects, by stub.
 ON_STUB1 = ["sp2_L1_inv1/A", "buf1/A"]
 ON_STUB2 = ["sp3_L1_inv1/A", "sp3_mirror_L1_inv1/A"]
@@ -318,7 +318,7 @@ def test_ports_get_a_buffer(ported):
     # this DEF has no ROW: not on sites
     assert "HT4-264" in text and "no placement rows" in text
     assert "Next: legalize_placement, route_pin -inst {out_q out_top out_near}" in text
-    assert "nor the net of an output port" in text
+    assert "it does not route the net of an output port" in text
     assert "HT4-261" not in text and "HT4-262" not in text
 
 
@@ -347,7 +347,7 @@ def test_a_port_again_and_one_driven_already(ported):
     assert "HT4-255" in out_of(s)
     # now sp2 drives it, through a second buffer; default prefix buf, and a
     # -distance beyond the stub puts it at the stub
-    made = lst(s, "connect_spine -from sp2 -to q -ref_name INV_RP -distance 300")
+    made = lst(s, "connect_spine -from sp2 -to q -ref_cell INV_RP -distance 300")
     text = out_of(s)
     assert made == ["pin:buf_q/A"] and "1 buffer(s) made" in text and "at the stub" in text
     assert s.eval("get_db net:q_net .driver") == "pin:buf_q/Y"
@@ -395,21 +395,21 @@ def test_loads_on_the_net_of_a_driven_port(ported):
 def test_port_errors_change_nothing(ported):
     s = ported
     insts = lst(s, "get_db insts")
-    for options in ("", "-ref_name INV_RP", "-distance 10",
-                    "-ref_name INV_RP -ref_cell INV_RP -distance 10",
-                    "-ref_name INV_RP -distance 0", "-ref_name INV_RP -distance -5",
-                    "-ref_name INV_RP -distance far", "-ref_name INV_RP -distance 10 -name a/b",
-                    "-ref_name INV_RP -distance 10 -name {}"):
+    for options in ("", "-ref_cell INV_RP", "-distance 10",
+                    "-ref_name INV_RP -distance 10",          # -ref_cell only: no -ref_name
+                    "-ref_cell INV_RP -distance 0", "-ref_cell INV_RP -distance -5",
+                    "-ref_cell INV_RP -distance far", "-ref_cell INV_RP -distance 10 -name a/b",
+                    "-ref_cell INV_RP -distance 10 -name {}"):
         assert "HT4-001" in err(s, f"connect_spine -from sp -to {{sp2 q}} {options}"), options
     assert "HT4-251" in err(s, f"connect_spine -from sp -to {{sp2 clk}} {BUF}")
     assert "HT4-269" in err(s, f"connect_spine -from sp -to {{sp2 nowhere}} {BUF}")
-    text = err(s, "connect_spine -from sp -to {sp2 q} -ref_name NOPE -distance 10")
+    text = err(s, "connect_spine -from sp -to {sp2 q} -ref_cell NOPE -distance 10")
     assert "HT4-257" in text and "INV_RP" in text
     assert "HT4-022" in err(s, f"connect_spine -from sp -to {{q port:t/nosuch}} {BUF}")
     assert lst(s, "get_db insts") == insts and net(s, "sp2_L1_inv1/A") == "sp2_primary_input"
     assert s.eval("get_db net:q_net .pins") == ""
     # the buffer options are for ports: without one in -to they are not used
-    s.eval("connect_spine -from sp -to sp2 -ref_name NOPE")
+    s.eval("connect_spine -from sp -to sp2 -ref_cell NOPE")
     assert lst(s, "get_db insts") == insts
 
 
@@ -473,7 +473,7 @@ def l_die(s, write_lef, rows):
 
 def test_port_buffers_are_put_on_sites_inside_the_boundary(tech_session, write_lef):
     s = l_die(tech_session, write_lef, rows=True)
-    assert lst(s, "connect_spine -from sp -to o -ref_name INV_RP -distance 30") == ["pin:buf_o/A"]
+    assert lst(s, "connect_spine -from sp -to o -ref_cell INV_RP -distance 30") == ["pin:buf_o/A"]
     text = out_of(s)
     assert "legalize_placement: 1 instance(s)" in text
     assert "HT4-264" not in text and "HT4-261" not in text and "HT4-262" not in text
@@ -488,6 +488,30 @@ def test_port_buffers_are_put_on_sites_inside_the_boundary(tech_session, write_l
     assert y / 1.778 == pytest.approx(round(y / 1.778), abs=1e-6)
 
 
+def test_a_port_buffer_source_spine_stub_distance_from_the_stub(tech_session, write_lef):
+    from core.commands.connect_spine import _nearest
+    s = l_die(tech_session, write_lef, rows=False)
+    # as a -to spine takes it: the buffer's input pin that far from the stub, on the way
+    # from the stub to the port (no -distance)
+    assert lst(s, "connect_spine -from sp -to o -ref_cell INV_RP "
+                  "-source_spine_stub_distance 20 -name src") == ["pin:src_o/A"]
+    port = objects.port_centre(s.db, "o")
+    near = []
+    for st in s.db.spine_stub_rows(s.db.spine_row("sp")["id"]):
+        v = [float(c) for c in st["points"].split()]
+        near.append(_nearest(port, list(zip(v[0::2], v[1::2]))))
+    stub = min(near, key=lambda p: abs(p[0] - port[0]) + abs(p[1] - port[1]))
+    px, py = objects.pin_centre(s.db, "src_o", "A")
+    assert abs(px - stub[0]) + abs(py - stub[1]) == pytest.approx(20, abs=0.3)
+    # the stub's net on its input, its output on the port
+    assert net(s, "src_o/A").startswith("sp_") and net(s, "src_o/Y") != ""
+    assert "the input pin 20 um from the stub" in out_of(s)
+    # a port needs one of the two distances, and -ref_cell
+    text = err(s, "connect_spine -from sp -to o -ref_cell INV_RP")
+    assert "HT4-001" in text and "-source_spine_stub_distance <um> (from the stub)" in text
+    assert "HT4-001" in err(s, "connect_spine -from sp -to o -source_spine_stub_distance 5")
+
+
 def inside(s, inst):
     from core.placement import rect_in_polygon
     boundary = [float(v) for v in s.db.design_row()["boundary"].split()]
@@ -499,7 +523,7 @@ def test_a_port_on_the_edge_of_the_die(tech_session, write_lef):
     # e is on the upper edge of the band, its stub 58.64 right and 60.05 up:
     # 30 up is outside the die, 30 to the right the pin is on the edge and
     # the cell across it. That way is taken, and the cell put on a site inside
-    s.eval("connect_spine -from sp -to e -ref_name INV_RP -distance 30")
+    s.eval("connect_spine -from sp -to e -ref_cell INV_RP -distance 30")
     text = out_of(s)
     assert "HT4-262" not in text and "HT4-264" not in text
     assert inside(s, "buf_e")
@@ -527,7 +551,7 @@ def test_a_port_buffer_outside_the_boundary_is_named(tech_session, write_lef):
     s = l_die(tech_session, write_lef, rows=False)
     # port n is outside the die, 48.64 left of its stub: 30 from it, on the
     # way to the stub, the cell is across the boundary
-    s.eval("connect_spine -from sp -to n -ref_name INV_RP -distance 30")
+    s.eval("connect_spine -from sp -to n -ref_cell INV_RP -distance 30")
     text = out_of(s)
     assert "HT4-264" in text
     assert "HT4-262" in text and "connect_spine:" in text.split("HT4-262")[1].splitlines()[0]
@@ -546,3 +570,174 @@ def test_an_instance_name_with_brackets_is_no_pattern(ported, tmp_path):
     text = (tmp_path / "l.tcl").read_text()
     assert "create_inst -cell INV_RP -name {x[1]}\n" in text and "place_inst {x[1]} " in text
     assert "create_inst -cell INV_RP -name x1\n" in text
+
+
+# -- -source_spine_stub_distance, -sink_spine_distance: buffers to a -to spine -------
+
+LINK = "-ref_cell INV_RP -name lb"
+BOTH = "-source_spine_stub_distance 5 -sink_spine_distance 6"
+
+
+def from_stub(s, pin, stub="stub1"):
+    """x + y from pin (inst/pin) to the nearest point of a stub of sp."""
+    return to_stub(s, pin, stub)
+
+
+def from_input(s, pin, spine_pin="sp2_L1_inv1/A"):
+    px, py = objects.pin_centre(s.db, *pin.split("/"))
+    ax, ay = objects.pin_centre(s.db, *spine_pin.split("/"))
+    return abs(px - ax) + abs(py - ay)
+
+
+def test_a_source_and_a_sink_buffer(design, tmp_path):
+    s = design
+    straight = to_stub(s, "sp2_L1_inv1/A", "stub1")
+    got = s.eval(f"connect_spine -from sp -to sp2 {BOTH} {LINK}")
+    text = out_of(s)
+    # lindex 0: the source buffer, lindex 1: the sink buffer
+    assert list(s.split_list(got)) == ["lb_sp2", "lb_sp2_sink"]
+    assert s.eval(f"lindex {{{got}}} 0") == "lb_sp2" and \
+        s.eval(f"lindex {{{got}}} 1") == "lb_sp2_sink"
+    # stub -> source -> sink -> root input, a net each
+    assert net(s, "lb_sp2/A") == "sp_L3_inv1_Y"
+    assert net(s, "lb_sp2_sink/A") == "lb_sp2_Y" == net(s, "lb_sp2/Y")
+    assert net(s, "sp2_L1_inv1/A") == "lb_sp2_sink_Y" == net(s, "lb_sp2_sink/Y")
+    # where they are: the source's input 5 from the stub, the sink's output 6 from the
+    # root input (no rows here: on the grid as asked)
+    assert from_stub(s, "lb_sp2/A") == pytest.approx(5, abs=0.01)
+    assert from_input(s, "lb_sp2_sink/Y") == pytest.approx(6, abs=0.01)
+    assert from_stub(s, "lb_sp2_sink/Y") < straight
+    assert "Source buffer" in text and "lb_sp2 (5 um from the stub)" in text
+    assert "lb_sp2_sink (6 um from the input)" in text
+    assert s.eval("get_db spine:sp2 .link_buffer") == "inst:lb_sp2"
+    assert s.eval("get_db spine:sp2 .link_sink_buffer") == "inst:lb_sp2_sink"
+    # as before: run again, nothing new
+    again = s.eval(f"connect_spine -from sp -to sp2 {BOTH} {LINK}")
+    assert again == got and "as before" in out_of(s)
+    assert "lb_sp2_2" not in s.db.inst_names() and "lb_sp2_sink_2" not in s.db.inst_names()
+    # write_logical makes the buffers and their nets; write_db keeps the link
+    s.eval(f"write_logical -output {tmp_path / 'l.tcl'}")
+    script = (tmp_path / "l.tcl").read_text()
+    for line in ("create_net -name lb_sp2_Y", "create_net -name lb_sp2_sink_Y",
+                 "connect lb_sp2/A -net sp_L3_inv1_Y", "connect lb_sp2_sink/A -net lb_sp2_Y",
+                 "connect sp2_L1_inv1/A -net lb_sp2_sink_Y"):
+        assert line + "\n" in script
+    s.eval(f"write_db -file {tmp_path / 'l.db'}")
+    other = Session(out=io.StringIO())
+    other.eval(f"read_db -file {tmp_path / 'l.db'}")
+    assert other.eval("get_db spine:sp2 .link_sink_buffer") == "inst:lb_sp2_sink"
+
+
+def test_one_buffer_only(design):
+    s = design
+    got = s.eval(f"connect_spine -from sp -to sp2 -sink_spine_distance 6 {LINK}")
+    assert list(s.split_list(got)) == ["", "lb_sp2_sink"]
+    assert net(s, "lb_sp2_sink/A") == "sp_L3_inv1_Y"
+    assert net(s, "sp2_L1_inv1/A") == "lb_sp2_sink_Y"
+    assert s.eval("get_db spine:sp2 .link_buffer") == ""
+    out_of(s)
+    # the source buffer alone: a new link, the sink buffer of before left
+    got = s.eval(f"connect_spine -from sp -to sp2 -source_spine_stub_distance 5 {LINK}")
+    assert list(s.split_list(got)) == ["lb_sp2", ""]
+    assert net(s, "sp2_L1_inv1/A") == "lb_sp2_Y"
+    text = out_of(s)
+    assert "HT4-299" in text and "lb_sp2_sink of its link before are left" in text
+
+
+def test_a_mirrored_spine_has_one_chain_for_its_two_roots(design):
+    s = design
+    s.eval(f"connect_spine -from sp -to sp3 -source_spine_stub_distance 3 "
+           f"-sink_spine_distance 3 {LINK}")
+    out_of(s)
+    assert net(s, "sp3_L1_inv1/A") == net(s, "sp3_mirror_L1_inv1/A") == "lb_sp3_sink_Y"
+    assert net(s, "lb_sp3/A") == "sp_L3_inv2_Y" and net(s, "lb_sp3_sink/A") == "lb_sp3_Y"
+
+
+def test_link_errors(design):
+    s = design
+    assert "need -ref_cell" in \
+        err(s, "connect_spine -from sp -to sp2 -source_spine_stub_distance 5")
+    text = err(s, "connect_spine -from sp -to sp2 -distance 40")
+    assert "-distance is where the buffer of an output port goes" in text and \
+        "-sink_spine_distance" in text and "-source_spine_stub_distance" in text
+    assert "the buffers would not fit" in \
+        err(s, f"connect_spine -from sp -to sp2 -source_spine_stub_distance 20 "
+               f"-sink_spine_distance 20 {LINK}")
+    assert "-sink_spine_distance for a -to spine" in \
+        err(s, f"connect_spine -from sp -to buf1/A -sink_spine_distance 5 {LINK}")
+    assert "-source_spine_stub_distance is for a -to spine or port" in \
+        err(s, f"connect_spine -from sp -to buf1/A -source_spine_stub_distance 5 {LINK}")
+    assert "must be a distance in um above 0" in \
+        err(s, f"connect_spine -from sp -to sp2 -sink_spine_distance -3 {LINK}")
+    assert s.db.spine_link_rows() == [] and "lb_sp2" not in s.db.inst_names()
+    # another stub's link: the old buffers are left, and said so
+    s.eval(f"connect_spine -from sp -to sp2 {BOTH} {LINK}")
+    s.db.conn.execute("UPDATE spine_link SET stub = 'stub2'")
+    out_of(s)
+    got = s.eval(f"connect_spine -from sp -to sp2 {BOTH} {LINK}")
+    text = out_of(s)
+    assert "HT4-299" in text and "lb_sp2 lb_sp2_sink of its link before are left" in text
+    assert list(s.split_list(got)) == ["lb_sp2_2", "lb_sp2_sink_2"]
+    assert net(s, "sp2_L1_inv1/A") == "lb_sp2_sink_2_Y"
+
+
+def test_from_stubs(design):
+    """-from takes stubs of one spine: each -to takes the nearest of those."""
+    s = design
+    assert to_stub(s, "sp2_L1_inv1/A", "stub1") < to_stub(s, "sp2_L1_inv1/A", "stub2")
+    s.eval("connect_spine -from sp -to sp2")
+    assert net(s, "sp2_L1_inv1/A") == "sp_L3_inv1_Y"           # the nearest: stub1
+    out_of(s)
+    s.eval("connect_spine -from [get_db [get_db spine:sp .stubs] -if {.name == stub2}] -to sp2")
+    text = out_of(s)
+    assert net(s, "sp2_L1_inv1/A") == "sp_L3_inv2_Y"           # the one given
+    assert "spine sp (1 stub(s))" in text
+    assert "stubs of one spine, got stubs of" in \
+        err(s, "connect_spine -from {stub:sp/stub1 stub:sp2/stub1} -to sp3")
+    assert "-from takes one spine, or stubs of one spine" in \
+        err(s, "connect_spine -from {sp sp2} -to sp3")
+    assert "HT4-022" in err(s, "connect_spine -from stub:sp/nosuch -to sp2")
+
+
+def test_a_crowded_spot_looks_farther_for_a_site(tech_session, write_lef):
+    # two buffers made at one point (two ports by the same stub): the second's own site
+    # and every site within one cell width + height taken; legalize_placement looks
+    # farther (two, four ... cell widths + heights) and puts it on a free one
+    from core.commands import legalize_placement as lp
+    s = l_die(tech_session, write_lef, rows=True)
+    s.eval("create_inst -name b1 -ref_cell INV_RP -location {20 20}")
+    s.eval("create_inst -name b2 -ref_cell INV_RP -location {20 20}")
+    out_of(s)
+    r, cell = s.db.inst_row("b2"), s.db.lib_cell_row("INV_RP")
+    reach = cell["size_x"] + cell["size_y"]
+    crowd = [(r["x"] - reach - 1, r["y"] - reach - 1, r["x"] + cell["size_x"] + reach + 1,
+              r["y"] + cell["size_y"] + reach + 1)]
+    site = cell["site"] if s.db.site_rows_of(cell["site"]) else None
+    assert lp._free_site(s.db, r, cell, site, crowd) is None
+    x, y = lp._free_site(s.db, r, cell, site, crowd, wide=True)
+    box = (x, y, x + cell["size_x"], y + cell["size_y"])
+    assert box[0] >= crowd[0][2] or box[2] <= crowd[0][0] or box[1] >= crowd[0][3] or \
+        box[3] <= crowd[0][1]
+    # the command: b1 and b2 on one spot end apart
+    s.eval("legalize_placement -inst {b1 b2}")
+    assert "HT4-212" not in out_of(s)
+    a, b = (objects.inst_bbox(s.db, s.db.inst_row(n)) for n in ("b1", "b2"))
+    assert a[2] <= b[0] + 1e-6 or b[2] <= a[0] + 1e-6 or a[3] <= b[1] + 1e-6 or \
+        b[3] <= a[1] + 1e-6
+
+
+def test_a_mirrored_cell_goes_in_the_rows_of_its_unmirrored_orientation(tech_session,
+                                                                         write_lef):
+    # the rows are N and FS; an FN cell (the cells of a mirrored spine, a buffer that
+    # takes their orientation) sits in an N row, an S cell in an FS row
+    s = l_die(tech_session, write_lef, rows=True)
+    s.eval("create_inst -name m1 -ref_cell INV_RP -location {20.05 20.3} -orient FN")
+    s.eval("create_inst -name m2 -ref_cell INV_RP -location {30.05 20.3} -orient S")
+    out_of(s)
+    s.eval("legalize_placement -inst {m1 m2} -keep_orientation")
+    text = out_of(s)
+    assert "HT4-212" not in text and "2 instance(s) moved onto sites" in text
+    rows = {(round(r["y"], 6), r["orient"]) for r in s.db.conn.execute("SELECT * FROM site_row")}
+    m1, m2 = s.db.inst_row("m1"), s.db.inst_row("m2")
+    assert (m1["orient"], m2["orient"]) == ("FN", "S")
+    assert (round(m1["y"], 6), "N") in rows and (round(m2["y"], 6), "FS") in rows

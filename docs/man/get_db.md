@@ -71,11 +71,15 @@ DESCRIPTION
         A path starts at a root and follows attributes separated by dots.
         Roots: tech, head (same as tech), layers, layer, library_physical,
         lib_cells, lib_cell (both same as library_physical.lib_cells),
-        spine_spec, spine_specs (all spine specs), design, designs, ports,
+        spine_spec, spine_specs (all spine specs), pin_route_spec,
+        pin_route_specs (the named pin routing specs of read_pin_spec;
+        get_db pin_route_spec alone prints each one's values), design, designs, ports,
         port (all ports of the design), track_patterns, track_pattern,
         track_assignments, insts, route_rules (route_rule:default first),
-        spines, nets (the nets of every built spine and their final stubs,
-        which are nets too), stubs (only the final stubs: stub:<spine>/<stub>),
+        spines, nets or net (the same list: the nets of every built spine,
+        their final stubs, which are nets too, then the nets of no spine
+        with an instance pin on them, net:<name>; the nets of ports nothing
+        is connected to are not listed), stubs (only the final stubs: stub:<spine>/<stub>),
         straps, pin_wires, net_wires, via_defs, via_def (the via
         definitions of the tech LEF and the DEF), vias, via (every via of
         the routing), selected. A leading
@@ -91,6 +95,9 @@ DESCRIPTION
             get_db layers G*       -> layer:G1 layer:G2
             get_db stub sp*        -> the stubs of the spines named sp...
             get_db stub sp/stub1   -> stub:sp/stub1
+        It may be a Tcl list of names or patterns: the matches of each in
+        turn, each object once:
+            get_db ports {q top}   -> port:t/q port:t/top
 
     get_db <objects> .<attr>
         Returns the attribute for each object. One object returns a single
@@ -159,18 +166,25 @@ OBJECT ATTRIBUTES
     spine_net (spine_net:<spine>/<net>)
         obj_type, name, driver (handle of the instance), loads (names:
         instances, or the stub of a leaf's net), pins (handles: the
-        instance pins on it), group, length, detour, route, route_rule
-        (handle), route_status (fixed | routed | unrouted; set_db),
-        net_wires (handles), vias (handles), spine (handle)
+        instance pins on it), group, length (its centre lines as
+        create_spine planned them), detour, route, route_length (um of its
+        signal wires and its stub's, each wire's length added up),
+        route_rule (handle), route_status (fixed | routed | unrouted;
+        set_db), net_wires (handles), vias (handles), spine (handle)
     net (net:<net>, a net that is no spine's: the net of a port, such as
     the root net of a spine, or a net connect_pin made)
         obj_type, name, driver (the handle of the output pin or input
         port that drives it, empty when nothing does), pins (handles:
         the instance pins on it), ports (handle: the port of the design
-        whose net it is), route_rule (handle), route_status, net_wires
-        (handles), vias
-        (handles): its routing, as for a spine_net (route_net)
-        'get_db nets' lists the spine nets and stubs, not these.
+        whose net it is), length (um, x + y from the driver to the
+        loads: to one load the Manhattan distance; to more, a shortest-
+        way tree with the way they share counted once; empty without a
+        driver or a load), route_length (um of its signal wires, each
+        wire's length added up: not shields or crossing boxes; 0 when not
+        routed), route_rule (handle), route_status, net_wires (handles),
+        vias (handles): its routing, as for a spine_net (route_net)
+        'get_db nets' (and 'get_db net') lists them after the spine nets
+        and stubs, those with an instance pin on them.
     Distances are microns. type and direction are lowercase.
 
 TAB COMPLETION

@@ -1,10 +1,11 @@
 NAME
     check_drc - check the routing for shorts, spacing and width
-    violations, and opens
+    violations, opens, and the routing direction of the cells
 
 SYNOPSIS
     check_drc [-check_shorts_only | -check_spacing_only | -check_open_only]
               [-layer_range <bottom>:<top>] [-file <file> [-overwrite]]
+              [-direction_jog <um>]
 
 DESCRIPTION
     What is checked. Only what the tool made or placed:
@@ -103,6 +104,20 @@ DESCRIPTION
     markers is ticked in the Objects of the View panel. The table and
     the markers are this run: run check_drc again after a fix.
 
+    Routing direction (the whole design, every check: not with an -only
+    option or -layer_range). Each routed signal pin of a cell is reached
+    vertically or horizontally: from where the net touches the pin (its
+    strap, or its pin wire when it has none), the net's wires are
+    followed out, nearest first along the route, and the first one at
+    least -direction_jog um long (default 10) gives the way: on a vertical
+    layer vertical, on a horizontal one horizontal. Shorter pieces on the
+    way (a drop onto a strap, a jog) are passed over; a pin whose net has
+    no wire that long is not counted. Two rows: direction mixed, a cell whose pins are reached both ways
+    (heterogeneous routing direction: no cell should need both), and
+    direction spec, a pin reached against the routing_direction of the
+    cell's pin spec (route_pin, read_pin_spec). A pin the route does not
+    reach is not counted.
+
 OPTIONS
     -check_shorts_only
         Only the shorts.
@@ -119,6 +134,9 @@ OPTIONS
         violation) to this file; the table is still printed.
     -overwrite
         Replace the file when it exists.
+    -direction_jog <um>
+        Wires shorter than this are jogs for the routing direction check:
+        passed over. Default 10.
     -help
         Print the definition, usage, options and an example of the command.
 

@@ -108,6 +108,8 @@ def check(db, insts, ignore=()):
             wire = db.pin_wire_row(name, pin)
             if net is None and wire is None:
                 continue                          # on no net: nothing to reach it for
+            if wire is not None and wire["strap"] is None:
+                continue                          # reached from the side on its own track
             strap = db.strap_row(name, wire["strap"]) if wire is not None else None
             if strap is not None:
                 sx1, sy1, sx2, sy2 = base_rect(strap)     # its reach is from route_pin's

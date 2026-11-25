@@ -12,6 +12,9 @@ and what cannot stay without them: the pin wires that end on a deleted strap,
 and the wires' auto vias (stretch_wire). Nothing else follows: the crossing
 boxes on a deleted wire and the shapes it connected to stay, the net is left
 open. The GUI's Tools > Delete runs this command on the selected wires.
+A wire of a fixed net (set_db .route_status fixed) is deleted too: naming it
+is asking for it to go (the other route-editing commands leave fixed nets
+alone); the net stays fixed, and the report says which were.
 
 The wires of each delete_wire are kept, in this session only, so -undo can put
 them back as they were (same handles); again for the delete before it.
@@ -41,15 +44,15 @@ def run(session, argv):
         return _undo(session)
     db = session.db
     given = wire_rows(session, opts["-wires"], NAME)
-    held = route_status.fixed_shapes(db, given)
-    route_status.skip(NAME, "wire(s) of fixed nets", [h for h, _, _ in held], session.out)
-    given = [item for item in given if item not in held]
+    held = route_status.fixed_shapes(db, given)      # deleted all the same: named by hand
     if not given:
         return ()
     rows = targets(db, given)
     db.delete_wires([(table, row["id"]) for _, table, row in rows])
     db.deleted_wires.append([(handle, table, dict(row)) for handle, table, row in rows])
-    info(f"delete_wire: deleted {len(given)} wire(s)", session.out)
+    info(f"delete_wire: deleted {len(given)} wire(s)"
+         + (f", {len(held)} of them of fixed nets (they stay fixed): "
+            f"{' '.join(h for h, _, _ in held)}" if held else ""), session.out)
     also = [h for h, _, _ in rows[len(given):]]
     if also:
         info(f"  and {len(also)} that cannot stay without them (pin wires on a deleted "

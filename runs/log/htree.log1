@@ -1,0 +1,265 @@
+# htree_builder 
+# started 2026-11-23 23:33:48 in /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs
+Log: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.log1
+Commands: /proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/log/htree.cmd1
+htree> #read_tech -file ../tech.new.lef
+htree> read_tech -file ../ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef -min_layer D12 -max_layer IB
+**WARN: (HT4-013): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 23)
+**WARN: (HT4-013): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 24)
+**WARN: (HT4-013): 1 CLEARANCEMEASURE statement(s) not modeled, kept verbatim (first at line 25)
+**WARN: (HT4-013): 1 USEMINSPACING statement(s) not modeled, kept verbatim (first at line 26)
+**WARN: (HT4-013): 1 FIXEDMASK statement(s) not modeled, kept verbatim (first at line 34)
+**WARN: (HT4-013): 4 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 36)
+**WARN: (HT4-013): 40 VIARULE statement(s) not modeled, kept verbatim (first at line 4553)
+Reading tech LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_tech_18M_3Mx_2Fx_7Dx_2Hx_2Gx_2Iz_LB_3MIM.big.die.lef'
+  LEF version : 5.8
+  DB units    : 4000
+  Layer range : D12 .. IB (-min_layer D12, -max_layer IB); 54 of the 75 layers of the file left out
+  Layers      : 21 (D12 DH H1 N1 H2 HG G1 T1 G2 GI IA II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM IB)
+  Vias        : 190 (190 DEFAULT); 216 left out, a layer of theirs is not in the range
+htree> read_lef -file ../ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef 
+**WARN: (HT4-063): 1 BUSBITCHARS statement(s) not modeled, kept verbatim (first at line 2)
+**WARN: (HT4-063): 1 DIVIDERCHAR statement(s) not modeled, kept verbatim (first at line 3)
+**WARN: (HT4-063): 1 SITE statement(s) not modeled, kept verbatim (first at line 5)
+**WARN: (HT4-063): 1 PROPERTYDEFINITIONS statement(s) not modeled, kept verbatim (first at line 11)
+Reading cell LEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/ln04lpp_sc_s7p94t_cdk12m3mx2fx7dx_slvt_c60l04.lef'
+  LEF version : 5.8
+  Cells       : 6 added
+  Pins        : 36, ports 294, shapes 294
+  Pin layers  : S11(192) D12(42) M1(12) NW(24) PSUB(24)
+  In tech     : D12
+**WARN: (HT4-064): 252 pin shape(s) on layers not in tech: S11 M1 NW PSUB. They are kept but ignored in calculations
+htree> read_spine_spec -file ./custom_spine.yaml
+Reading spine spec '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/custom_spine.yaml'
+  custom_spine_4000       : line 3, levels L1(3) L2(1) L3(2) L4(4), 10 cells
+  custom_spine_h5p2       : line 51, levels L1(1) L2(1) L3(2), 4 cells
+  custom_spine_v5p2       : line 91, levels L1(1) L2(1) L3(2), 4 cells
+htree> read_def -file cf999.def
+Reading DEF '/proj/work/ramapriya/scripts/repo/tsi_rcg_scripts/python/htree_version4/runs/cf999.def'
+  Design      : cf999 (DEF 5.8, 4000 units/micron)
+  Boundary    : polygon, 26 points, bbox 0 0 5704.56 14144.08
+  Pins        : 110728, shapes 110725
+  Rows        : 167043 (ln04lpp_sc_s7p94t_c60 ln04lpp_sc_s7p94t_c60_2x ln04lpp_sc_s7p94t_c60_pg)
+  Tracks      : 56 patterns on 19 layers (IB IA G2 G1 H2 H1 D12 D11 D10 D9 D8 D7 D6 LB F5 F4 M3 M2 M1)
+  Tracks tech : IB IA G2 G1 H2 H1 D12, tech layers without tracks: DH N1 HG T1 GI II II_PM II_QM_BOT PM HM_PM QM II_QM_TOP HM II_HM
+  Vias        : 2 (DH_POWER_VIA_0 N1_POWER_VIA_0)
+  Skipped     : PROPERTYDEFINITIONS GCELLGRID(6) PINPROPERTIES BLOCKAGES
+  Pin layers  : D6(2084) D8(16404) D12(17251) D9(8404) D11(11762) G1(2880) H1(2712) D7(2284) G2(8108) D10(21584) H2(17252)
+  In tech     : D12 G1 H1 G2 H2
+**WARN: (HT4-093): 62522 pin shape(s) on layers not in tech: D6 D8 D9 D11 D7 D10. They are kept but ignored in calculations
+htree> # Tracks are 0.72 apart; rule1 wires are 0.72 wide with 0.72 spacing, so the
+htree> # power (shield) tracks sit 2 tracks (1.44) from each signal track, NA between.
+htree> assign_track_for_route -layer IA -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IA (horizontal, DEF TRACKS Y): 19645 tracks, y 0.36 .. 14144.04
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 2456 tracks, first at y 0.36
+  VSS         : 2456 tracks, first at y 3.24
+  signal      : 4911 tracks, first at y 1.8
+  blank (NA)  : 9822 tracks, first at y 1.08
+htree> assign_track_for_route -layer IB -net {VDD_SOC NA - NA VSS NA - NA}
+Track assignment for IB (vertical, DEF TRACKS X): 7923 tracks, x 0.36 .. 5704.2
+  Pattern (repeats every 8): VDD_SOC NA - NA VSS NA - NA
+  VDD_SOC     : 991 tracks, first at x 0.36
+  VSS         : 990 tracks, first at x 3.24
+  signal      : 1981 tracks, first at x 1.8
+  blank (NA)  : 3961 tracks, first at x 1.08
+htree> create_route_rule -name rule1 -layer {IA IB} -width 0.72 -spacing 0.72
+Route rule rule1, IA: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+Route rule rule1, IB: width 0.72, spacing 0.72 on each side (given), pitch to a parallel wire of this rule 1.44
+  route rule rule1 layers: IA IB
+route_rule:rule1
+htree> read_pin_spec -file pin_routing_spec.yaml 
+read_pin_spec: 2 pin routing spec(s) from 'pin_routing_spec.yaml':
+  vertical_routing: cells *, 6 straps (VSS VDD_SOC SIGNAL VSS SIGNAL VDD_SOC), width 0.36, spacing 0.36, on IA from H2
+  horizontal_routing: cells *, no straps: H2 pin wires only (pins.horizontal_layer none)
+  route_pin -inst <insts> -spec_name <name>
+vertical_routing horizontal_routing
+htree> # route_pin needs instances: it runs after create_spine below
+htree> #route_pin -spec pin_routing_spec.yaml
+htree> #create_inst -ref_cell INV12M3Mx2Fx7Dx_D112_N_S7P94TSL_C60L04 -location {5622.772 10066.7}
+htree> #create_spine -name mgt_clk -spec_name custom_spine_4000 -location {0 0} -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -validate -show
+htree> 
+htree> create_spine -name mgt_clk_hor1 -spec_name custom_spine_h5p2 -location {3050 10079}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {+y} -mirror
+Built spine:mgt_clk_hor1: 8 instances of INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04, 4 stubs of 1290.000 um, 8 nets (with its mirror mgt_clk_hor1_mirror_*)
+Stub spacing (um, left to right; stubs.gap 10):
+  stub length                 : 1290 (645 on each side of its leaf) = 1300 between the closest leaves (stub2, stub1) - stubs.gap 10; 1295 by the span
+  stub1_mirror - stub2_mirror : 10  leaves 1300 apart
+  stub2_mirror - stub2        : 30  leaves 1320 apart
+  stub2 - stub1               : 10  leaves 1300 apart
+spine:mgt_clk_hor1
+htree> create_spine -name soc_clk_hor1 -spec_name custom_spine_h5p2 -location {3050 10057}  -ref_cell INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04 -build -build_direction {-y} -mirror
+Built spine:soc_clk_hor1: 8 instances of INV12M3Mx2Fx7Dx_D96_N_S7P94TSL_C60L04, 4 stubs of 1290.000 um, 8 nets (with its mirror soc_clk_hor1_mirror_*)
+Stub spacing (um, left to right; stubs.gap 10):
+  stub length                 : 1290 (645 on each side of its leaf) = 1300 between the closest leaves (stub2, stub1) - stubs.gap 10; 1295 by the span
+  stub1_mirror - stub2_mirror : 10  leaves 1300 apart
+  stub2_mirror - stub2        : 30  leaves 1320 apart
+  stub2 - stub1               : 10  leaves 1300 apart
+spine:soc_clk_hor1
+htree> 
+htree> copy_obj -from [get_db spine mgt_clk_hor1] -name mgt_clk_hor2 -x_shift 0 -y_shift 0
+Copied spine:mgt_clk_hor1 to spine:mgt_clk_hor2 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: mgt_clk_hor2_L1_inv1 mgt_clk_hor2_L2_inv1 mgt_clk_hor2_L3_inv1 mgt_clk_hor2_L3_inv2 mgt_clk_hor2_mirror_L1_inv1 mgt_clk_hor2_mirror_L2_inv1 mgt_clk_hor2_mirror_L3_inv1 mgt_clk_hor2_mirror_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor2_L1_inv1 overlaps instance mgt_clk_hor1_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor2_L2_inv1 overlaps instance mgt_clk_hor1_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor2_L3_inv1 overlaps instance mgt_clk_hor1_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor2_L3_inv2 overlaps instance mgt_clk_hor1_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor2_mirror_L1_inv1 overlaps instance mgt_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor2_mirror_L2_inv1 overlaps instance mgt_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor2_mirror_L3_inv1 overlaps instance mgt_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor2_mirror_L3_inv2 overlaps instance mgt_clk_hor1_mirror_L3_inv2
+spine:mgt_clk_hor2
+htree> move_obj [get_db spine mgt_clk_hor2 ] -direction -y -distance 1319 -legal
+Moved spine:mgt_clk_hor2 1319 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.209 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of mgt_clk_hor2_mirror_L1_inv1 mgt_clk_hor2_mirror_L2_inv1 mgt_clk_hor2_mirror_L3_inv1 mgt_clk_hor2_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine mgt_clk_hor2: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {mgt_clk_hor2_L1_inv1_Y mgt_clk_hor2_L2_inv1_Y mgt_clk_hor2_L3_inv1_Y mgt_clk_hor2_L3_inv2_Y} -rule <rule>
+spine:mgt_clk_hor2
+htree> 
+htree> 
+htree> gui_show 
+GUI opened. Commands typed here update the layout.
+[KSelection cleared
+htree> 
+htree> copy_obj -from [get_db spine soc_clk_hor1] -name soc_clk_hor2 -x_shift 0 -y_shift 0
+Copied spine:soc_clk_hor1 to spine:soc_clk_hor2 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: soc_clk_hor2_L1_inv1 soc_clk_hor2_L2_inv1 soc_clk_hor2_L3_inv1 soc_clk_hor2_L3_inv2 soc_clk_hor2_mirror_L1_inv1 soc_clk_hor2_mirror_L2_inv1 soc_clk_hor2_mirror_L3_inv1 soc_clk_hor2_mirror_L3_inv2
+**WARN: (HT4-204): soc_clk_hor2_L1_inv1 overlaps instance soc_clk_hor1_L1_inv1
+**WARN: (HT4-204): soc_clk_hor2_L2_inv1 overlaps instance soc_clk_hor1_L2_inv1
+**WARN: (HT4-204): soc_clk_hor2_L3_inv1 overlaps instance soc_clk_hor1_L3_inv1
+**WARN: (HT4-204): soc_clk_hor2_L3_inv2 overlaps instance soc_clk_hor1_L3_inv2
+**WARN: (HT4-204): soc_clk_hor2_mirror_L1_inv1 overlaps instance soc_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): soc_clk_hor2_mirror_L2_inv1 overlaps instance soc_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): soc_clk_hor2_mirror_L3_inv1 overlaps instance soc_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): soc_clk_hor2_mirror_L3_inv2 overlaps instance soc_clk_hor1_mirror_L3_inv2
+spine:soc_clk_hor2
+htree> move_obj [get_db spine soc_clk_hor2 ] -direction -y -distance 1307 -legal
+Moved spine:soc_clk_hor2 1307 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.201 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of soc_clk_hor2_mirror_L1_inv1 soc_clk_hor2_mirror_L2_inv1 soc_clk_hor2_mirror_L3_inv1 soc_clk_hor2_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine soc_clk_hor2: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {soc_clk_hor2_L1_inv1_Y soc_clk_hor2_L2_inv1_Y soc_clk_hor2_L3_inv1_Y soc_clk_hor2_L3_inv2_Y} -rule <rule>
+spine:soc_clk_hor2
+htree> 
+htree> 
+htree> copy_obj -from [get_db spine mgt_clk_hor1] -name mgt_clk_hor3 -x_shift 0 -y_shift 0
+Copied spine:mgt_clk_hor1 to spine:mgt_clk_hor3 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: mgt_clk_hor3_L1_inv1 mgt_clk_hor3_L2_inv1 mgt_clk_hor3_L3_inv1 mgt_clk_hor3_L3_inv2 mgt_clk_hor3_mirror_L1_inv1 mgt_clk_hor3_mirror_L2_inv1 mgt_clk_hor3_mirror_L3_inv1 mgt_clk_hor3_mirror_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor3_L1_inv1 overlaps instance mgt_clk_hor1_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor3_L2_inv1 overlaps instance mgt_clk_hor1_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor3_L3_inv1 overlaps instance mgt_clk_hor1_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor3_L3_inv2 overlaps instance mgt_clk_hor1_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor3_mirror_L1_inv1 overlaps instance mgt_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor3_mirror_L2_inv1 overlaps instance mgt_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor3_mirror_L3_inv1 overlaps instance mgt_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor3_mirror_L3_inv2 overlaps instance mgt_clk_hor1_mirror_L3_inv2
+spine:mgt_clk_hor3
+htree> move_obj [get_db spine mgt_clk_hor3 ] -direction -y -distance 3863 -legal
+Moved spine:mgt_clk_hor3 3863 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.211 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of mgt_clk_hor3_mirror_L1_inv1 mgt_clk_hor3_mirror_L2_inv1 mgt_clk_hor3_mirror_L3_inv1 mgt_clk_hor3_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine mgt_clk_hor3: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {mgt_clk_hor3_L1_inv1_Y mgt_clk_hor3_L2_inv1_Y mgt_clk_hor3_L3_inv1_Y mgt_clk_hor3_L3_inv2_Y} -rule <rule>
+spine:mgt_clk_hor3
+htree> 
+htree> copy_obj -from [get_db spine soc_clk_hor1] -name soc_clk_hor3 -x_shift 0 -y_shift 0
+Copied spine:soc_clk_hor1 to spine:soc_clk_hor3 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: soc_clk_hor3_L1_inv1 soc_clk_hor3_L2_inv1 soc_clk_hor3_L3_inv1 soc_clk_hor3_L3_inv2 soc_clk_hor3_mirror_L1_inv1 soc_clk_hor3_mirror_L2_inv1 soc_clk_hor3_mirror_L3_inv1 soc_clk_hor3_mirror_L3_inv2
+**WARN: (HT4-204): soc_clk_hor3_L1_inv1 overlaps instance soc_clk_hor1_L1_inv1
+**WARN: (HT4-204): soc_clk_hor3_L2_inv1 overlaps instance soc_clk_hor1_L2_inv1
+**WARN: (HT4-204): soc_clk_hor3_L3_inv1 overlaps instance soc_clk_hor1_L3_inv1
+**WARN: (HT4-204): soc_clk_hor3_L3_inv2 overlaps instance soc_clk_hor1_L3_inv2
+**WARN: (HT4-204): soc_clk_hor3_mirror_L1_inv1 overlaps instance soc_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): soc_clk_hor3_mirror_L2_inv1 overlaps instance soc_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): soc_clk_hor3_mirror_L3_inv1 overlaps instance soc_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): soc_clk_hor3_mirror_L3_inv2 overlaps instance soc_clk_hor1_mirror_L3_inv2
+spine:soc_clk_hor3
+htree> move_obj [get_db spine soc_clk_hor3 ] -direction -y -distance 3851 -legal
+Moved spine:soc_clk_hor3 3851 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.219 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of soc_clk_hor3_mirror_L1_inv1 soc_clk_hor3_mirror_L2_inv1 soc_clk_hor3_mirror_L3_inv1 soc_clk_hor3_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine soc_clk_hor3: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {soc_clk_hor3_L1_inv1_Y soc_clk_hor3_L2_inv1_Y soc_clk_hor3_L3_inv1_Y soc_clk_hor3_L3_inv2_Y} -rule <rule>
+spine:soc_clk_hor3
+htree> 
+htree> 
+htree> copy_obj -from [get_db spine mgt_clk_hor1] -name mgt_clk_hor4 -x_shift 0 -y_shift 0
+Copied spine:mgt_clk_hor1 to spine:mgt_clk_hor4 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: mgt_clk_hor4_L1_inv1 mgt_clk_hor4_L2_inv1 mgt_clk_hor4_L3_inv1 mgt_clk_hor4_L3_inv2 mgt_clk_hor4_mirror_L1_inv1 mgt_clk_hor4_mirror_L2_inv1 mgt_clk_hor4_mirror_L3_inv1 mgt_clk_hor4_mirror_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor4_L1_inv1 overlaps instance mgt_clk_hor1_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor4_L2_inv1 overlaps instance mgt_clk_hor1_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor4_L3_inv1 overlaps instance mgt_clk_hor1_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor4_L3_inv2 overlaps instance mgt_clk_hor1_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor4_mirror_L1_inv1 overlaps instance mgt_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor4_mirror_L2_inv1 overlaps instance mgt_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor4_mirror_L3_inv1 overlaps instance mgt_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor4_mirror_L3_inv2 overlaps instance mgt_clk_hor1_mirror_L3_inv2
+spine:mgt_clk_hor4
+htree> move_obj [get_db spine mgt_clk_hor4 ] -direction -y -distance 6640 -legal
+Moved spine:mgt_clk_hor4 6640 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.249 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of mgt_clk_hor4_mirror_L1_inv1 mgt_clk_hor4_mirror_L2_inv1 mgt_clk_hor4_mirror_L3_inv1 mgt_clk_hor4_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine mgt_clk_hor4: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {mgt_clk_hor4_L1_inv1_Y mgt_clk_hor4_L2_inv1_Y mgt_clk_hor4_L3_inv1_Y mgt_clk_hor4_L3_inv2_Y} -rule <rule>
+spine:mgt_clk_hor4
+htree> 
+htree> copy_obj -from [get_db spine soc_clk_hor1] -name soc_clk_hor4 -x_shift 0 -y_shift 0
+Copied spine:soc_clk_hor1 to spine:soc_clk_hor4 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: soc_clk_hor4_L1_inv1 soc_clk_hor4_L2_inv1 soc_clk_hor4_L3_inv1 soc_clk_hor4_L3_inv2 soc_clk_hor4_mirror_L1_inv1 soc_clk_hor4_mirror_L2_inv1 soc_clk_hor4_mirror_L3_inv1 soc_clk_hor4_mirror_L3_inv2
+**WARN: (HT4-204): soc_clk_hor4_L1_inv1 overlaps instance soc_clk_hor1_L1_inv1
+**WARN: (HT4-204): soc_clk_hor4_L2_inv1 overlaps instance soc_clk_hor1_L2_inv1
+**WARN: (HT4-204): soc_clk_hor4_L3_inv1 overlaps instance soc_clk_hor1_L3_inv1
+**WARN: (HT4-204): soc_clk_hor4_L3_inv2 overlaps instance soc_clk_hor1_L3_inv2
+**WARN: (HT4-204): soc_clk_hor4_mirror_L1_inv1 overlaps instance soc_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): soc_clk_hor4_mirror_L2_inv1 overlaps instance soc_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): soc_clk_hor4_mirror_L3_inv1 overlaps instance soc_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): soc_clk_hor4_mirror_L3_inv2 overlaps instance soc_clk_hor1_mirror_L3_inv2
+spine:soc_clk_hor4
+htree> move_obj [get_db spine soc_clk_hor4 ] -direction -y -distance 6628 -legal
+Moved spine:soc_clk_hor4 6628 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.261 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of soc_clk_hor4_mirror_L1_inv1 soc_clk_hor4_mirror_L2_inv1 soc_clk_hor4_mirror_L3_inv1 soc_clk_hor4_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine soc_clk_hor4: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {soc_clk_hor4_L1_inv1_Y soc_clk_hor4_L2_inv1_Y soc_clk_hor4_L3_inv1_Y soc_clk_hor4_L3_inv2_Y} -rule <rule>
+spine:soc_clk_hor4
+htree> 
+htree> ### spine 5 horizontal (y = 916)
+htree> 
+htree> 
+htree> copy_obj -from [get_db spine mgt_clk_hor1] -name mgt_clk_hor5 -x_shift 0 -y_shift 0
+Copied spine:mgt_clk_hor1 to spine:mgt_clk_hor5 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: mgt_clk_hor5_L1_inv1 mgt_clk_hor5_L2_inv1 mgt_clk_hor5_L3_inv1 mgt_clk_hor5_L3_inv2 mgt_clk_hor5_mirror_L1_inv1 mgt_clk_hor5_mirror_L2_inv1 mgt_clk_hor5_mirror_L3_inv1 mgt_clk_hor5_mirror_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor5_L1_inv1 overlaps instance mgt_clk_hor1_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor5_L2_inv1 overlaps instance mgt_clk_hor1_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor5_L3_inv1 overlaps instance mgt_clk_hor1_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor5_L3_inv2 overlaps instance mgt_clk_hor1_L3_inv2
+**WARN: (HT4-204): mgt_clk_hor5_mirror_L1_inv1 overlaps instance mgt_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): mgt_clk_hor5_mirror_L2_inv1 overlaps instance mgt_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): mgt_clk_hor5_mirror_L3_inv1 overlaps instance mgt_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): mgt_clk_hor5_mirror_L3_inv2 overlaps instance mgt_clk_hor1_mirror_L3_inv2
+spine:mgt_clk_hor5
+htree> move_obj [get_db spine mgt_clk_hor5 ] -direction -y -distance 9185 -legal
+Moved spine:mgt_clk_hor5 9185 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.211 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of mgt_clk_hor5_mirror_L1_inv1 mgt_clk_hor5_mirror_L2_inv1 mgt_clk_hor5_mirror_L3_inv1 mgt_clk_hor5_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine mgt_clk_hor5: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {mgt_clk_hor5_L1_inv1_Y mgt_clk_hor5_L2_inv1_Y mgt_clk_hor5_L3_inv1_Y mgt_clk_hor5_L3_inv2_Y} -rule <rule>
+spine:mgt_clk_hor5
+htree> 
+htree> copy_obj -from [get_db spine soc_clk_hor1] -name soc_clk_hor5 -x_shift 0 -y_shift 0
+Copied spine:soc_clk_hor1 to spine:soc_clk_hor5 (x 0, y 0): 8 instance(s), 8 net(s), 0 strap(s), 0 pin wire(s), 0 routed shape(s) (wires, crossing boxes, shields, stubs), 0 strap stretch(es)
+**WARN: (HT4-283): copy_obj: 8 copied instance(s) not on a placement site of their orientation, left where the shift put them (their routes go with them); 8 of them because the original is not on one either: soc_clk_hor5_L1_inv1 soc_clk_hor5_L2_inv1 soc_clk_hor5_L3_inv1 soc_clk_hor5_L3_inv2 soc_clk_hor5_mirror_L1_inv1 soc_clk_hor5_mirror_L2_inv1 soc_clk_hor5_mirror_L3_inv1 soc_clk_hor5_mirror_L3_inv2
+**WARN: (HT4-204): soc_clk_hor5_L1_inv1 overlaps instance soc_clk_hor1_L1_inv1
+**WARN: (HT4-204): soc_clk_hor5_L2_inv1 overlaps instance soc_clk_hor1_L2_inv1
+**WARN: (HT4-204): soc_clk_hor5_L3_inv1 overlaps instance soc_clk_hor1_L3_inv1
+**WARN: (HT4-204): soc_clk_hor5_L3_inv2 overlaps instance soc_clk_hor1_L3_inv2
+**WARN: (HT4-204): soc_clk_hor5_mirror_L1_inv1 overlaps instance soc_clk_hor1_mirror_L1_inv1
+**WARN: (HT4-204): soc_clk_hor5_mirror_L2_inv1 overlaps instance soc_clk_hor1_mirror_L2_inv1
+**WARN: (HT4-204): soc_clk_hor5_mirror_L3_inv1 overlaps instance soc_clk_hor1_mirror_L3_inv1
+**WARN: (HT4-204): soc_clk_hor5_mirror_L3_inv2 overlaps instance soc_clk_hor1_mirror_L3_inv2
+spine:soc_clk_hor5
+htree> move_obj [get_db spine soc_clk_hor5 ] -direction -y -distance 9173 -legal
+Moved spine:soc_clk_hor5 9173 -y: 8 instances, 8 nets with their routing, stubs and pin routes
+  -legal: 4 instance(s) snapped to sites (up to 0.181 um), with their pin routes
+**WARN: (HT4-205): no site of their cell's site and orientation within one cell width + height of soc_clk_hor5_mirror_L1_inv1 soc_clk_hor5_mirror_L2_inv1 soc_clk_hor5_mirror_L3_inv1 soc_clk_hor5_mirror_L3_inv2 (outside the rows?); left where the move put them
+**WARN: (HT4-206): spine soc_clk_hor5: 4 instance(s) moved onto sites with their pin routes, off the routes of 4 net(s) by up to the site and row pitch; route them again: route_net -net {soc_clk_hor5_L1_inv1_Y soc_clk_hor5_L2_inv1_Y soc_clk_hor5_L3_inv1_Y soc_clk_hor5_L3_inv2_Y} -rule <rule>
+spine:soc_clk_hor5
+htree> 
+htree> 
+[KRuler: 412.56173 um  from (443.02783, 10064.60212) to (30.4661, 10064.60212)
+[KSelection cleared
+htree> exit
+# ended 2026-11-24 00:18:20

@@ -25,10 +25,9 @@ DESCRIPTION
     gets two vias (two stacks), one on each. The net of a pin is the net
     its pin wire carries (route_pin, route_net: so a power pin is on
     VDD_SOC or VSS), else its net of the netlist (get_db pin:<inst>/<pin>
-    .net); a pin on no net gets none. The rectangles under a pin's own
-    pin wire have their vias from route_pin: "Already there". The report
-    counts the pin crossings ("On pins"). Pin shapes on -top_layer and
-    the ports of the design are not looked at.
+    .net); a pin on no net gets none. The report counts the pin
+    crossings ("On pins"). Pin shapes on -top_layer and the ports of the
+    design are not looked at.
 
     The crossing box is the overlap of the two wires, whatever its shape:
     two wires that run along each other give one box and one via at its
@@ -43,29 +42,59 @@ DESCRIPTION
     When no definitions join the two layers the crossing gets one via
     with no cut layer.
 
-    Via definitions. -via_ref names the definitions to use, one for each
-    pair of layers of the way from -bottom_layer to -top_layer, or for
-    some of them. A pair without one uses the definition
-    assign_via_for_route names for those layers and that net, if any;
-    else the via has no definition and its shape is the crossing box (the
-    GUI draws a box with a cross). The -via_ref definitions belong to the
-    vias inserted by this command only, and stay theirs when the
-    assignments change.
+    Via definitions, per pair of layers of the way from -bottom_layer to
+    -top_layer, the first of:
+      1. the one -via_ref names for the pair;
+      2. a via generated to fill the crossing, when the tech has a
+         VIARULE ... GENERATE for the pair (DH_VIAGEN for D12/H1,
+         N1_VIAGEN for H1/H2 ...): of all the arrays of the rule's cuts,
+         the one with the most cuts whose cuts lie inside the crossing
+         box and whose pad lies inside the wire on that layer (on a layer
+         inside a stack, which has no wire: inside the box), centred on
+         the box. The cuts are as far apart as the rule's SPACING (centre
+         to centre), at least the cut's own width apart (N1_VIAGEN's
+         SPACING 0.064 equals its cut). Each layer's two ENCLOSURE values
+         are tried either way round. The definition is made once, named
+         <rule>_<rows>x<columns>_<enclosures in nm> (DH_VIAGEN_4x3_18_18_
+         0_26: 4 rows of 3 cuts, D12 enclosure 0.018 0.018, H1 0 0.026),
+         get_db via_defs lists it, and write_def writes it in VIAS;
+      3. the definition assign_via_for_route names for those layers and
+         that net, if any; else the via has no definition and its shape
+         is the crossing box (the GUI draws a box with a cross).
+    The definitions belong to the vias inserted by this command only, and
+    stay theirs when the assignments change. Not checked for a generated
+    array: the cut layer's LEF58 rules beyond the cut width and spacing
+    (adjacent cuts, array spacing), and the spacing of its pads to other
+    nets; check_drc reports these.
+
+    Run again. Each run first removes the vias insert_vias made before,
+    of the nets given (-nets; else every net), joining layers from
+    -bottom_layer to -top_layer (both ends in that range) and, with
+    -area, inside the area; then it inserts at every crossing again. The
+    report says how many were removed. Vias on wires of fixed nets stay.
+
+    The vias of the router and of route_pin. An inserted via takes the
+    place of a via the routing has at the same crossing (a crossing box
+    of route_net, a pin wire on its pin or strap): the net keeps one via
+    per layer change there, the inserted one. When the inserted vias are
+    deleted, the routing's come back.
 
     Not inserted:
-      - a crossing where the net already has its vias (a crossing box of
-        the router, a route_pin via, an auto via, or an insert_vias via
-        of before): "Already there". When some of the vias of a stack
-        are there, only the missing ones are added. So the command can be
-        run again; run again with another -via_ref it changes the
-        definitions of the vias it inserted before, and adds none.
       - a crossing where a wire of another net lies on a layer between
         the two, over the crossing box: the stack would short the two
         nets. Each one is reported (HT4-277).
+      - a crossing where no via definition of the layers (-via_ref's,
+        when given; else not even one cut of the VIARULE) fits on the two
+        wires: placed at the middle of the crossing box, its pad on each
+        of the two layers must lie inside that layer's wire, and its cut
+        inside both. Where a wire only just
+        overlaps the end of a strap, the box is narrower than any pad, and
+        the pad would stick out of the metal towards other nets (HT4-311).
+        The layers inside a stack, which have no wire, are not looked at.
 
-    Not checked: that the pads of a definition fit the wires (width,
-    enclosure) and keep their spacing to other nets. check_drc reports
-    the shorts and spacing of via pads, and the opens the vias close.
+    Not checked: the spacing of the pads to other nets' shapes (a pad
+    inside its wire keeps the wire's spacing). check_drc reports the
+    shorts and spacing of via pads, and the opens the vias close.
 
     An inserted via is a via object of kind insert on its net (get_db
     vias; .source is its crossing box). The box is stored as a net_wire of
@@ -78,7 +107,6 @@ DESCRIPTION
     on -bottom_layer: when that one is moved or deleted the via stays
     until it is deleted. To delete inserted vias:
         delete_wire -wires [get_db <vias> .source]
-    write_def does not write vias yet.
 
 OPTIONS
     -top_layer <layer>
@@ -94,7 +122,8 @@ OPTIONS
         The via definitions to use, as a Tcl list of names or via_def:
         handles (get_db via_defs). Each must join two layers of the way
         from -bottom_layer to -top_layer, and no two the same pair.
-        Default: the definitions of assign_via_for_route, or none.
+        Default: a via generated from the tech's VIARULE for the pair,
+        else the definition of assign_via_for_route, or none.
     -nets <nets>
         Insert vias only on these nets: names, glob patterns (clk_*), or
         net objects (net:, spine_net:, stub: for the net of the stub), as
@@ -108,20 +137,17 @@ RETURN VALUE
 
 EXAMPLES
     htree> insert_vias -bottom_layer IA -top_layer IB -area {0 0 20 40}
-    insert_vias: IA to IB in {0 0 20 40}: 19 crossing(s) of wires of one net
+    insert_vias: IA to IB in {0 0 20 40}: 1 crossing(s) of wires of one net
       Inserted      : 1 via(s) at 1 crossing(s) (cut layers C6)
-      Nets          : VSS(1)
-      Definitions   : none; 1 via(s) have none (-via_ref, assign_via_for_route)
-      Already there : 18 crossing(s)
-    via:VSS/21
-    htree> insert_vias -bottom_layer IA -top_layer IB
+      Nets          : n(1)
+      Definitions   : GEN_IA_IB_2x2_50_20_20_50(1)
+    via:n/1
+    htree> insert_vias -bottom_layer IA -top_layer IB -area {0 0 20 40}
+    insert_vias: IA to IB in {0 0 20 40}: 1 crossing(s) of wires of one net
+      Removed       : the vias insert_vias made before at 1 crossing(s) here, made again
+      Inserted      : 1 via(s) at 1 crossing(s) (cut layers C6)
+      ...
     htree> insert_vias -bottom_layer D12 -top_layer H2 -nets u1_Y
-    insert_vias: D12 to H2 in the design: 3 crossing(s) of wires of one net
-      On pins       : 3 of them a wire over a pin rectangle on D12
-      Inserted      : 6 via(s) at 3 crossing(s) (cut layers C1 C2)
-      Nets          : u1_Y(3)
-      Definitions   : none; 6 via(s) have none (-via_ref, assign_via_for_route)
-    via:u1_Y/1 via:u1_Y/2 via:u1_Y/3 via:u1_Y/4 via:u1_Y/5 via:u1_Y/6
     htree> insert_vias -bottom_layer H2 -top_layer IA -area {0 0 20 40} \
                -nets {VSS VDD_SOC} -via_ref {V_H2_G1 V_G1_G2 V_G2_IA}
     htree> insert_vias -bottom_layer IA -top_layer IB -area {0 0 20 40} \
@@ -142,6 +168,8 @@ ERRORS
     HT4-276  -nets: no net of that name with route wires
     HT4-277  (warning) a crossing got no via: a wire of another net lies
              on a layer in between
+    HT4-311  (warning) a crossing got no via: no via definition of the
+             layers fits on the two wires there
     HT4-286  (warning) no via on a wire of a fixed net (set_db
              .route_status fixed)
 

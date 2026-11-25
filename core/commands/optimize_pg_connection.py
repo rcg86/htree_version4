@@ -27,7 +27,7 @@ the strap as one RECT of its power net.
 
 from core import netlist
 from core.commands.route_net import _gap, _ia_shapes, strap_spacing
-from core.db import _num
+from core.db import PIN_LAYER, _num
 from core.messages import HtreeError, info, warn
 from core.options import parse_options
 
@@ -64,9 +64,30 @@ def run(session, argv):
     out = session.out
     signal = netlist.signal_nets(db) | {"SIGNAL"}
     total_new, total_straps, done = 0, 0, []
+    # route_pin's pieces under the pin wires (pin_layer) stay with this command's new ones
+    pin_layers = {name: [(r["kind"], r["layer"], r["rect"], r["shield_net"])
+                         for r in db.net_wire_rows(f"pg:{name}") if r["kind"] == PIN_LAYER]
+                  for name in names}
     for name in names:
-        db.set_net_wires(f"pg:{name}", [])          # this command's earlier pieces go
+        db.set_net_wires(f"pg:{name}", pin_layers[name])   # this command's earlier pieces go
     for name in names:
+        kept = db.pin_spec(name)
+        flat = kept is not None and (kept[0].get("routing_direction") == "horizontal" or
+                                     kept[0]["pins"]["horizontal_layer"] is None)
+        wires = [w for w in db.pin_wire_rows(name) if w["net"] not in signal]
+        if flat or (wires and all(w["strap"] is None for w in wires)):
+            # horizontal pin spec: no straps; the H2 power pin wires go up and down
+            total_straps += len(wires)
+            pieces, lines = _extend_pin_wires(db, name, wires, extend)
+            if pieces:
+                db.set_net_wires(f"pg:{name}", pin_layers[name] + [
+                    (k, layer, " ".join(_num(round(c, 6)) for c in r), net)
+                    for k, layer, r, net in pieces])
+            if lines:
+                done.append(f"inst:{name}")
+                total_new += sum(1 for p in pieces if p[0] == "pg_cross")
+                info(f"  {name}: " + "; ".join(lines), out)
+            continue
         straps = [s for s in db.strap_rows(name) if s["net"] not in signal]
         if not straps:
             continue
@@ -78,17 +99,94 @@ def run(session, argv):
             if text:
                 lines.append(text)
         if pieces:
-            db.set_net_wires(f"pg:{name}", [(k, layer, " ".join(_num(round(c, 6)) for c in r),
-                                             net) for k, layer, r, net in pieces])
+            db.set_net_wires(f"pg:{name}", pin_layers[name] + [
+                (k, layer, " ".join(_num(round(c, 6)) for c in r), net)
+                for k, layer, r, net in pieces])
             done.append(f"inst:{name}")
             total_new += sum(1 for p in pieces if p[0] == "pg_cross")
             info(f"  {name}: " + "; ".join(lines), out)
     if not total_straps:
-        warn(NO_STRAPS, "optimize_pg_connection: the instances have no power straps "
-             "(route_pin)", out)
+        warn(NO_STRAPS, "optimize_pg_connection: the instances have no power straps or "
+             "power pin wires (route_pin)", out)
     info(f"optimize_pg_connection: {total_new} new power connection(s) on {len(done)} "
-         f"instance(s), straps extended up to {_num(extend)} um more on each side", out)
+         f"instance(s), straps (vertical pin spec) extended up to {_num(extend)} um more on "
+         f"each side, power pin wires (horizontal) up and down", out)
     return tuple(done)
+
+
+BASE = "pg_pin_base:"         # meta key prefix: <inst>/<pin> -> the pin wire before
+
+
+def _extend_pin_wires(db, name, wires, extend):
+    """A cell of a horizontal pin spec (no straps): each power pin wire (on
+    the vertical layer, H2) lengthened up and down, up to extend um past
+    where route_pin left it, to the farthest power wire of its net on a
+    horizontal layer it then covers (insert_pg_grid IA wires, shields, the
+    straps of other cells) and so every one on the way; only as far as the
+    wire layer's tech spacing to other nets' shapes allows. The pin wire
+    itself is lengthened (its rect before is kept, so a run again starts
+    from it); each new crossing gets a crossing box (net pg:<name>, kind
+    pg_cross) for its via. Returns (pieces, report lines)."""
+    from core.commands.route_net import strap_spacing
+    rect_of = lambda text: tuple(float(c) for c in text.split())
+    dirs = {r["name"]: (r["direction"] or "").lower()
+            for r in db.conn.execute("SELECT name, direction FROM layer")}
+    shapes = _ia_shapes(db, None)
+    pieces, lines = [], []
+    for w in wires:
+        net, layer = w["net"], w["layer"]
+        now = rect_of(w["rect"])
+        key = f"{BASE}{name}/{w['pin']}"
+        row = db.conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+        base = rect_of(row["value"]) if row else now
+        if abs(base[0] - now[0]) > TOL or abs(base[2] - now[2]) > TOL or \
+                base[1] < now[1] - TOL or base[3] > now[3] + TOL:
+            base = now                   # route_pin made it again since: start from it
+        x1, y1, _, y2 = base
+        x2 = base[2]
+        # the power wires of its net across it on a horizontal layer
+        flat = [(lyr, r) for n, lyr, r in shapes if n == net and lyr != layer and
+                "/" not in lyr and dirs.get(lyr) == "horizontal" and
+                r[0] <= x1 + TOL and r[2] >= x2 - TOL]
+        before = sum(1 for _, r in flat if r[1] < y2 - TOL and r[3] > y1 + TOL)
+        spacing = strap_spacing(db, layer, x2 - x1)
+        others = [r for n, lyr, r in shapes if n != net and lyr == layer] + \
+            [rect_of(o["rect"]) for o in db.pin_wire_rows()
+             if o["layer"] == layer and o["net"] != net and
+             (o["inst"], o["pin"]) != (name, w["pin"])]
+        lo, hi, said = y1, y2, []
+        for side in ("down", "up"):
+            edge = y1 if side == "down" else y2
+            asks = sorted(edge - r[1] if side == "down" else r[3] - edge for _, r in flat
+                          if (r[1] < edge - TOL if side == "down" else r[3] > edge + TOL))
+            asks = [a for a in asks if TOL < a <= extend + TOL]
+            for length in reversed(asks):        # the farthest first: most connections
+                part = (x1, edge - length, x2, edge) if side == "down" else \
+                    (x1, edge, x2, edge + length)
+                if any(_gap(part, r) < spacing - TOL for r in others):
+                    continue
+                if side == "down":
+                    lo = edge - length
+                else:
+                    hi = edge + length
+                said.append(f"{_num(round(length, 6))} {side}")
+                break
+        grown = (x1, lo, x2, hi)
+        got = [(lyr, r) for lyr, r in flat if r[1] >= lo - TOL and r[3] <= hi + TOL]
+        new = [(lyr, r) for lyr, r in got if not (r[1] < y2 - TOL and r[3] > y1 + TOL)]
+        for lyr, r in new:                       # a box where it crosses each new one
+            pieces.append(("pg_cross", f"{layer}/{lyr}", (x1, r[1], x2, r[3]), net))
+        with db.conn:
+            if lo < y1 - TOL or hi > y2 + TOL:
+                db.conn.execute("INSERT OR REPLACE INTO meta VALUES (?, ?)",
+                                (key, " ".join(_num(round(c, 6)) for c in base)))
+            else:
+                db.conn.execute("DELETE FROM meta WHERE key = ?", (key,))
+        db.set_wire_rect("pin_wire", w["id"], " ".join(_num(round(c, 6)) for c in grown))
+        if said:
+            lines.append(f"pin wire {w['pin']} {net} ({before} connection(s) before): "
+                         f"extended {', '.join(said)} +{len(new)} crossing(s)")
+    return pieces, lines
 
 
 def _extend_strap(db, strap, extend, pending):

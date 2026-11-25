@@ -21,8 +21,8 @@ DESCRIPTION
                               every routing layer)
       spine_net .route_status, net .route_status, stub .route_status
                               fixed: no routing command changes the net's
-                              routes; routed: frees them again (see
-                              below)
+                              routes; routed (or route, unfixed,
+                              free): frees them again (see below)
       net_wire .route_status  fixed or routed, on a wire alone (kind
                               wire; not shields, extensions or crossing
                               boxes): route_net keeps it and joins the
@@ -32,6 +32,11 @@ DESCRIPTION
                               .status is the same attribute. write_def
                               writes it as + PLACED / + FIXED / + COVER,
                               write_logical as set_db .place_status
+      inst .pin_spec          a pin routing spec read_pin_spec read (by
+                              name), or default (the built-in one): the
+                              spec route_pin -inst (no -spec, no
+                              -spec_name) routes the instance with next,
+                              its old pin routes and pin vias removed
 
     A net without a rule set uses route_rule:default. The rule is kept
     by net name, so a net rebuilt with the same name keeps it; write_db

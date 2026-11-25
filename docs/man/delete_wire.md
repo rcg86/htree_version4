@@ -7,8 +7,12 @@ SYNOPSIS
     delete_wire -undo
 
 DESCRIPTION
-    Removes the wires given from the database. Wires are the route shapes
-    of move_wire:
+    Removes the wires given from the database, those of a fixed net (set_db
+    .route_status fixed) and wires fixed on their own too: naming a wire is
+    asking for it to go. The net stays fixed; the report lists the wires of
+    fixed nets deleted, and -undo puts them back fixed. (move_wire,
+    stretch_wire and the routers leave fixed nets alone.) Wires are the
+    route shapes of move_wire:
       net_wire:<net>/<n>   route_net, route_final_stub and
                            optimize_pg_connection wires, extensions,
                            shields, shield extensions, crossing boxes and
@@ -70,8 +74,6 @@ ERRORS
     HT4-223  -undo with no deleted wires to put back
     HT4-224  WARN: -undo could not put a wire back (its handle is taken,
              or its instance is gone)
-    HT4-286  WARN: the wires of a fixed net stay (set_db
-             .route_status fixed)
 
 SEE ALSO
     move_wire, stretch_wire, delete_route, route_net, route_pin, gui_show
